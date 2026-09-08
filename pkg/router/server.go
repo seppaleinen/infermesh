@@ -352,9 +352,12 @@ func (s *Server) selectWorker(model string) (protocol.WorkerInfo, error) {
 	return selected, nil
 }
 
-// proxyChatStream proxies a chat completion request to a worker with SSE support worker with SSE.
+// proxyChatStream proxies a chat completion request to a worker with SSE support.
 func (s *Server) proxyChatStream(w http.ResponseWriter, r *http.Request, worker protocol.WorkerInfo, req ChatRequest) {
-	ctx := r.Context()
+	// Apply context-based timeout (default 30s)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
 	workerURL := fmt.Sprintf("http://%s:%d", worker.IP, worker.Port)
 
 	// Create HTTP client with timeout
@@ -382,6 +385,12 @@ func (s *Server) proxyChatStream(w http.ResponseWriter, r *http.Request, worker 
 	// Forward request to worker
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		// Check if the error was due to timeout
+		if ctx.Err() == context.DeadlineExceeded {
+			s.log.Error("request timed out", "worker", workerURL, "timeout", "30s")
+			http.Error(w, "request timeout", http.StatusGatewayTimeout)
+			return
+		}
 		s.log.Error("failed to connect to worker", "error", err)
 		http.Error(w, "worker unavailable", http.StatusServiceUnavailable)
 		return
@@ -418,7 +427,10 @@ func (s *Server) proxyChatStream(w http.ResponseWriter, r *http.Request, worker 
 
 // proxyCompletionStream proxies a completion request to a worker with SSE support.
 func (s *Server) proxyCompletionStream(w http.ResponseWriter, r *http.Request, worker protocol.WorkerInfo, req CompletionRequest) {
-	ctx := r.Context()
+	// Apply context-based timeout (default 30s)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
 	workerURL := fmt.Sprintf("http://%s:%d", worker.IP, worker.Port)
 
 	// Create HTTP client with timeout
@@ -446,6 +458,12 @@ func (s *Server) proxyCompletionStream(w http.ResponseWriter, r *http.Request, w
 	// Forward request to worker
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		// Check if the error was due to timeout
+		if ctx.Err() == context.DeadlineExceeded {
+			s.log.Error("request timed out", "worker", workerURL, "timeout", "30s")
+			http.Error(w, "request timeout", http.StatusGatewayTimeout)
+			return
+		}
 		s.log.Error("failed to connect to worker", "error", err)
 		http.Error(w, "worker unavailable", http.StatusServiceUnavailable)
 		return
