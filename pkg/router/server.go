@@ -352,6 +352,25 @@ func (s *Server) selectWorker(model string) (protocol.WorkerInfo, error) {
 	return selected, nil
 }
 
+// retryDoRequestWithRetry executes an HTTP request with exponential backoff retry logic.
+// Max 3 retries with 1s, 2s, 4s backoff intervals.
+// Returns the response or an error after all retries are exhausted.
+func retryDoRequestWithRetry(client *http.Client, req *http.Request, maxRetries int) (*http.Response, error) {
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		resp, err := client.Do(req)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if attempt < maxRetries {
+			backoff := time.Duration(1<<attempt) * time.Second
+			time.Sleep(backoff)
+		}
+	}
+	return nil, fmt.Errorf("max retries (%d) exceeded: %w", maxRetries, lastErr)
+}
+
 // proxyChatStream proxies a chat completion request to a worker with SSE support.
 func (s *Server) proxyChatStream(w http.ResponseWriter, r *http.Request, worker protocol.WorkerInfo, req ChatRequest) {
 	// Apply context-based timeout (default 30s)
@@ -382,16 +401,16 @@ func (s *Server) proxyChatStream(w http.ResponseWriter, r *http.Request, worker 
 
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	// Forward request to worker
-	resp, err := client.Do(httpReq)
+	// Forward request to worker with retry logic
+	resp, err := retryDoRequestWithRetry(client, httpReq, 3)
 	if err != nil {
 		// Check if the error was due to timeout
 		if ctx.Err() == context.DeadlineExceeded {
-			s.log.Error("request timed out", "worker", workerURL, "timeout", "30s")
+			s.log.Error("request timed out after retries", "worker", workerURL, "timeout", "30s")
 			http.Error(w, "request timeout", http.StatusGatewayTimeout)
 			return
 		}
-		s.log.Error("failed to connect to worker", "error", err)
+		s.log.Error("failed to connect to worker after retries", "error", err)
 		http.Error(w, "worker unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -455,16 +474,16 @@ func (s *Server) proxyCompletionStream(w http.ResponseWriter, r *http.Request, w
 
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	// Forward request to worker
-	resp, err := client.Do(httpReq)
+	// Forward request to worker with retry logic
+	resp, err := retryDoRequestWithRetry(client, httpReq, 3)
 	if err != nil {
 		// Check if the error was due to timeout
 		if ctx.Err() == context.DeadlineExceeded {
-			s.log.Error("request timed out", "worker", workerURL, "timeout", "30s")
+			s.log.Error("request timed out after retries", "worker", workerURL, "timeout", "30s")
 			http.Error(w, "request timeout", http.StatusGatewayTimeout)
 			return
 		}
-		s.log.Error("failed to connect to worker", "error", err)
+		s.log.Error("failed to connect to worker after retries", "error", err)
 		http.Error(w, "worker unavailable", http.StatusServiceUnavailable)
 		return
 	}
