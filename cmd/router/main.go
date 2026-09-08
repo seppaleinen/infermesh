@@ -20,6 +20,7 @@ func main() {
 	mtlsCert := flag.String("mtls-cert", "", "path to mTLS certificate file")
 	mtlsKey := flag.String("mtls-key", "", "path to mTLS key file")
 	certDir := flag.String("cert-dir", "", "path to certificate directory (for CA)")
+	apiKey := flag.String("api-key", "", "API key for authentication (production mode)")
 	flag.Parse()
 
 	// Determine dev mode: --prod-mode disables dev mode, --dev-mode enables it
@@ -90,6 +91,7 @@ func main() {
 		MTLSCert:   *mtlsCert,
 		MTLSKey:    *mtlsKey,
 		CertDir:    *certDir,
+		APIKey:     *apiKey,
 	}
 
 	// Start router HTTP server
