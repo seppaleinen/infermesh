@@ -69,6 +69,52 @@ func (m *mockBackend) IsHealthy() bool { return true }
 func (m *mockBackend) HealthCheck() error { return nil }
 // GetCircuitState implements the Backend interface.
 func (m *mockBackend) GetCircuitState() CircuitState { return CircuitClosed }
+// StreamChat implements the Backend interface.
+func (m *mockBackend) StreamChat(ctx context.Context, model string, req ChatRequest) (<-chan ChatChunk, <-chan error) {
+	chatCh := make(chan ChatChunk, 100)
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(chatCh)
+		defer close(errCh)
+		chatCh <- ChatChunk{
+			ID:      "chatcmpl-test",
+			Object:  "chat.completion.chunk",
+			Created: time.Now().Unix(),
+			Model:   model,
+			Choices: []Choice{
+				{
+					Index:        0,
+					Message:      Message{Role: "assistant", Content: "Mock streaming response"},
+					FinishReason: "stop",
+				},
+			},
+		}
+	}()
+	return chatCh, errCh
+}
+// StreamCompletions implements the Backend interface.
+func (m *mockBackend) StreamCompletions(ctx context.Context, model string, req CompletionRequest) (<-chan CompletionChunk, <-chan error) {
+	compCh := make(chan CompletionChunk, 100)
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(compCh)
+		defer close(errCh)
+		compCh <- CompletionChunk{
+			ID:      "cmpl-test",
+			Object:  "text_completion",
+			Created: time.Now().Unix(),
+			Model:   model,
+			Choices: []Choice{
+				{
+					Index:        0,
+					Text:         "Mock streaming completion",
+					FinishReason: "stop",
+				},
+			},
+		}
+	}()
+	return compCh, errCh
+}
 
 func TestHealthHandler(t *testing.T) {
 	server := NewServer(testLogger(), "", security.Config{DevMode: true})

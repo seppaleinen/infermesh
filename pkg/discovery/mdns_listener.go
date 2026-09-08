@@ -3,8 +3,6 @@ package discovery
 import (
 	"context"
 	"fmt"
-	"io"
-	"log"
 	"log/slog"
 	"strings"
 	"time"
@@ -81,14 +79,7 @@ func (l *mdnsListener) doProbe(ctx context.Context) {
 
 	entries := make(chan *mdns.ServiceEntry, 32)
 	go func() {
-		// Suppress hashicorp/mdns library's log.Printf noise from IPv6 bind failures.
-		// The library's unexported newClient() tries both udp4 and udp6; IPv6 multicast
-		// is often unavailable on macOS. Redirecting the standard logger temporarily
-		// silences these non-fatal errors while keeping IPv4 discovery working.
-		origLogger := log.Default()
-		log.SetOutput(io.Discard)
 		err := mdns.Lookup(service, entries)
-		log.SetOutput(origLogger.Writer())
 		if err != nil {
 			l.log.Warn("mDNS query error", "error", err)
 		}
@@ -106,6 +97,12 @@ func (l *mdnsListener) doProbe(ctx context.Context) {
 		if !strings.Contains(entry.Name, servicePrefix) {
 			continue // Skip non-InferMesh mDNS entries
 		}
+		// Only accept entries with IPv4 addresses; skip IPv6-only entries
+		// to avoid the hashicorp/mdns library's IPv6 bind noise on platforms
+		// like macOS where IPv6 multicast may not be available.
+		if entry.AddrV4 == nil {
+			continue
+		}
 
 		disc, err := protocol.DeserializeDiscoveryInfo(entry.Info)
 		if err != nil {
@@ -118,11 +115,7 @@ func (l *mdnsListener) doProbe(ctx context.Context) {
 		info := disc.ToWorkerInfo()
 
 		// Fill in IP and port from mDNS layer
-		if entry.AddrV4 != nil {
-			info.IP = entry.AddrV4.String()
-		} else if entry.AddrV6 != nil {
-			info.IP = entry.AddrV6.String()
-		}
+		info.IP = entry.AddrV4.String()
 		if entry.Port > 0 {
 			info.Port = entry.Port
 		}

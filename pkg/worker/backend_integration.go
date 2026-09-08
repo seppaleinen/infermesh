@@ -1,16 +1,19 @@
 package worker
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
+	"log/slog"
 )
 
 // Backend defines the interface for backend adapters that handle
@@ -28,6 +31,9 @@ type Backend interface {
 	HealthCheck() error
 	// Circuit breaker status
 	GetCircuitState() CircuitState
+	// Streaming methods
+	StreamChat(ctx context.Context, model string, req ChatRequest) (<-chan ChatChunk, <-chan error)
+	StreamCompletions(ctx context.Context, model string, req CompletionRequest) (<-chan CompletionChunk, <-chan error)
 }
 
 // CircuitState represents the state of the circuit breaker.
@@ -311,6 +317,110 @@ func (b *OpenAICompatibleBackend) completeChatInternal(ctx context.Context, mode
 	return chatResp, nil
 }
 
+func (b *OpenAICompatibleBackend) StreamChat(ctx context.Context, model string, req ChatRequest) (<-chan ChatChunk, <-chan error) {
+	chatCh := make(chan ChatChunk, 100)
+	errCh := make(chan error, 1)
+
+	go func() {
+		defer close(chatCh)
+		defer close(errCh)
+
+		// Set stream to true and build the request
+		req.Stream = true
+		url := b.baseURL + "/v1/chat/completions"
+
+		// Set default max_tokens if not specified (LM Studio requires >= 1)
+		maxTokens := req.MaxTokens
+		if maxTokens <= 0 {
+			maxTokens = 100 // reasonable default
+		}
+
+		// Convert ChatRequest to backend-specific request
+		backendReq := map[string]interface{}{
+			"model":       model,
+			"messages":    req.Messages,
+			"stream":      true,
+			"max_tokens":  maxTokens,
+			"temperature": req.Temperature,
+		}
+
+		jsonBody, err := json.Marshal(backendReq)
+		if err != nil {
+			errCh <- fmt.Errorf("failed to marshal request: %w", err)
+			return
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
+		if err != nil {
+			errCh <- fmt.Errorf("failed to create request: %w", err)
+			return
+		}
+
+		httpReq.Header.Set("Content-Type", "application/json")
+		if b.apiKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+b.apiKey)
+		}
+
+		resp, err := b.client.Do(httpReq)
+		if err != nil {
+			errCh <- fmt.Errorf("backend request failed: %w", err)
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			errCh <- fmt.Errorf("backend returned %d: %s", resp.StatusCode, string(body))
+			return
+		}
+
+		// Parse SSE stream using bufio.Scanner for proper line reading
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" || line == "\r" {
+				continue
+			}
+
+			// Strip SSE prefix "data: "
+			if strings.HasPrefix(line, "data: ") {
+				dataStr := strings.TrimPrefix(line, "data: ")
+				if dataStr == "[DONE]" {
+					return
+				}
+
+				var chunk ChatChunk
+				if err := json.Unmarshal([]byte(dataStr), &chunk); err != nil {
+					slog.Warn("failed to parse SSE chunk", "error", err)
+					continue
+				}
+
+				select {
+				case chatCh <- chunk:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			errCh <- fmt.Errorf("failed to read SSE stream: %w", err)
+			return
+		}
+
+		// Send [DONE] marker to indicate stream completion
+		chatCh <- ChatChunk{
+			ID:      "",
+			Object:  "chat.completion.chunk",
+			Created: time.Now().Unix(),
+			Model:   model,
+			Choices: []Choice{},
+		}
+	}()
+
+	return chatCh, errCh
+}
+
 // CompleteCompletions generates a completion via the backend.
 func (b *OpenAICompatibleBackend) CompleteCompletions(ctx context.Context, model string, req CompletionRequest) (CompletionResponse, error) {
 	url := b.baseURL + "/v1/completions"
@@ -361,6 +471,110 @@ func (b *OpenAICompatibleBackend) CompleteCompletions(ctx context.Context, model
 	}
 
 	return compResp, nil
+}
+
+// StreamCompletions generates a completion via the backend with streaming support.
+func (b *OpenAICompatibleBackend) StreamCompletions(ctx context.Context, model string, req CompletionRequest) (<-chan CompletionChunk, <-chan error) {
+	compCh := make(chan CompletionChunk, 100)
+	errCh := make(chan error, 1)
+
+	go func() {
+		defer close(compCh)
+		defer close(errCh)
+
+		// Set stream to true and build the request
+		req.Stream = true
+		url := b.baseURL + "/v1/completions"
+
+		// Set default max_tokens if not specified
+		maxTokens := req.MaxTokens
+		if maxTokens <= 0 {
+			maxTokens = 100 // reasonable default
+		}
+
+		backendReq := map[string]interface{}{
+			"model":       model,
+			"prompt":      req.Prompt,
+			"stream":      true,
+			"max_tokens":  maxTokens,
+			"temperature": req.Temperature,
+		}
+
+		jsonBody, err := json.Marshal(backendReq)
+		if err != nil {
+			errCh <- fmt.Errorf("failed to marshal request: %w", err)
+			return
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
+		if err != nil {
+			errCh <- fmt.Errorf("failed to create request: %w", err)
+			return
+		}
+
+		httpReq.Header.Set("Content-Type", "application/json")
+		if b.apiKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+b.apiKey)
+		}
+
+		resp, err := b.client.Do(httpReq)
+		if err != nil {
+			errCh <- fmt.Errorf("backend request failed: %w", err)
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			errCh <- fmt.Errorf("backend returned %d: %s", resp.StatusCode, string(body))
+			return
+		}
+
+		// Parse SSE stream using bufio.Scanner for proper line reading
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" || line == "\r" {
+				continue
+			}
+
+			// Strip SSE prefix "data: "
+			if strings.HasPrefix(line, "data: ") {
+				dataStr := strings.TrimPrefix(line, "data: ")
+				if dataStr == "[DONE]" {
+					return
+				}
+
+				var chunk CompletionChunk
+				if err := json.Unmarshal([]byte(dataStr), &chunk); err != nil {
+					slog.Warn("failed to parse SSE chunk", "error", err)
+					continue
+				}
+
+				select {
+				case compCh <- chunk:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			errCh <- fmt.Errorf("failed to read SSE stream: %w", err)
+			return
+		}
+
+		// Send [DONE] marker to indicate stream completion
+		compCh <- CompletionChunk{
+			ID:      "",
+			Object:  "text_completion",
+			Created: time.Now().Unix(),
+			Model:   model,
+			Choices: []Choice{},
+		}
+	}()
+
+	return compCh, errCh
 }
 
 // ListModels returns available models from the backend.

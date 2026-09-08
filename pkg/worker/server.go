@@ -71,6 +71,16 @@ type CompletionChunk struct {
 	ID      string   `json:"id"`
 	Object  string   `json:"object"`
 	Created int64    `json:"created"`
+	Model   string   `json:"model,omitempty"`
+	Choices []Choice `json:"choices"`
+}
+
+// ChatChunk represents a streaming chunk of a chat completion response.
+type ChatChunk struct {
+	ID      string   `json:"id"`
+	Object  string   `json:"object"`
+	Created int64    `json:"created"`
+	Model   string   `json:"model,omitempty"`
 	Choices []Choice `json:"choices"`
 }
 
@@ -112,6 +122,16 @@ func (a *BackendAdapter) CompleteChat(ctx context.Context, model string, req Cha
 // CompleteCompletions implements the Backend interface.
 func (a *BackendAdapter) CompleteCompletions(ctx context.Context, model string, req CompletionRequest) (CompletionResponse, error) {
 	return a.Backend.CompleteCompletions(ctx, model, req)
+}
+
+// StreamChat implements the Backend interface.
+func (a *BackendAdapter) StreamChat(ctx context.Context, model string, req ChatRequest) (<-chan ChatChunk, <-chan error) {
+	return a.Backend.StreamChat(ctx, model, req)
+}
+
+// StreamCompletions implements the Backend interface.
+func (a *BackendAdapter) StreamCompletions(ctx context.Context, model string, req CompletionRequest) (<-chan CompletionChunk, <-chan error) {
+	return a.Backend.StreamCompletions(ctx, model, req)
 }
 
 // LoadModel implements the Backend interface.
