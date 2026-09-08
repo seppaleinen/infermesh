@@ -19,6 +19,36 @@ import (
 	"log/slog"
 )
 
+// ErrorResponse represents an OpenAI-compatible error response.
+type ErrorResponse struct {
+	Error ErrorDetail `json:"error"`
+}
+
+// ErrorDetail represents the error detail in an OpenAI-compatible error response.
+type ErrorDetail struct {
+	Message string `json:"message"`
+	Type    string `json:"type"`
+	Code    string `json:"code,omitempty"`
+}
+
+// writeErrorResponse writes an OpenAI-compatible error response.
+func writeErrorResponse(w http.ResponseWriter, statusCode int, errMsg string, errType string, errCode string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+
+	errorResp := ErrorResponse{
+		Error: ErrorDetail{
+			Message: errMsg,
+			Type:    errType,
+			Code:    errCode,
+		},
+	}
+
+	if err := json.NewEncoder(w).Encode(errorResp); err != nil {
+		slog.Error("failed to encode error response", "error", err)
+	}
+}
+
 // Server is the HTTP server for the router.
 type Server struct {
 	log     *slog.Logger
@@ -169,7 +199,7 @@ func (s *Server) Addr() string {
 // handleChatCompletions handles the /v1/chat/completions HTTP endpoint.
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error", "method_not_allowed")
 		return
 	}
 
@@ -182,14 +212,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.log.Error("failed to parse chat request", "error", err)
-		http.Error(w, "invalid request", http.StatusBadRequest)
+		writeErrorResponse(w, http.StatusBadRequest, "invalid request", "invalid_request_error", "parse_error")
 		return
 	}
 
 	// Check if scheduler is configured
 	if s.reg == nil {
 		s.log.Error("registry not configured")
-		http.Error(w, "registry not configured", http.StatusInternalServerError)
+		writeErrorResponse(w, http.StatusInternalServerError, "registry not configured", "server_error", "internal_error")
 		return
 	}
 
@@ -197,7 +227,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	worker, err := s.selectWorker(req.Model)
 	if err != nil {
 		s.log.Error("failed to select worker", "error", err)
-		http.Error(w, "no workers", http.StatusServiceUnavailable)
+		writeErrorResponse(w, http.StatusServiceUnavailable, "no workers", "server_error", "no_workers")
 		return
 	}
 
@@ -208,7 +238,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 // handleCompletions handles the /v1/completions HTTP endpoint.
 func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error", "method_not_allowed")
 		return
 	}
 
@@ -221,14 +251,14 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	var req CompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.log.Error("failed to parse completion request", "error", err)
-		http.Error(w, "invalid request", http.StatusBadRequest)
+		writeErrorResponse(w, http.StatusBadRequest, "invalid request", "invalid_request_error", "parse_error")
 		return
 	}
 
 	// Check if scheduler is configured
 	if s.reg == nil {
 		s.log.Error("registry not configured")
-		http.Error(w, "registry not configured", http.StatusInternalServerError)
+		writeErrorResponse(w, http.StatusInternalServerError, "registry not configured", "server_error", "internal_error")
 		return
 	}
 
@@ -236,7 +266,7 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	worker, err := s.selectWorker(req.Model)
 	if err != nil {
 		s.log.Error("failed to select worker", "error", err)
-		http.Error(w, "no workers", http.StatusServiceUnavailable)
+		writeErrorResponse(w, http.StatusServiceUnavailable, "no workers", "server_error", "no_workers")
 		return
 	}
 
@@ -247,7 +277,7 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 // handleModelsList handles the /v1/models HTTP endpoint.
 func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error", "method_not_allowed")
 		return
 	}
 
@@ -275,39 +305,39 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 	response := ModelsResponse{Object: "list", Data: models}
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		s.log.Error("failed to encode models", "error", err)
-		http.Error(w, "failed to encode models", http.StatusInternalServerError)
+		writeErrorResponse(w, http.StatusInternalServerError, "failed to encode models", "server_error", "encoding_error")
 	}
 }
 
 // handleDevRegister handles the /v1/dev/register HTTP endpoint.
 func (s *Server) handleDevRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error", "method_not_allowed")
 		return
 	}
 
 	var worker protocol.WorkerInfo
 	if err := json.NewDecoder(r.Body).Decode(&worker); err != nil {
 		s.log.Error("failed to parse worker registration", "error", err)
-		http.Error(w, "invalid request", http.StatusBadRequest)
+		writeErrorResponse(w, http.StatusBadRequest, "invalid request", "invalid_request_error", "parse_error")
 		return
 	}
 
 	// Validate empty ID
 	if worker.ID == "" {
-		http.Error(w, "empty ID", http.StatusBadRequest)
+		writeErrorResponse(w, http.StatusBadRequest, "empty ID", "invalid_request_error", "validation_error")
 		return
 	}
 
 	// Validate port range
 	if worker.Port <= 0 || worker.Port > 65535 {
-		http.Error(w, "invalid port", http.StatusBadRequest)
+		writeErrorResponse(w, http.StatusBadRequest, "invalid port", "invalid_request_error", "validation_error")
 		return
 	}
 
 	// Validate IP - only loopback allowed in dev mode
 	if worker.IP != "127.0.0.1" && worker.IP != "localhost" {
-		http.Error(w, "non-loopback IP not allowed", http.StatusForbidden)
+		writeErrorResponse(w, http.StatusForbidden, "non-loopback IP not allowed", "authentication_error", "ip_validation_error")
 		return
 	}
 
@@ -320,7 +350,7 @@ func (s *Server) handleDevRegister(w http.ResponseWriter, r *http.Request) {
 		Worker: worker,
 	}); err != nil {
 		s.log.Error("failed to register worker", "error", err)
-		http.Error(w, "failed to register worker", http.StatusInternalServerError)
+		writeErrorResponse(w, http.StatusInternalServerError, "failed to register worker", "server_error", "registration_error")
 		return
 	}
 
@@ -388,14 +418,14 @@ func (s *Server) proxyChatStream(w http.ResponseWriter, r *http.Request, worker 
 	jsonBody, err := json.Marshal(req)
 	if err != nil {
 		s.log.Error("failed to marshal chat request", "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeErrorResponse(w, http.StatusInternalServerError, "internal server error", "server_error", "marshal_error")
 		return
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", workerURL+"/v1/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
 		s.log.Error("failed to create request to worker", "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeErrorResponse(w, http.StatusInternalServerError, "internal server error", "server_error", "request_error")
 		return
 	}
 
@@ -407,11 +437,11 @@ func (s *Server) proxyChatStream(w http.ResponseWriter, r *http.Request, worker 
 		// Check if the error was due to timeout
 		if ctx.Err() == context.DeadlineExceeded {
 			s.log.Error("request timed out after retries", "worker", workerURL, "timeout", "30s")
-			http.Error(w, "request timeout", http.StatusGatewayTimeout)
+			writeErrorResponse(w, http.StatusGatewayTimeout, "request timeout", "server_error", "timeout_error")
 			return
 		}
 		s.log.Error("failed to connect to worker after retries", "error", err)
-		http.Error(w, "worker unavailable", http.StatusServiceUnavailable)
+		writeErrorResponse(w, http.StatusServiceUnavailable, "worker unavailable", "server_error", "connection_error")
 		return
 	}
 	defer resp.Body.Close()
@@ -420,7 +450,7 @@ func (s *Server) proxyChatStream(w http.ResponseWriter, r *http.Request, worker 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		s.log.Error("worker returned error", "status", resp.StatusCode, "body", string(body))
-		http.Error(w, "worker error", resp.StatusCode)
+		writeErrorResponse(w, resp.StatusCode, "worker error", "server_error", "worker_error")
 		return
 	}
 
@@ -428,7 +458,7 @@ func (s *Server) proxyChatStream(w http.ResponseWriter, r *http.Request, worker 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		s.log.Error("streaming unsupported")
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		writeErrorResponse(w, http.StatusInternalServerError, "streaming unsupported", "server_error", "streaming_error")
 		return
 	}
 
@@ -461,14 +491,14 @@ func (s *Server) proxyCompletionStream(w http.ResponseWriter, r *http.Request, w
 	jsonBody, err := json.Marshal(req)
 	if err != nil {
 		s.log.Error("failed to marshal completion request", "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeErrorResponse(w, http.StatusInternalServerError, "internal server error", "server_error", "marshal_error")
 		return
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", workerURL+"/v1/completions", bytes.NewReader(jsonBody))
 	if err != nil {
 		s.log.Error("failed to create request to worker", "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeErrorResponse(w, http.StatusInternalServerError, "internal server error", "server_error", "request_error")
 		return
 	}
 
@@ -480,11 +510,11 @@ func (s *Server) proxyCompletionStream(w http.ResponseWriter, r *http.Request, w
 		// Check if the error was due to timeout
 		if ctx.Err() == context.DeadlineExceeded {
 			s.log.Error("request timed out after retries", "worker", workerURL, "timeout", "30s")
-			http.Error(w, "request timeout", http.StatusGatewayTimeout)
+			writeErrorResponse(w, http.StatusGatewayTimeout, "request timeout", "server_error", "timeout_error")
 			return
 		}
 		s.log.Error("failed to connect to worker after retries", "error", err)
-		http.Error(w, "worker unavailable", http.StatusServiceUnavailable)
+		writeErrorResponse(w, http.StatusServiceUnavailable, "worker unavailable", "server_error", "connection_error")
 		return
 	}
 	defer resp.Body.Close()
@@ -493,7 +523,7 @@ func (s *Server) proxyCompletionStream(w http.ResponseWriter, r *http.Request, w
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		s.log.Error("worker returned error", "status", resp.StatusCode, "body", string(body))
-		http.Error(w, "worker error", resp.StatusCode)
+		writeErrorResponse(w, resp.StatusCode, "worker error", "server_error", "worker_error")
 		return
 	}
 
@@ -501,7 +531,7 @@ func (s *Server) proxyCompletionStream(w http.ResponseWriter, r *http.Request, w
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		s.log.Error("streaming unsupported")
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		writeErrorResponse(w, http.StatusInternalServerError, "streaming unsupported", "server_error", "streaming_error")
 		return
 	}
 
