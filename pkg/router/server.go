@@ -49,6 +49,32 @@ func writeErrorResponse(w http.ResponseWriter, statusCode int, errMsg string, er
 	}
 }
 
+// WorkerInfo represents a simplified worker information for the /v1/workers endpoint.
+type WorkerInfo struct {
+	ID            string           `json:"id"`
+	Hostname      string           `json:"hostname"`
+	IP            string           `json:"ip"`
+	Port          int              `json:"port"`
+	Status        protocol.WorkerStatus `json:"status"`
+	Version       string           `json:"version"`
+	LoadedModels  []string         `json:"loaded_models"`
+	LastSeen      time.Time        `json:"last_seen"`
+}
+
+// WorkersResponse represents the response from the /v1/workers endpoint.
+type WorkersResponse struct {
+	Workers []WorkerInfo `json:"workers"`
+}
+
+// ErrorModelNotFound represents an error when a model is not found on any worker.
+type ErrModelNotFound struct {
+	Model string
+}
+
+func (e *ErrModelNotFound) Error() string {
+	return fmt.Sprintf("model %s not found on any worker", e.Model)
+}
+
 // Server is the HTTP server for the router.
 type Server struct {
 	log     *slog.Logger
@@ -140,6 +166,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
 	mux.HandleFunc("/v1/completions", s.handleCompletions)
 	mux.HandleFunc("/v1/models", s.handleModelsList)
+	mux.HandleFunc("/v1/workers", s.handleWorkersList)
 	mux.HandleFunc("/v1/dev/register", s.handleDevRegister)
 
 	var handler http.Handler = mux
@@ -274,6 +301,50 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	s.proxyCompletionStream(w, r, worker, req)
 }
 
+// handleWorkersList handles the /v1/workers HTTP endpoint.
+func (s *Server) handleWorkersList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error", "method_not_allowed")
+		return
+	}
+
+	s.cache.mu.RLock()
+	defer s.cache.mu.RUnlock()
+
+	workers := make([]WorkerInfo, 0, len(s.cache.cache))
+	for _, w := range s.cache.cache {
+		info := WorkerInfo{
+			ID:            w.ID,
+			Hostname:      w.Hostname,
+			IP:            w.IP,
+			Port:          w.Port,
+			Status:        w.Status,
+			Version:       w.Version,
+			LoadedModels:  getLoadedModelNames(w.Capabilities.Models),
+			LastSeen:      w.LastSeen,
+		}
+		workers = append(workers, info)
+	}
+
+	response := WorkersResponse{Workers: workers}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		s.log.Error("failed to encode workers response", "error", err)
+	}
+}
+
+// getLoadedModelNames extracts the names of models that are loaded from a model list.
+func getLoadedModelNames(models []protocol.ModelInfo) []string {
+	names := make([]string, 0, len(models))
+	for _, m := range models {
+		if m.Loaded {
+			names = append(names, m.Name)
+		}
+	}
+	return names
+}
+
 // handleModelsList handles the /v1/models HTTP endpoint.
 func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -374,12 +445,58 @@ func (s *Server) selectWorker(model string) (protocol.WorkerInfo, error) {
 	}
 
 	if len(candidates) == 0 {
+		// Try to auto-load the model on any worker that knows about it.
+		// The cache only refreshes on the next heartbeat, so a re-fetch would
+		// see the same stale state and recurse forever; instead we build a
+		// local deep copy of the freshly loaded worker without mutating the
+		// (read-locked) cache.
+		for _, worker := range s.cache.cache {
+			for _, m := range worker.Capabilities.Models {
+				if m.Name == model {
+					if s.loadModelOnWorker(worker, model) {
+						loaded := worker
+						loaded.Capabilities.Models = append([]protocol.ModelInfo(nil), worker.Capabilities.Models...)
+						for i := range loaded.Capabilities.Models {
+							if loaded.Capabilities.Models[i].Name == model {
+								loaded.Capabilities.Models[i].Loaded = true
+								break
+							}
+						}
+						candidates = append(candidates, loaded)
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if len(candidates) == 0 {
 		return protocol.WorkerInfo{}, fmt.Errorf("no worker found with model %s loaded", model)
 	}
 
 	// Simple round-robin selection (use timestamp for now)
 	selected := candidates[0]
 	return selected, nil
+}
+
+// loadModelOnWorker attempts to load a model on a worker using HTTP proxy
+func (s *Server) loadModelOnWorker(worker protocol.WorkerInfo, modelName string) bool {
+	url := fmt.Sprintf("http://%s:%d/v1/models/load", worker.IP, worker.Port)
+
+	loadReq := map[string]string{"model": modelName}
+	body, err := json.Marshal(loadReq)
+	if err != nil {
+		return false
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	return resp.StatusCode == http.StatusOK
 }
 
 // retryDoRequestWithRetry executes an HTTP request with exponential backoff retry logic.

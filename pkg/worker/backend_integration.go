@@ -607,15 +607,30 @@ func (b *OpenAICompatibleBackend) ListModels() ([]protocol.ModelInfo, error) {
 		return nil, fmt.Errorf("backend returned %d", resp.StatusCode)
 	}
 
-	// Parse OpenAI-compatible model list response
+	// Parse OpenAI-compatible model list response.
+	// The response format is {"data":[{"id":"model-name",...},...]}.
+	// We need to map the "id" field to the "name" field in ModelInfo.
+	type modelInfoResponse struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		OwnedBy string `json:"owned_by"`
+	}
 	var result struct {
-		Data []protocol.ModelInfo `json:"data"`
+		Data []modelInfoResponse `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode models response: %w", err)
 	}
 
-	return result.Data, nil
+	models := make([]protocol.ModelInfo, len(result.Data))
+	for i, raw := range result.Data {
+		models[i] = protocol.ModelInfo{
+			Name:   raw.ID,
+			Loaded: true, // Models reported by the backend are assumed loaded.
+		}
+	}
+
+	return models, nil
 }
 
 // GetMetrics returns backend metrics.

@@ -22,14 +22,14 @@ const DefaultHealthCheckInterval = 30 * time.Second
 
 // Server is the HTTP server for the worker.
 type Server struct {
-	log          *slog.Logger
-	server       *http.Server
-	addr         string
-	models       []protocol.ModelInfo
-	chatHistory  []ChatRequest
-	capabilities *capabilities.Aggregator
-	config       security.Config
-	backend      Backend // Backend adapter for model inference
+	log           *slog.Logger
+	server        *http.Server
+	addr          string
+	models        []protocol.ModelInfo
+	chatHistory   []ChatRequest
+	capabilities  *capabilities.Aggregator
+	config        security.Config
+	backend       Backend // Backend adapter for model inference
 	healthTracker *ModelHealthTracker
 }
 
@@ -198,7 +198,7 @@ func NewServer(log *slog.Logger, addr string, cfg security.Config) *Server {
 // SetBackend sets the backend adapter for this server.
 func (s *Server) SetBackend(backend Backend, model string) {
 	s.backend = NewBackendAdapter(backend, model)
-	
+
 	// Try to dynamically discover models from the backend
 	if discoveredModels, err := backend.ListModels(); err == nil && len(discoveredModels) > 0 {
 		s.log.Info("dynamically discovered models from backend",
@@ -242,6 +242,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/metrics", s.metrics)
 	mux.HandleFunc("/v1/chat/completions", s.chatCompletions)
 	mux.HandleFunc("/v1/completions", s.completions)
+	mux.HandleFunc("/v1/models/load", s.loadModelHandler)
 	mux.HandleFunc("/v1/models", s.modelsList)
 
 	var handler http.Handler = mux
@@ -578,6 +579,43 @@ func (s *Server) modelsList(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		s.log.Error("failed to encode models", "error", err)
 		http.Error(w, "failed to encode models", http.StatusInternalServerError)
+	}
+}
+
+// loadModelHandler handles the /v1/models/load HTTP endpoint.
+func (s *Server) loadModelHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	found := false
+	for i, m := range s.models {
+		if m.Name == req.Model {
+			found = true
+			// Update loaded flag – simple in-memory state change.
+			s.models[i].Loaded = true
+			break
+		}
+	}
+
+	if !found {
+		http.Error(w, "model not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	resp := map[string]string{"status": "loaded"}
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
 	}
 }
 
