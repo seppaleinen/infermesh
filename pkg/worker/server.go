@@ -10,11 +10,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/capabilities"
 	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/pkg/security"
 )
+
+// DefaultHealthCheckInterval is the default interval for health check loops.
+const DefaultHealthCheckInterval = 30 * time.Second
 
 // Server is the HTTP server for the worker.
 type Server struct {
@@ -26,6 +30,7 @@ type Server struct {
 	capabilities *capabilities.Aggregator
 	config       security.Config
 	backend      Backend // Backend adapter for model inference
+	healthTracker *ModelHealthTracker
 }
 
 // ChatMessage represents a single message in a chat conversation.
@@ -177,13 +182,16 @@ func (a *BackendAdapter) GetCircuitState() CircuitState {
 // NewServer creates a new worker HTTP server.
 func NewServer(log *slog.Logger, addr string, cfg security.Config) *Server {
 	agg := capabilities.NewAggregator(capabilities.Defaults(), log)
+	tracker := NewModelHealthTracker(cfg.EnableHealthChecks)
 	return &Server{
-		log:          log,
-		addr:         addr,
-		models:       []protocol.ModelInfo{},
-		chatHistory:  []ChatRequest{},
-		capabilities: agg,
-		config:       cfg,
+		log:           log,
+		addr:          addr,
+		models:        []protocol.ModelInfo{},
+		chatHistory:   []ChatRequest{},
+		capabilities:  agg,
+		config:        cfg,
+		backend:       nil,
+		healthTracker: tracker,
 	}
 }
 
@@ -570,5 +578,40 @@ func (s *Server) modelsList(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		s.log.Error("failed to encode models", "error", err)
 		http.Error(w, "failed to encode models", http.StatusInternalServerError)
+	}
+}
+
+// StartHealthCheckLoop periodically checks the backend health and records the result.
+func (s *Server) StartHealthCheckLoop(ctx context.Context, interval time.Duration) {
+	if s.healthTracker == nil || !s.healthTracker.GetEnabled() {
+		return
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if s.backend == nil {
+				continue
+			}
+
+			if err := s.backend.HealthCheck(); err != nil {
+				// Basic health checks intentionally pass zeroed metrics; detailed
+				// operational metrics are captured by the backend's GetMetrics()
+				// and are not part of the health check path.
+				s.healthTracker.RecordHealthCheck(Unhealthy, ModelMetrics{})
+				s.log.Warn("backend health check failed", "error", err)
+			} else {
+				// Basic health checks intentionally pass zeroed metrics; detailed
+				// operational metrics are captured by the backend's GetMetrics()
+				// and are not part of the health check path.
+				s.healthTracker.RecordHealthCheck(Healthy, ModelMetrics{})
+				s.log.Info("backend health check passed")
+			}
+		}
 	}
 }

@@ -142,6 +142,22 @@ func (b *OpenAICompatibleBackend) HealthCheck() error {
 	return nil
 }
 
+// HealthCheckDetails performs a detailed health check returning status and metrics.
+func (b *OpenAICompatibleBackend) HealthCheckDetails() (HealthStatus, ModelMetrics, error) {
+	if !b.circuitBreaker.CanExecute() {
+		return Unhealthy, ModelMetrics{}, fmt.Errorf("circuit breaker is open for backend %s", b.baseURL)
+	}
+	start := time.Now()
+	_, err := b.client.Get(b.baseURL + "/v1/models")
+	elapsed := time.Since(start)
+	if err != nil {
+		b.circuitBreaker.RecordFailure()
+		return Unhealthy, ModelMetrics{TotalLatency: elapsed}, fmt.Errorf("health check failed for %s: %w", b.baseURL, err)
+	}
+	b.circuitBreaker.RecordSuccess()
+	return Healthy, ModelMetrics{TotalLatency: elapsed}, nil
+}
+
 // GetCircuitState returns the current circuit breaker state.
 func (b *OpenAICompatibleBackend) GetCircuitState() CircuitState {
 	return b.circuitBreaker.GetState()

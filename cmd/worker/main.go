@@ -49,6 +49,7 @@ func main() {
 	modelPath := flag.String("model-path", "", "path to model file (optional, auto-discovery used if not provided)")
 	backend := flag.String("backend", "llama-cpp", "backend adapter (llama-cpp, ollama, vllm, lmstudio)")
 	routerAddr := flag.String("router", "", "router base URL for dev-mode HTTP registration (e.g. http://127.0.0.1:8080); skips mDNS")
+	enableHealthChecks := flag.Bool("enable-health-checks", true, "enable periodic backend health checks")
 	flag.Parse()
 
 	if *showCaps {
@@ -94,10 +95,11 @@ func main() {
 
 	// Security configuration
 	secCfg := security.Config{
-		DevMode:  isDevMode,
-		MTLSCert: *mtlsCert,
-		MTLSKey:  *mtlsKey,
-		CertDir:  *certDir,
+		DevMode:            isDevMode,
+		MTLSCert:           *mtlsCert,
+		MTLSKey:            *mtlsKey,
+		CertDir:            *certDir,
+		EnableHealthChecks: *enableHealthChecks,
 	}
 
 	// Configure capabilities
@@ -126,11 +128,11 @@ func main() {
 	} else {
 		srv.SetBackend(backendImpl, "")
 		log.Info("backend configured", "backend", *backend)
-		
+
 		// Try to dynamically discover and register models from backend
 		if models, err := backendImpl.ListModels(); err == nil && len(models) > 0 {
 			srv.SetModels(models)
-			log.Info("dynamically discovered models from backend", 
+			log.Info("dynamically discovered models from backend",
 				"backend", *backend,
 				"count", len(models))
 		} else if err != nil {
@@ -146,10 +148,13 @@ func main() {
 						Loaded: isDevMode,
 					},
 				})
-				log.Info("registered model from model-path", 
+				log.Info("registered model from model-path",
 					"model", filepath.Base(*modelPath))
 			}
 		}
+
+		// Start the health check loop (uses DefaultHealthCheckInterval)
+		go srv.StartHealthCheckLoop(ctx, worker.DefaultHealthCheckInterval)
 	}
 
 	// Start worker server

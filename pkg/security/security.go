@@ -2,16 +2,18 @@ package security
 
 // Security provides mTLS / dev-mode configuration.
 type Config struct {
-	DevMode    bool   `json:"dev_mode"`
-	MTLSCert   string `json:"mtls_cert"`
-	MTLSKey    string `json:"mtls_key"`
-	CertDir    string `json:"cert_dir"`
-	APIKey     string `json:"api_key"`
+	DevMode            bool   `json:"dev_mode"`
+	MTLSCert           string `json:"mtls_cert"`
+	MTLSKey            string `json:"mtls_key"`
+	CertDir            string `json:"cert_dir"`
+	APIKey             string `json:"api_key"`
+	EnableHealthChecks bool   `json:"enable_health_checks"` // Controls periodic backend health check loop
 }
 
 func Defaults() Config {
 	return Config{
-		DevMode: true,
+		DevMode:            true,
+		EnableHealthChecks: true,
 	}
 }
 
