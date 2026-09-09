@@ -1,0 +1,58 @@
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+/bin
+/obj
+/*_obj
+
+# Go build products
+/bin
+/*.exe
+/*.out
+/*.test
+
+# Vendor directory (if used)
+vendor/
+
+# Git metadata
+.git/
+.gitmodules
+
+# Editor/IDE files
+.idea/
+.vscode/
+*~
+*.swp
+*.swo
+*.bak
+
+# Test artifacts
+ coverage.out
+ *.cover
+
+# Go specific
+*.exe
+*.so
+*.pkg
+*.test
+*.prof
+*.pprof
+
+# Dependency management
+
+# Logs
+*.log
+
+# Backup files
+*.orig
+*.bak
+
+# Temporary files
+*~
+*.tmp
+*.tmp1
+
+# Docker artifacts
+*.dockerfile
