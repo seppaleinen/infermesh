@@ -177,8 +177,6 @@ func main() {
 	// Dev-mode HTTP registration (bypasses mDNS)
 	if *routerAddr != "" {
 		if isDevMode {
-			// Override IP to loopback for dev HTTP registration
-			info.IP = "127.0.0.1"
 			log.Info("dev-mode: registering with router via HTTP", "router", *routerAddr)
 			// Send fresh capabilities/models on every heartbeat: the startup
 			// snapshot (info) predates dynamic backend discovery (SetModels),

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -425,10 +426,34 @@ func (s *Server) handleDevRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate IP - only loopback allowed in dev mode
-	if worker.IP != "127.0.0.1" && worker.IP != "localhost" {
-		writeErrorResponse(w, http.StatusForbidden, "non-loopback IP not allowed", "authentication_error", "ip_validation_error")
-		return
+	// Dev mode: derive the routable IP from the peer address (authoritative),
+	// ignoring any client-provided value.
+	if security.IsDevMode(s.cfg) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		if host == "localhost" {
+			host = "127.0.0.1"
+		}
+		ip := net.ParseIP(host)
+		if ip == nil || ip.To4() == nil {
+			writeErrorResponse(w, http.StatusBadRequest, "unable to determine routable worker IPv4 from remote address", "validation_error", "ip_validation_error")
+			return
+		}
+		providedIP := worker.IP
+		worker.IP = ip.String()
+		if providedIP != "" && providedIP != worker.IP {
+			s.log.Info("dev worker registered", "id", worker.ID, "ip", worker.IP, "port", worker.Port, "provided_ip", providedIP)
+		} else {
+			s.log.Info("dev worker registered", "id", worker.ID, "ip", worker.IP, "port", worker.Port)
+		}
+	} else {
+		// Prod mode: keep the legacy loopback-only check, unchanged.
+		if worker.IP != "127.0.0.1" && worker.IP != "localhost" {
+			writeErrorResponse(w, http.StatusForbidden, "non-loopback IP not allowed", "authentication_error", "ip_validation_error")
+			return
+		}
 	}
 
 	// Force status to available for dev mode

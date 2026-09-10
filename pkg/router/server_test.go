@@ -59,6 +59,12 @@ func (tr *testRegistryImpl) Server() *Server {
 	return NewServer(tr.reg, testLogger(), ":0", security.Config{DevMode: true})
 }
 
+// ServerWithCfg builds a server over the same registry with an explicit
+// security config (used to pin prod-mode registration behavior).
+func (tr *testRegistryImpl) ServerWithCfg(cfg security.Config) *Server {
+	return NewServer(tr.reg, testLogger(), ":0", cfg)
+}
+
 // TestModelsListHandler tests the /v1/models endpoint when there are loaded models.
 func TestModelsListHandler(t *testing.T) {
 	worker := protocol.WorkerInfo{
@@ -827,6 +833,7 @@ func TestDevRegisterValidWorker(t *testing.T) {
 	body, _ := json.Marshal(worker)
 	req := httptest.NewRequest(http.MethodPost, "/v1/dev/register", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "127.0.0.1:50000"
 	w := httptest.NewRecorder()
 
 	server.handleDevRegister(w, req)
@@ -842,6 +849,9 @@ func TestDevRegisterValidWorker(t *testing.T) {
 	}
 	if got.ID != "dev-worker-1" {
 		t.Errorf("expected worker ID 'dev-worker-1', got '%s'", got.ID)
+	}
+	if got.IP != "127.0.0.1" {
+		t.Errorf("expected worker IP '127.0.0.1', got '%s'", got.IP)
 	}
 	if got.Status != protocol.StatusAvailable {
 		t.Errorf("expected status 'available', got '%s'", got.Status)
@@ -910,38 +920,177 @@ func TestDevRegisterInvalidPort(t *testing.T) {
 	}
 }
 
-// TestDevRegisterNonLoopbackIP tests POST with non-loopback IP returns 403.
-func TestDevRegisterNonLoopbackIP(t *testing.T) {
+// TestDevRegisterIPDerivedFromRemoteAddr verifies that in dev mode the
+// router derives the worker's routable IP from the request's RemoteAddr
+// (authoritative) instead of trusting the client-provided IP, and that
+// non-IPv4 peer addresses are rejected with 400.
+func TestDevRegisterIPDerivedFromRemoteAddr(t *testing.T) {
 	tr := testRegistry(t, nil)
 	defer tr.cancel()
 	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	tests := []struct {
-		name string
-		ip   string
+		name          string
+		workerID      string
+		bodyIP        string
+		remoteAddr    string
+		expectStatus  int
+		expectRegIP   string // expected registered IP for 200 responses
+		expectErrCode string // expected error code for 4xx responses
 	}{
-		{"public IP", "8.8.8.8"},
-		{"private IP", "192.168.1.1"},
-		{"zero IP", "0.0.0.0"},
+		{
+			name:         "single-host, body matches",
+			workerID:     "ip-derived-match",
+			bodyIP:       "127.0.0.1",
+			remoteAddr:   "127.0.0.1:50000",
+			expectStatus: http.StatusOK,
+			expectRegIP:  "127.0.0.1",
+		},
+		{
+			name:         "cross-machine LAN",
+			workerID:     "ip-derived-lan",
+			bodyIP:       "192.168.1.216",
+			remoteAddr:   "192.168.1.216:50000",
+			expectStatus: http.StatusOK,
+			expectRegIP:  "192.168.1.216",
+		},
+		{
+			name:         "derived overrides wrong body IP",
+			workerID:     "ip-derived-override",
+			bodyIP:       "10.0.0.99",
+			remoteAddr:   "192.168.1.216:50000",
+			expectStatus: http.StatusOK,
+			expectRegIP:  "192.168.1.216",
+		},
+		{
+			name:         "empty body IP, derived fills it",
+			workerID:     "ip-derived-empty",
+			bodyIP:       "",
+			remoteAddr:   "192.168.1.216:50000",
+			expectStatus: http.StatusOK,
+			expectRegIP:  "192.168.1.216",
+		},
+		{
+			name:          "empty RemoteAddr",
+			workerID:      "ip-derived-empty-remote",
+			bodyIP:        "127.0.0.1",
+			remoteAddr:    "",
+			expectStatus:  http.StatusBadRequest,
+			expectErrCode: "ip_validation_error",
+		},
+		{
+			name:          "unparseable host",
+			workerID:      "ip-derived-bad-host",
+			bodyIP:        "127.0.0.1",
+			remoteAddr:    "not-an-ip:1234",
+			expectStatus:  http.StatusBadRequest,
+			expectErrCode: "ip_validation_error",
+		},
+		{
+			name:          "IPv6 host",
+			workerID:      "ip-derived-ipv6",
+			bodyIP:        "127.0.0.1",
+			remoteAddr:    "[2001:db8::5]:1234",
+			expectStatus:  http.StatusBadRequest,
+			expectErrCode: "ip_validation_error",
+		},
+		{
+			name:         "localhost host",
+			workerID:     "ip-derived-localhost",
+			bodyIP:       "127.0.0.1",
+			remoteAddr:   "localhost:1234",
+			expectStatus: http.StatusOK,
+			expectRegIP:  "127.0.0.1",
+		},
+		{
+			name:         "IPv4-mapped IPv6",
+			workerID:     "ip-derived-v4mapped",
+			bodyIP:       "127.0.0.1",
+			remoteAddr:   "[::ffff:192.168.1.216]:1234",
+			expectStatus: http.StatusOK,
+			expectRegIP:  "192.168.1.216",
+		},
+		{
+			name:         "IPv4 host with brackets",
+			workerID:     "ip-derived-bracketed",
+			bodyIP:       "127.0.0.1",
+			remoteAddr:   "[192.168.1.216]:50000",
+			expectStatus: http.StatusOK,
+			expectRegIP:  "192.168.1.216",
+		},
+		{
+			name:         "host without port",
+			workerID:     "ip-derived-noprt",
+			bodyIP:       "127.0.0.1",
+			remoteAddr:   "192.168.1.216",
+			expectStatus: http.StatusOK,
+			expectRegIP:  "192.168.1.216",
+		},
+		{
+			name:          "port-only address",
+			workerID:      "ip-derived-portonly",
+			bodyIP:        "127.0.0.1",
+			remoteAddr:    "50000",
+			expectStatus:  http.StatusBadRequest,
+			expectErrCode: "ip_validation_error",
+		},
+		{
+			name:          "IPv6 loopback",
+			workerID:      "ip-derived-v6loop",
+			bodyIP:        "127.0.0.1",
+			remoteAddr:    "[::1]:50000",
+			expectStatus:  http.StatusBadRequest,
+			expectErrCode: "ip_validation_error",
+		},
+		{
+			name:          "hostname peer",
+			workerID:      "ip-derived-hostname",
+			bodyIP:        "127.0.0.1",
+			remoteAddr:    "worker.local:50000",
+			expectStatus:  http.StatusBadRequest,
+			expectErrCode: "ip_validation_error",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			worker := protocol.WorkerInfo{
-				ID:   "dev-worker-bad-ip",
-				IP:   tt.ip,
+				ID:   tt.workerID,
+				IP:   tt.bodyIP,
 				Port: 8081,
 			}
 			body, _ := json.Marshal(worker)
 			req := httptest.NewRequest(http.MethodPost, "/v1/dev/register", bytes.NewReader(body))
+			req.RemoteAddr = tt.remoteAddr
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
 
 			server.handleDevRegister(w, req)
 
-			if w.Code != http.StatusForbidden {
-				t.Errorf("expected status %d for IP %s, got %d", http.StatusForbidden, tt.ip, w.Code)
+			if w.Code != tt.expectStatus {
+				t.Fatalf("expected status %d, got %d, body: %s", tt.expectStatus, w.Code, w.Body.String())
+			}
+
+			if tt.expectStatus == http.StatusOK {
+				got, ok := tr.reg.Get(tt.workerID)
+				if !ok {
+					t.Fatal("worker not found in registry after registration")
+				}
+				if got.IP != tt.expectRegIP {
+					t.Errorf("expected registered IP '%s', got '%s'", tt.expectRegIP, got.IP)
+				}
+				if got.Status != protocol.StatusAvailable {
+					t.Errorf("expected status 'available', got '%s'", got.Status)
+				}
+			} else {
+				var errResp ErrorResponse
+				if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+					t.Fatalf("failed to decode error body: %v", err)
+				}
+				if errResp.Error.Code != tt.expectErrCode {
+					t.Errorf("expected error code '%s', got '%s'", tt.expectErrCode, errResp.Error.Code)
+				}
 			}
 		})
 	}
@@ -1005,6 +1154,7 @@ func TestDevRegisterForcesAvailableStatus(t *testing.T) {
 	body, _ := json.Marshal(worker)
 	req := httptest.NewRequest(http.MethodPost, "/v1/dev/register", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "127.0.0.1:50000"
 	w := httptest.NewRecorder()
 
 	server.handleDevRegister(w, req)
@@ -1024,6 +1174,66 @@ func TestDevRegisterForcesAvailableStatus(t *testing.T) {
 	if got.Port != 9090 {
 		t.Errorf("expected port 9090, got %d", got.Port)
 	}
+}
+
+// TestDevRegisterProdModeIPValidation pins the legacy prod-mode behavior:
+// the body-provided IP is used as-is and only loopback is accepted; no
+// RemoteAddr override is applied in prod mode.
+func TestDevRegisterProdModeIPValidation(t *testing.T) {
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+	server := tr.ServerWithCfg(security.Config{DevMode: false})
+
+	t.Run("non-loopback IP rejected", func(t *testing.T) {
+		worker := protocol.WorkerInfo{
+			ID:   "prod-worker-lan",
+			IP:   "192.168.1.216",
+			Port: 8081,
+		}
+		body, _ := json.Marshal(worker)
+		req := httptest.NewRequest(http.MethodPost, "/v1/dev/register", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		server.handleDevRegister(w, req)
+
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("expected status %d, got %d, body: %s", http.StatusForbidden, w.Code, w.Body.String())
+		}
+		var errResp ErrorResponse
+		if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+			t.Fatalf("failed to decode error body: %v", err)
+		}
+		if errResp.Error.Code != "ip_validation_error" {
+			t.Errorf("expected error code 'ip_validation_error', got '%s'", errResp.Error.Code)
+		}
+	})
+
+	t.Run("loopback IP accepted without override", func(t *testing.T) {
+		worker := protocol.WorkerInfo{
+			ID:   "prod-worker-loopback",
+			IP:   "127.0.0.1",
+			Port: 8081,
+		}
+		body, _ := json.Marshal(worker)
+		req := httptest.NewRequest(http.MethodPost, "/v1/dev/register", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		server.handleDevRegister(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected status %d, got %d, body: %s", http.StatusOK, w.Code, w.Body.String())
+		}
+		got, ok := tr.reg.Get("prod-worker-loopback")
+		if !ok {
+			t.Fatal("worker not found in registry after registration")
+		}
+		if got.IP != "127.0.0.1" {
+			t.Errorf("expected IP '127.0.0.1', got '%s'", got.IP)
+		}
+	})
 }
 
 // TestWorkerUnavailable tests that 502 is returned when the worker endpoint is unreachable.
