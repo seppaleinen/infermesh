@@ -437,6 +437,12 @@ func (s *Server) handleDevRegister(w http.ResponseWriter, r *http.Request) {
 			host = "127.0.0.1"
 		}
 		ip := net.ParseIP(host)
+		if ip != nil && ip.IsLoopback() {
+			// Same-host peer: a localhost dial may land over IPv6 loopback (::1),
+			// which has no IPv4 form. Normalize any loopback peer to the
+			// canonical routable IPv4 loopback address.
+			ip = net.IPv4(127, 0, 0, 1)
+		}
 		if ip == nil || ip.To4() == nil {
 			writeErrorResponse(w, http.StatusBadRequest, "unable to determine routable worker IPv4 from remote address", "validation_error", "ip_validation_error")
 			return

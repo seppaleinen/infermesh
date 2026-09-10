@@ -922,8 +922,10 @@ func TestDevRegisterInvalidPort(t *testing.T) {
 
 // TestDevRegisterIPDerivedFromRemoteAddr verifies that in dev mode the
 // router derives the worker's routable IP from the request's RemoteAddr
-// (authoritative) instead of trusting the client-provided IP, and that
-// non-IPv4 peer addresses are rejected with 400.
+// (authoritative) instead of trusting the client-provided IP. Loopback
+// peers (including IPv6 loopback ::1, which a localhost dial can land
+// on) are normalized to the canonical 127.0.0.1; other non-IPv4 peer
+// addresses are rejected with 400.
 func TestDevRegisterIPDerivedFromRemoteAddr(t *testing.T) {
 	tr := testRegistry(t, nil)
 	defer tr.cancel()
@@ -1036,12 +1038,12 @@ func TestDevRegisterIPDerivedFromRemoteAddr(t *testing.T) {
 			expectErrCode: "ip_validation_error",
 		},
 		{
-			name:          "IPv6 loopback",
-			workerID:      "ip-derived-v6loop",
-			bodyIP:        "127.0.0.1",
-			remoteAddr:    "[::1]:50000",
-			expectStatus:  http.StatusBadRequest,
-			expectErrCode: "ip_validation_error",
+			name:         "IPv6 loopback",
+			workerID:     "ip-derived-v6loop",
+			bodyIP:       "127.0.0.1",
+			remoteAddr:   "[::1]:50000",
+			expectStatus: http.StatusOK,
+			expectRegIP:  "127.0.0.1",
 		},
 		{
 			name:          "hostname peer",
