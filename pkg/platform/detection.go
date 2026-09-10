@@ -3,11 +3,20 @@ package platform
 import (
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 )
 
 // DetectPlatform returns the current platform name.
+// Uses runtime.GOOS as the primary source (always reliable),
+// falling back to env-var heuristics for cross-compiled/test contexts.
 func DetectPlatform() string {
+	switch runtime.GOOS {
+	case "linux":
+		return "linux"
+	case "darwin":
+		return "darwin"
+	}
 	switch {
 	case isDarwin():
 		return "darwin"

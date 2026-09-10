@@ -181,7 +181,27 @@ func main() {
 			// Override IP to loopback for dev HTTP registration
 			info.IP = "127.0.0.1"
 			log.Info("dev-mode: registering with router via HTTP", "router", *routerAddr)
-			go worker.RegisterLoop(ctx, *routerAddr, info, worker.DefaultRegisterInterval, log)
+			// Send fresh capabilities/models on every heartbeat: the startup
+			// snapshot (info) predates dynamic backend discovery (SetModels),
+			// so without refresh the router sees zero models and selection
+			// fails with no_workers even though the worker logs success.
+			baseInfo := info
+			go worker.RegisterLoopWithRefresh(ctx, *routerAddr, func() protocol.WorkerInfo {
+				current := baseInfo
+				current.Capabilities = caps
+				models := srv.GetModels()
+				if isDevMode {
+					for i := range models {
+						// Dev backends (LM Studio etc.) serve whatever they list;
+						// treat catalogue entries as routable.
+						if models[i].Name != "" {
+							models[i].Loaded = true
+						}
+					}
+				}
+				current.Capabilities.Models = models
+				return current
+			}, worker.DefaultRegisterInterval, log)
 			// Skip mDNS — wait for shutdown
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

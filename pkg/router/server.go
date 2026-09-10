@@ -121,6 +121,11 @@ type ModelsResponse struct {
 	Data   []protocol.ModelInfo `json:"data"`
 }
 
+// WorkersResponse represents the response from the workers endpoint.
+type WorkersResponse struct {
+	Workers []protocol.WorkerInfo `json:"workers"`
+}
+
 // NewServer creates a new router HTTP server.
 func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg security.Config) *Server {
 	cache := NewCapabilityCache(reg, log)
@@ -140,7 +145,16 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
 	mux.HandleFunc("/v1/completions", s.handleCompletions)
 	mux.HandleFunc("/v1/models", s.handleModelsList)
+	mux.HandleFunc("/v1/workers", s.handleWorkersList)
 	mux.HandleFunc("/v1/dev/register", s.handleDevRegister)
+
+	// Start the capability cache event loop so registry events populate
+	// the cache that /v1/models, /v1/workers and worker selection read from.
+	// Without this, dev HTTP registrations land in the registry but the
+	// cache stays empty → empty workers list, null models, no_workers.
+	if s.cache != nil && s.reg != nil {
+		s.cache.Start(ctx)
+	}
 
 	var handler http.Handler = mux
 	if !security.IsDevMode(s.cfg) {
@@ -274,6 +288,36 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	s.proxyCompletionStream(w, r, worker, req)
 }
 
+// handleWorkersList handles the /v1/workers HTTP endpoint.
+func (s *Server) handleWorkersList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error", "method_not_allowed")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// Prefer the capability cache (has hydrated capabilities), fall back
+	// to the registry so workers are visible even before capability fetch.
+	workers := []protocol.WorkerInfo{}
+	if s.cache != nil {
+		for _, worker := range s.cache.List() {
+			workers = append(workers, worker)
+		}
+	}
+	if len(workers) == 0 && s.reg != nil {
+		for _, worker := range s.reg.ListAvailable() {
+			workers = append(workers, worker)
+		}
+	}
+
+	response := WorkersResponse{Workers: workers}
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		s.log.Error("failed to encode workers", "error", err)
+		writeErrorResponse(w, http.StatusInternalServerError, "failed to encode workers", "server_error", "encoding_error")
+	}
+}
+
 // handleModelsList handles the /v1/models HTTP endpoint.
 func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -282,6 +326,11 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+
+	if s.cache == nil {
+		_ = json.NewEncoder(w).Encode(ModelsResponse{Object: "list", Data: []protocol.ModelInfo{}})
+		return
+	}
 
 	// Get capabilities from cache
 	s.cache.mu.RLock()
@@ -292,8 +341,9 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 		workers = append(workers, w)
 	}
 
-	// Aggregate models from all workers, only including loaded models
-	var models []protocol.ModelInfo
+	// Aggregate models from all workers, only including loaded models.
+	// Initialized as empty slice (not nil) so JSON encodes as [] not null.
+	models := []protocol.ModelInfo{}
 	for _, worker := range workers {
 		for _, m := range worker.Capabilities.Models {
 			if m.Loaded {
@@ -359,6 +409,9 @@ func (s *Server) handleDevRegister(w http.ResponseWriter, r *http.Request) {
 
 // selectWorker selects a worker for the given model (simple round-robin for now).
 func (s *Server) selectWorker(model string) (protocol.WorkerInfo, error) {
+	if s.cache == nil {
+		return protocol.WorkerInfo{}, fmt.Errorf("capability cache not configured")
+	}
 	s.cache.mu.RLock()
 	defer s.cache.mu.RUnlock()
 
@@ -373,13 +426,29 @@ func (s *Server) selectWorker(model string) (protocol.WorkerInfo, error) {
 		}
 	}
 
-	if len(candidates) == 0 {
-		return protocol.WorkerInfo{}, fmt.Errorf("no worker found with model %s loaded", model)
+	if len(candidates) > 0 {
+		// Simple round-robin selection (use timestamp for now)
+		return candidates[0], nil
 	}
 
-	// Simple round-robin selection (use timestamp for now)
-	selected := candidates[0]
-	return selected, nil
+	// Fallback: if no exact loaded-model match, route to any cached worker
+	// that advertises the model (even if not marked loaded), then to any
+	// available worker. This keeps dev-mode usable when backends report
+	// catalogue models without load state (e.g. LM Studio /v1/models).
+	for _, worker := range s.cache.cache {
+		for _, m := range worker.Capabilities.Models {
+			if m.Name == model {
+				s.log.Warn("routing to worker with model not marked loaded", "model", model, "worker", worker.ID)
+				return worker, nil
+			}
+		}
+	}
+	for _, worker := range s.cache.cache {
+		s.log.Warn("no worker has requested model, falling back to available worker", "model", model, "worker", worker.ID)
+		return worker, nil
+	}
+
+	return protocol.WorkerInfo{}, fmt.Errorf("no worker found with model %s loaded", model)
 }
 
 // retryDoRequestWithRetry executes an HTTP request with exponential backoff retry logic.

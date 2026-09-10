@@ -607,15 +607,48 @@ func (b *OpenAICompatibleBackend) ListModels() ([]protocol.ModelInfo, error) {
 		return nil, fmt.Errorf("backend returned %d", resp.StatusCode)
 	}
 
-	// Parse OpenAI-compatible model list response
+	// Parse OpenAI-compatible model list response. Real backends
+	// (LM Studio, Ollama, vLLM) return {"data":[{"id":"...","object":"model",...}]}
+	// while our internal ModelInfo uses "name". Accept both shapes and
+	// treat catalogue entries as loaded (dev-mode backends serve whatever
+	// they list; there is no separate load lifecycle to query).
 	var result struct {
-		Data []protocol.ModelInfo `json:"data"`
+		Data []struct {
+			ID           string `json:"id"`
+			Name         string `json:"name"`
+			Object       string `json:"object"`
+			OwnedBy      string `json:"owned_by"`
+			Backend      string `json:"backend"`
+			Quantization string `json:"quantization"`
+			Loaded       *bool  `json:"loaded"`
+		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode models response: %w", err)
 	}
 
-	return result.Data, nil
+	models := make([]protocol.ModelInfo, 0, len(result.Data))
+	for _, m := range result.Data {
+		name := m.Name
+		if name == "" {
+			name = m.ID
+		}
+		if name == "" {
+			continue
+		}
+		loaded := true
+		if m.Loaded != nil {
+			loaded = *m.Loaded
+		}
+		models = append(models, protocol.ModelInfo{
+			Name:         name,
+			Backend:      m.Backend,
+			Quantization: m.Quantization,
+			Loaded:       loaded,
+		})
+	}
+
+	return models, nil
 }
 
 // GetMetrics returns backend metrics.

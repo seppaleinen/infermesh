@@ -80,10 +80,10 @@ func (a *Aggregator) Detect() (protocol.Capabilities, error) {
 	}
 	caps.Engines = engines
 
-	// Collect system memory
+	// Collect system memory (best-effort; missing metrics must not break heartbeat)
 	sysMetrics, err := CollectSystemMetrics()
 	if err != nil {
-		a.log.Warn("system metrics collection failed", "error", err)
+		a.log.Debug("system metrics unavailable, using zero values", "error", err)
 	} else {
 		caps.System = protocol.MemoryInfo{
 			TotalMB: sysMetrics.MemoryUsedMB + sysMetrics.MemoryFreeMB,

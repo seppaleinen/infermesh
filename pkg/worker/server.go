@@ -233,6 +233,13 @@ func (s *Server) SetModels(models []protocol.ModelInfo) {
 	s.models = models
 }
 
+// GetModels returns a copy of the models known to this worker.
+func (s *Server) GetModels() []protocol.ModelInfo {
+	out := make([]protocol.ModelInfo, len(s.models))
+	copy(out, s.models)
+	return out
+}
+
 // Start runs the HTTP server.
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -574,7 +581,11 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 // modelsList handles the /v1/models HTTP endpoint.
 func (s *Server) modelsList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	response := ModelsResponse{Object: "list", Data: s.models}
+	data := s.models
+	if data == nil {
+		data = []protocol.ModelInfo{}
+	}
+	response := ModelsResponse{Object: "list", Data: data}
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		s.log.Error("failed to encode models", "error", err)
 		http.Error(w, "failed to encode models", http.StatusInternalServerError)
