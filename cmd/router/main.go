@@ -120,7 +120,7 @@ func main() {
 	log.Info("shutting down")
 	cancel()
 	if listener != nil {
-		listener.Stop()
+		_ = listener.Stop()
 	}
-	reg.Stop()
+	_ = reg.Stop()
 }

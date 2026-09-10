@@ -16,16 +16,18 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.23'
+        go-version: '1.25.0'
     
     - name: Install dependencies
       run: go mod tidy
     
     - name: Run linting
-      uses: golangci/golangci-lint-action@v4
+      uses: golangci/golangci-lint-action@v9
       with:
-        version: v1.57.2
-        args: --fix
+        version: v2.13.2
+        # v1.57.2 cannot run on Go ≥1.25 (export-data "unsupported version" /
+        # bogus typecheck errors even on trivial modules); v2.13.2 is also
+        # what `make lint` runs locally (see README Contributing).
         
     - name: Run tests
       run: go test ./... -v -cover -race
@@ -34,4 +36,4 @@ jobs:
       run: go vet ./...
     
     - name: Build binary
-      run: go build ./../...
+      run: go build ./...

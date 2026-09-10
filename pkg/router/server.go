@@ -196,7 +196,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	go func() {
 		<-ctx.Done()
-		s.server.Shutdown(context.Background())
+		_ = s.server.Shutdown(context.Background())
 	}()
 
 	return s.server.ListenAndServe()
@@ -301,14 +301,10 @@ func (s *Server) handleWorkersList(w http.ResponseWriter, r *http.Request) {
 	// to the registry so workers are visible even before capability fetch.
 	workers := []protocol.WorkerInfo{}
 	if s.cache != nil {
-		for _, worker := range s.cache.List() {
-			workers = append(workers, worker)
-		}
+		workers = append(workers, s.cache.List()...)
 	}
 	if len(workers) == 0 && s.reg != nil {
-		for _, worker := range s.reg.ListAvailable() {
-			workers = append(workers, worker)
-		}
+		workers = append(workers, s.reg.ListAvailable()...)
 	}
 
 	response := WorkersResponse{Workers: workers}
@@ -513,7 +509,7 @@ func (s *Server) proxyChatStream(w http.ResponseWriter, r *http.Request, worker 
 		writeErrorResponse(w, http.StatusServiceUnavailable, "worker unavailable", "server_error", "connection_error")
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Check worker's status code
 	if resp.StatusCode != http.StatusOK {
@@ -586,7 +582,7 @@ func (s *Server) proxyCompletionStream(w http.ResponseWriter, r *http.Request, w
 		writeErrorResponse(w, http.StatusServiceUnavailable, "worker unavailable", "server_error", "connection_error")
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Check worker's status code
 	if resp.StatusCode != http.StatusOK {

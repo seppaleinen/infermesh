@@ -44,7 +44,7 @@ func TestCapabilityCache_UpdateFetchesCapabilities(t *testing.T) {
 			Capabilities: expectedCaps,
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 

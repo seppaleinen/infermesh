@@ -318,7 +318,7 @@ func (b *OpenAICompatibleBackend) completeChatInternal(ctx context.Context, mode
 	if err != nil {
 		return ChatResponse{}, fmt.Errorf("backend request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -382,7 +382,7 @@ func (b *OpenAICompatibleBackend) StreamChat(ctx context.Context, model string, 
 			errCh <- fmt.Errorf("backend request failed: %w", err)
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
@@ -474,7 +474,7 @@ func (b *OpenAICompatibleBackend) CompleteCompletions(ctx context.Context, model
 	if err != nil {
 		return CompletionResponse{}, fmt.Errorf("backend request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -538,7 +538,7 @@ func (b *OpenAICompatibleBackend) StreamCompletions(ctx context.Context, model s
 			errCh <- fmt.Errorf("backend request failed: %w", err)
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
@@ -601,7 +601,7 @@ func (b *OpenAICompatibleBackend) ListModels() ([]protocol.ModelInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list models: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("backend returned %d", resp.StatusCode)

@@ -47,10 +47,7 @@ func (a *mdnsAnnouncer) Announce(ctx context.Context, info protocol.WorkerInfo) 
 	}
 
 	// Prepare service type without trailing .local.
-	service := a.config.ServiceType
-	if strings.HasSuffix(service, ".local.") {
-		service = strings.TrimSuffix(service, ".local.")
-	}
+	service := strings.TrimSuffix(a.config.ServiceType, ".local.")
 
 	// Build instance name: "workerID@hostname" for uniqueness
 	instance := fmt.Sprintf("%s@%s", info.ID, info.Hostname)

@@ -287,7 +287,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 		go func() {
 			<-ctx.Done()
-			s.server.Shutdown(context.Background())
+			_ = s.server.Shutdown(context.Background())
 		}()
 
 		return s.server.ListenAndServeTLS("", "")
@@ -302,7 +302,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	go func() {
 		<-ctx.Done()
-		s.server.Shutdown(context.Background())
+		_ = s.server.Shutdown(context.Background())
 	}()
 
 	return s.server.ListenAndServe()
@@ -318,7 +318,7 @@ func (s *Server) Addr() string {
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
+	_, _ = w.Write([]byte("ok"))
 }
 
 // handleCapabilities handles the /capabilities HTTP endpoint.
@@ -360,7 +360,7 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	metrics += "# HELP models_total Total number of available models\n"
 	metrics += "# TYPE models_total gauge\n"
 	metrics += fmt.Sprintf("models_total %d\n", len(s.models))
-	w.Write([]byte(metrics))
+	_, _ = w.Write([]byte(metrics))
 }
 
 // chatCompletions handles the /v1/chat/completions HTTP endpoint.
@@ -433,7 +433,7 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		case err, ok := <-errChan:
 			if !ok {
 				// Channel closed, stop processing
-				fmt.Fprintf(w, "data: [DONE]\n\n")
+				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
 				return
 			}
@@ -441,14 +441,14 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				s.log.Error("backend error", "error", err)
 				errorData := map[string]string{"error": err.Error()}
 				jsonErr, _ := json.Marshal(errorData)
-				fmt.Fprintf(w, "data: %s\n\n", string(jsonErr))
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", string(jsonErr))
 				flusher.Flush()
 				return
 			}
 		case resp, ok := <-respChan:
 			if !ok {
 				// Stream ended
-				fmt.Fprintf(w, "data: [DONE]\n\n")
+				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
 				return
 			}
@@ -460,7 +460,7 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, "internal server error", http.StatusInternalServerError)
 					return
 				}
-				fmt.Fprintf(w, "data: %s\n\n", string(jsonResp))
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", string(jsonResp))
 				flusher.Flush()
 			case CompletionResponse:
 				jsonResp, err := json.Marshal(v)
@@ -469,7 +469,7 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, "internal server error", http.StatusInternalServerError)
 					return
 				}
-				fmt.Fprintf(w, "data: %s\n\n", string(jsonResp))
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", string(jsonResp))
 				flusher.Flush()
 			}
 		case <-ctx.Done():
@@ -542,7 +542,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 		case err, ok := <-errChan:
 			if !ok {
 				// Channel closed, stop processing
-				fmt.Fprintf(w, "data: [DONE]\n\n")
+				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
 				return
 			}
@@ -550,14 +550,14 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 				s.log.Error("backend error", "error", err)
 				errorData := map[string]string{"error": err.Error()}
 				jsonErr, _ := json.Marshal(errorData)
-				fmt.Fprintf(w, "data: %s\n\n", string(jsonErr))
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", string(jsonErr))
 				flusher.Flush()
 				return
 			}
 		case resp, ok := <-respChan:
 			if !ok {
 				// Stream ended
-				fmt.Fprintf(w, "data: [DONE]\n\n")
+				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
 				return
 			}
@@ -569,7 +569,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, "internal server error", http.StatusInternalServerError)
 					return
 				}
-				fmt.Fprintf(w, "data: %s\n\n", string(jsonResp))
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", string(jsonResp))
 				flusher.Flush()
 			}
 		case <-ctx.Done():

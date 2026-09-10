@@ -58,7 +58,7 @@ func TestLoadModelsConfig_ValidYAML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	yamlContent := `
 models:
@@ -78,7 +78,7 @@ models:
 	if _, err := tmpFile.WriteString(yamlContent); err != nil {
 		t.Fatal(err)
 	}
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	cfg := testConfig()
 	cfg.ModelConfigPath = tmpFile.Name()
@@ -124,10 +124,10 @@ func TestLoadModelsConfig_InvalidYAML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	_, _ = tmpFile.WriteString("invalid: yaml: [")
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	cfg := testConfig()
 	cfg.ModelConfigPath = tmpFile.Name()

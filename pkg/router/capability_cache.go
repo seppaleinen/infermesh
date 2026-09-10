@@ -85,7 +85,7 @@ func (c *CapabilityCache) fetchCapabilities(worker protocol.WorkerInfo) (protoco
 	if err != nil {
 		return protocol.Capabilities{}, fmt.Errorf("fetching capabilities: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return protocol.Capabilities{}, fmt.Errorf("unexpected status: %s", resp.Status)

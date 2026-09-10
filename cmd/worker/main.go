@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
-	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/capabilities"
 	"github.com/seppaleinen/infermesh/pkg/discovery"
@@ -87,8 +86,8 @@ func main() {
 		cfg = discovery.Defaults()
 	}
 	// Ensure unique instance name for worker ID
+	// (math/rand is auto-seeded since Go 1.20, no explicit Seed needed)
 	if cfg.InstanceName == "" {
-		rand.Seed(time.Now().UnixNano())
 		instanceID := rand.Intn(10000)
 		cfg.InstanceName = fmt.Sprintf("worker-%d", instanceID)
 	}
@@ -236,7 +235,7 @@ func main() {
 	<-sigCh
 
 	log.Info("shutting down")
-	announcer.Stop()
+	_ = announcer.Stop()
 	cancel()
 }
 

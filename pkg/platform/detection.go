@@ -37,24 +37,6 @@ func isLinux() bool {
 	return strings.ToLower(os.Getenv("OSTYPE")) == "linux" || strings.HasPrefix(strings.ToLower(os.Getenv("KERNEL_NAME")), "linux")
 }
 
-// isArm64 checks if the architecture is ARM 64-bit (Apple Silicon).
-func isArm64() bool {
-	arch := os.Getenv("ARCH")
-	if arch == "arm64" || arch == "aarch64" {
-		return true
-	}
-	out, err := execCommand("uname", "-m")
-	if err != nil {
-		return false
-	}
-	return strings.Contains(strings.ToLower(out), "arm64") || strings.Contains(strings.ToLower(out), "aarch64")
-}
-
-// isAppleSilicon checks if running on Apple Silicon (M1/M2/M3/M4).
-func isAppleSilicon() bool {
-	return isArm64() && isDarwin()
-}
-
 // execCommand runs a command and returns its stdout output.
 func execCommand(name string, args ...string) (string, error) {
 	cmd := exec.Command(name, args...)

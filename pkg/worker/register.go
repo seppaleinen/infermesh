@@ -71,7 +71,7 @@ func postRegister(ctx context.Context, routerBase string, info protocol.WorkerIn
 		log.Warn("dev register request failed", "url", url, "error", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		log.Warn("dev register returned non-200", "url", url, "status", resp.StatusCode)

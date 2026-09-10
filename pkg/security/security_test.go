@@ -522,7 +522,7 @@ func TestNewMTLSMiddleware(t *testing.T) {
 
 			testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("OK"))
+				_, _ = w.Write([]byte("OK"))
 			})
 
 			handler := middleware(testHandler)
@@ -577,7 +577,7 @@ func TestNewMTLSMiddlewareWithRealTLS(t *testing.T) {
 
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	})
 
 	handler := middleware(testHandler)
@@ -612,7 +612,7 @@ func TestNewMTLSMiddlewareWithRealTLS(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("Expected status %d, got %d", http.StatusOK, resp.StatusCode)
 		}
@@ -635,7 +635,7 @@ func TestNewMTLSMiddlewareWithRealTLS(t *testing.T) {
 				return
 			}
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusForbidden {
 			t.Errorf("Expected status %d, got %d", http.StatusForbidden, resp.StatusCode)
 		}

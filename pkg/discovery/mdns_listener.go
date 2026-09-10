@@ -72,10 +72,7 @@ func (l *mdnsListener) probeLoop(ctx context.Context) {
 // doProbe performs a single mDNS query and emits events for results.
 func (l *mdnsListener) doProbe(ctx context.Context) {
 	// Trim .local. suffix for mdns library query
-	service := l.config.ServiceType
-	if strings.HasSuffix(service, ".local.") {
-		service = strings.TrimSuffix(service, ".local.")
-	}
+	service := strings.TrimSuffix(l.config.ServiceType, ".local.")
 
 	entries := make(chan *mdns.ServiceEntry, 32)
 	go func() {

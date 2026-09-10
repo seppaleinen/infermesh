@@ -6,50 +6,13 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
-	"time"
 
-	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/pkg/security"
 )
-
-// testLogger returns a logger for testing
-func testLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, nil))
-}
-
-// sampleWorkerInfo returns a sample WorkerInfo for testing
-func sampleWorkerInfo(id string, port int) protocol.WorkerInfo {
-	hostname, _ := os.Hostname()
-	return protocol.WorkerInfo{
-		ID:       id,
-		Hostname: hostname,
-		IP:       "127.0.0.1",
-		Port:     port,
-		Status:   protocol.StatusAvailable,
-		Version:  "v1",
-		Capabilities: protocol.Capabilities{
-			Models: []protocol.ModelInfo{
-				{Name: "test-model", Quantization: "Q4_K_M", Loaded: true},
-			},
-		},
-	}
-}
-
-// testContext creates a context for testing with timeout
-func testContext() context.Context {
-	ctx, cancel := context.WithCancel(context.Background())
-	// Cancel after 30 seconds to prevent goroutine leaks
-	go func() {
-		time.Sleep(30 * time.Second)
-		cancel()
-	}()
-	return ctx
-}
 
 // mustLoadTLSCert loads a TLS certificate or fails the test
 func mustLoadTLSCert(t *testing.T, certPath, keyPath string) *tls.Certificate {
@@ -61,17 +24,6 @@ func mustLoadTLSCert(t *testing.T, certPath, keyPath string) *tls.Certificate {
 	return cert
 }
 
-// mustJSON marshals to JSON or fails the test
-func mustJSON(t *testing.T, v interface{}) []byte {
-	t.Helper()
-	b, err := json.Marshal(v)
-	if err != nil {
-		t.Fatalf("Failed to marshal JSON: %v", err)
-	}
-	return b
-}
-
-// TestDefaults tests security Defaults function
 func TestDefaults(t *testing.T) {
 	cfg := security.Defaults()
 	if !cfg.DevMode {
@@ -206,7 +158,7 @@ func TestMTLSMiddlewareWithMockServer(t *testing.T) {
 
 	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	})
 
 	handler := middleware(testHandler)
@@ -236,7 +188,7 @@ func TestMTLSMiddlewareWithMockServer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("Expected status %d, got %d", http.StatusOK, resp.StatusCode)
 		}
@@ -257,7 +209,7 @@ func TestMTLSMiddlewareWithMockServer(t *testing.T) {
 			t.Logf("TLS handshake failed as expected (no client cert)")
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusForbidden {
 			t.Errorf("Expected status %d, got %d", http.StatusForbidden, resp.StatusCode)
 		}
@@ -285,7 +237,7 @@ func TestMTLSMiddlewareWithMockServer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusForbidden {
 			t.Errorf("Expected status %d, got %d", http.StatusForbidden, resp.StatusCode)
 		}
@@ -304,7 +256,7 @@ func TestDevModeWithoutAuth(t *testing.T) {
 				"object": "list",
 				"data":  []interface{}{},
 			}
-			json.NewEncoder(w).Encode(response)
+			_ = json.NewEncoder(w).Encode(response)
 			return
 		}
 		http.Error(w, "not found", http.StatusNotFound)
@@ -318,7 +270,7 @@ func TestDevModeWithoutAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, resp.StatusCode)
@@ -359,7 +311,7 @@ func TestMTLSRequiredInProd(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health" {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK"))
+			_, _ = w.Write([]byte("OK"))
 			return
 		}
 		http.Error(w, "not found", http.StatusNotFound)
@@ -394,7 +346,7 @@ func TestMTLSRequiredInProd(t *testing.T) {
 			t.Logf("TLS handshake failed as expected (no client cert)")
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusForbidden && resp.StatusCode != 403 {
 			t.Logf("Got status %d without client cert (expected 4xx)", resp.StatusCode)
 		}
@@ -421,7 +373,7 @@ func TestMTLSRequiredInProd(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("Expected status %d, got %d", http.StatusOK, resp.StatusCode)
 		}

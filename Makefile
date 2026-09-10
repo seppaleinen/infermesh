@@ -47,6 +47,13 @@ test-all-platforms: test-platform
 lint:
 	golangci-lint run
 
+# Install git hooks (pre-push runs `make lint` before every push)
+install-hooks:
+	mkdir -p $$(git rev-parse --git-path hooks)
+	cp hack/pre-push $$(git rev-parse --git-path hooks)/pre-push
+	chmod +x $$(git rev-parse --git-path hooks)/pre-push
+	@echo "pre-push hook installed (runs 'make lint' before push; bypass with --no-verify)"
+
 # Go modules
 tidy:
 	go mod tidy
@@ -64,4 +71,4 @@ coverage:
 	go tool funccover -mode=count -func=cover/coverage.out
 	@echo "Coverage report: cover/coverage.out"
 
-.PHONY: build build-router build-worker build-static build-current test test-integration test-e2e test-platform test-all-platforms lint tidy clean coverage
+.PHONY: build build-router build-worker build-static build-current test test-integration test-e2e test-platform test-all-platforms lint install-hooks tidy clean coverage

@@ -36,7 +36,7 @@ func waitForHTTP(t *testing.T, url string, timeout time.Duration) {
         case <-ticker.C:
             resp, err := http.Get(url)
             if err == nil && resp.StatusCode == http.StatusOK {
-                resp.Body.Close()
+                _ = resp.Body.Close()
                 return
             }
         }
@@ -52,7 +52,7 @@ func TestMDNSDiscoveryE2E(t *testing.T) {
     routerCmd := startCmd(t, routerPath, "--dev-mode")
     defer func() {
         _ = routerCmd.Process.Kill()
-        routerCmd.Wait()
+        _ = routerCmd.Wait()
     }()
 
     // Ensure router HTTP server is up.
@@ -62,7 +62,7 @@ func TestMDNSDiscoveryE2E(t *testing.T) {
     workerCmd := startCmd(t, workerPath, "--dev-mode", "-port", "8081")
     defer func() {
         _ = workerCmd.Process.Kill()
-        workerCmd.Wait()
+        _ = workerCmd.Wait()
     }()
 
     // Verify worker health endpoint.
@@ -76,7 +76,7 @@ func TestMDNSDiscoveryE2E(t *testing.T) {
     if err != nil {
         t.Fatalf("failed to GET workers list: %v", err)
     }
-    defer resp.Body.Close()
+    defer func() { _ = resp.Body.Close() }()
     if resp.StatusCode != http.StatusOK {
         t.Fatalf("unexpected status code: %d", resp.StatusCode)
     }

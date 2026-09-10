@@ -54,7 +54,7 @@ func (l *fileAuditLogger) Log(ctx context.Context, message string, attrs map[str
 		return
 	}
 
-	fmt.Fprintln(l.file, string(data))
+	_, _ = fmt.Fprintln(l.file, string(data))
 }
 
 // NewMTLSMiddleware creates an mTLS middleware.

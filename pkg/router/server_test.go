@@ -81,7 +81,7 @@ func TestModelsListHandler(t *testing.T) {
 
 	tr := testRegistry(t, []protocol.WorkerInfo{worker})
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	// Start cache and directly populate it with worker capabilities (bypass HTTP fetch)
@@ -152,7 +152,7 @@ func TestModelsListHandler(t *testing.T) {
 func TestModelsListHandlerNoWorkers(t *testing.T) {
 	tr := testRegistry(t, nil)
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
@@ -181,7 +181,7 @@ func TestModelsListHandlerNoWorkers(t *testing.T) {
 func TestChatCompletionsHandlerNoWorkers(t *testing.T) {
 	tr := testRegistry(t, nil)
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	tests := []struct {
@@ -245,7 +245,7 @@ func TestChatCompletionsHandlerInvalidRequest(t *testing.T) {
 
 	tr := testRegistry(t, []protocol.WorkerInfo{worker})
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	tests := []struct {
@@ -284,7 +284,7 @@ func TestChatCompletionsHandlerInvalidRequest(t *testing.T) {
 func TestChatCompletionsHandlerMethodNotAllowed(t *testing.T) {
 	tr := testRegistry(t, nil)
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	tests := []struct {
@@ -321,7 +321,7 @@ func TestChatCompletionsHandlerMethodNotAllowed(t *testing.T) {
 func TestCompletionsHandlerNoWorkers(t *testing.T) {
 	tr := testRegistry(t, nil)
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	completionReq := CompletionRequest{
@@ -370,7 +370,7 @@ func TestCompletionsHandlerInvalidRequest(t *testing.T) {
 
 	tr := testRegistry(t, []protocol.WorkerInfo{worker})
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	tests := []struct {
@@ -409,7 +409,7 @@ func TestCompletionsHandlerInvalidRequest(t *testing.T) {
 func TestCompletionsHandlerMethodNotAllowed(t *testing.T) {
 	tr := testRegistry(t, nil)
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/completions", nil)
@@ -443,7 +443,7 @@ func TestChatCompletionsProxiesToWorker(t *testing.T) {
 					VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 20480},
 				},
 			}
-			json.NewEncoder(w).Encode(caps)
+			_ = json.NewEncoder(w).Encode(caps)
 			return
 		}
 
@@ -483,18 +483,18 @@ func TestChatCompletionsProxiesToWorker(t *testing.T) {
 			}
 
 			jsonData, _ := json.Marshal(chunk)
-			fmt.Fprintf(w, "data: %s\n\n", string(jsonData))
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(jsonData))
 			w.(http.Flusher).Flush()
 		}
 
-		fmt.Fprintf(w, "data: [DONE]\n\n")
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 	}))
 	defer workerServer.Close()
 
 	// Parse worker port
 	_, portStr, _ := strings.Cut(strings.TrimPrefix(workerServer.URL, "http://"), ":")
 	var port int
-	fmt.Sscanf(portStr, "%d", &port)
+	_, _ = fmt.Sscanf(portStr, "%d", &port)
 
 	worker := protocol.WorkerInfo{
 		ID:       "proxy-worker",
@@ -514,7 +514,7 @@ func TestChatCompletionsProxiesToWorker(t *testing.T) {
 
 	tr := testRegistry(t, []protocol.WorkerInfo{worker})
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	defer workerServer.Close()
 	server := tr.Server()
 
@@ -588,7 +588,7 @@ func TestCompletionsProxiesToWorker(t *testing.T) {
 					VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 20480},
 				},
 			}
-			json.NewEncoder(w).Encode(caps)
+			_ = json.NewEncoder(w).Encode(caps)
 			return
 		}
 
@@ -624,18 +624,18 @@ func TestCompletionsProxiesToWorker(t *testing.T) {
 			}
 
 			jsonData, _ := json.Marshal(chunk)
-			fmt.Fprintf(w, "data: %s\n\n", string(jsonData))
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(jsonData))
 			w.(http.Flusher).Flush()
 		}
 
-		fmt.Fprintf(w, "data: [DONE]\n\n")
+		_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 	}))
 	defer workerServer.Close()
 
 	// Parse worker port
 	_, portStr, _ := strings.Cut(strings.TrimPrefix(workerServer.URL, "http://"), ":")
 	var port int
-	fmt.Sscanf(portStr, "%d", &port)
+	_, _ = fmt.Sscanf(portStr, "%d", &port)
 
 	worker := protocol.WorkerInfo{
 		ID:       "completion-proxy-worker",
@@ -655,7 +655,7 @@ func TestCompletionsProxiesToWorker(t *testing.T) {
 
 	tr := testRegistry(t, []protocol.WorkerInfo{worker})
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	server.cache = NewCapabilityCache(tr.reg, testLogger())
@@ -718,7 +718,7 @@ func TestChatCompletionsNonStreamingProxiesToWorker(t *testing.T) {
 					VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 20480},
 				},
 			}
-			json.NewEncoder(w).Encode(caps)
+			_ = json.NewEncoder(w).Encode(caps)
 			return
 		}
 
@@ -752,13 +752,13 @@ func TestChatCompletionsNonStreamingProxiesToWorker(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(chunk)
+		_ = json.NewEncoder(w).Encode(chunk)
 	}))
 	defer workerServer.Close()
 
 	_, portStr, _ := strings.Cut(strings.TrimPrefix(workerServer.URL, "http://"), ":")
 	var port int
-	fmt.Sscanf(portStr, "%d", &port)
+	_, _ = fmt.Sscanf(portStr, "%d", &port)
 
 	worker := protocol.WorkerInfo{
 		ID:          "nosteam-worker",
@@ -778,7 +778,7 @@ func TestChatCompletionsNonStreamingProxiesToWorker(t *testing.T) {
 
 	tr := testRegistry(t, []protocol.WorkerInfo{worker})
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	server.cache = NewCapabilityCache(tr.reg, testLogger())
@@ -815,7 +815,7 @@ func TestChatCompletionsNonStreamingProxiesToWorker(t *testing.T) {
 func TestDevRegisterValidWorker(t *testing.T) {
 	tr := testRegistry(t, nil)
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	worker := protocol.WorkerInfo{
@@ -852,7 +852,7 @@ func TestDevRegisterValidWorker(t *testing.T) {
 func TestDevRegisterEmptyID(t *testing.T) {
 	tr := testRegistry(t, nil)
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	worker := protocol.WorkerInfo{
@@ -877,7 +877,7 @@ func TestDevRegisterEmptyID(t *testing.T) {
 func TestDevRegisterInvalidPort(t *testing.T) {
 	tr := testRegistry(t, nil)
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	tests := []struct {
@@ -914,7 +914,7 @@ func TestDevRegisterInvalidPort(t *testing.T) {
 func TestDevRegisterNonLoopbackIP(t *testing.T) {
 	tr := testRegistry(t, nil)
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	tests := []struct {
@@ -951,7 +951,7 @@ func TestDevRegisterNonLoopbackIP(t *testing.T) {
 func TestDevRegisterMethodNotAllowed(t *testing.T) {
 	tr := testRegistry(t, nil)
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	methods := []string{http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch}
@@ -973,7 +973,7 @@ func TestDevRegisterMethodNotAllowed(t *testing.T) {
 func TestDevRegisterMalformedJSON(t *testing.T) {
 	tr := testRegistry(t, nil)
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/dev/register", bytes.NewReader([]byte("{invalid json")))
@@ -992,7 +992,7 @@ func TestDevRegisterMalformedJSON(t *testing.T) {
 func TestDevRegisterForcesAvailableStatus(t *testing.T) {
 	tr := testRegistry(t, nil)
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	worker := protocol.WorkerInfo{
@@ -1047,7 +1047,7 @@ func TestWorkerUnavailable(t *testing.T) {
 					VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 20480},
 				},
 			}
-			json.NewEncoder(w).Encode(caps)
+			_ = json.NewEncoder(w).Encode(caps)
 			return
 		}
 		// For any other endpoint, return 503 to simulate unreachable
@@ -1058,7 +1058,7 @@ func TestWorkerUnavailable(t *testing.T) {
 	// Parse worker port
 	_, portStr, _ := strings.Cut(strings.TrimPrefix(workerServer.URL, "http://"), ":")
 	var port int
-	fmt.Sscanf(portStr, "%d", &port)
+	_, _ = fmt.Sscanf(portStr, "%d", &port)
 
 	worker := protocol.WorkerInfo{
 		ID:       "dead-worker",
@@ -1078,7 +1078,7 @@ func TestWorkerUnavailable(t *testing.T) {
 
 	tr := testRegistry(t, []protocol.WorkerInfo{worker})
 	defer tr.cancel()
-	defer tr.reg.Stop()
+	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
 	server.cache = NewCapabilityCache(tr.reg, testLogger())

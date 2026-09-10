@@ -23,7 +23,7 @@ func NewAggregator(config Config, log *slog.Logger) *Aggregator {
 	if log == nil {
 		log = slog.Default()
 	}
-	config.Validate()
+	_ = config.Validate()
 	return &Aggregator{
 		config:     config,
 		log:        log,
