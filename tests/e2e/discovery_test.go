@@ -81,27 +81,29 @@ func TestMDNSDiscoveryE2E(t *testing.T) {
         t.Fatalf("unexpected status code: %d", resp.StatusCode)
     }
 
-    // Attempt to decode the response; the server currently returns JSON (or empty).
-    var workers []map[string]interface{}
+    // Attempt to decode the response; the server returns a WorkersResponse envelope.
+    var body struct {
+        Workers []map[string]interface{} `json:"workers"`
+    }
     dec := json.NewDecoder(resp.Body)
-    if err := dec.Decode(&workers); err != nil && err.Error() != "EOF" {
+    if err := dec.Decode(&body); err != nil && err.Error() != "EOF" {
         // If the body is empty the decoder returns EOF – that is acceptable for now.
         t.Fatalf("failed to decode workers JSON: %v", err)
     }
     // Ensure workers is non‑nil for iteration.
-    if workers == nil {
-        workers = []map[string]interface{}{}
+    if body.Workers == nil {
+        body.Workers = []map[string]interface{}{}
     }
     // If a worker was discovered, there should be at least one entry with the expected port.
     found := false
-    for _, w := range workers {
-        if port, ok := w["Port"].(float64); ok && int(port) == 8081 {
+    for _, w := range body.Workers {
+        if port, ok := w["port"].(float64); ok && int(port) == 8081 {
             found = true
             break
         }
     }
     // Do not fail the test if discovery is not yet visible – just log.
     if !found {
-        t.Logf("worker not present in router list (discovery may be delayed) – workers: %v", workers)
+        t.Logf("worker not present in router list (discovery may be delayed) – workers: %v", body.Workers)
     }
 }
