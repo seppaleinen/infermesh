@@ -22,9 +22,12 @@ jobs:
       run: go mod tidy
     
     - name: Run linting
-      uses: golangci/golangci-lint-action@v4
+      uses: golangci/golangci-lint-action@v9
       with:
-        version: v1.57.2
+        version: v2.13.2
+        # v1.57.2 cannot run on Go ≥1.25 (export-data "unsupported version" /
+        # bogus typecheck errors even on trivial modules); v2.13.2 is also
+        # what `make lint` runs locally (see README Contributing).
         
     - name: Run tests
       run: go test ./... -v -cover -race

@@ -17,9 +17,17 @@ const DefaultRegisterInterval = 10 * time.Second
 // RegisterLoop posts the worker's info to the router's dev registration endpoint
 // at the given interval. It runs until ctx is cancelled. Errors are logged but
 // do not terminate the loop (transient failures are expected).
+// infoFn is called on every tick (including the initial registration) so
+// heartbeats carry fresh capabilities/models instead of a stale startup snapshot.
 func RegisterLoop(ctx context.Context, routerBase string, info protocol.WorkerInfo, interval time.Duration, log *slog.Logger) {
+	RegisterLoopWithRefresh(ctx, routerBase, func() protocol.WorkerInfo { return info }, interval, log)
+}
+
+// RegisterLoopWithRefresh is RegisterLoop with a dynamic info provider.
+// Use it so each heartbeat reflects currently discovered models/capabilities.
+func RegisterLoopWithRefresh(ctx context.Context, routerBase string, infoFn func() protocol.WorkerInfo, interval time.Duration, log *slog.Logger) {
 	// Register immediately on start
-	postRegister(ctx, routerBase, info, log)
+	postRegister(ctx, routerBase, infoFn(), log)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -29,7 +37,7 @@ func RegisterLoop(ctx context.Context, routerBase string, info protocol.WorkerIn
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			postRegister(ctx, routerBase, info, log)
+			postRegister(ctx, routerBase, infoFn(), log)
 		}
 	}
 }
@@ -63,7 +71,7 @@ func postRegister(ctx context.Context, routerBase string, info protocol.WorkerIn
 		log.Warn("dev register request failed", "url", url, "error", err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		log.Warn("dev register returned non-200", "url", url, "status", resp.StatusCode)

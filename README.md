@@ -193,8 +193,9 @@ The first working version should be able to:
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Run tests: `make test && make test-integration && make test-e2e`
-5. Submit a pull request
+4. Run checks: `make lint && make test` (plus `make test-integration` / `make test-e2e` where applicable)
+5. Install the push gate once: `make install-hooks` — runs lint before every push
+6. Submit a pull request
 
 See [AGENTS.md](AGENTS.md) for developer guidelines and the agent pipeline documentation.
 

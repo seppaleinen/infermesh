@@ -160,7 +160,7 @@ func TestCapabilitiesHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	yamlContent := `
 models:
@@ -174,7 +174,7 @@ models:
 	if _, err := tmpFile.WriteString(yamlContent); err != nil {
 		t.Fatal(err)
 	}
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
 	cfg := capabilities.Defaults()
 	cfg.ModelConfigPath = tmpFile.Name()
@@ -524,7 +524,7 @@ func TestRegisterLoopSendsPost(t *testing.T) {
 		}
 		callCount++
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
 	defer router.Close()
 
@@ -615,7 +615,7 @@ func TestRegisterLoopContextCancellation(t *testing.T) {
 func TestRegisterLoopNon200DoesNotCrash(t *testing.T) {
 	router := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(`{"error":"something went wrong"}`))
+		_, _ = w.Write([]byte(`{"error":"something went wrong"}`))
 	}))
 	defer router.Close()
 

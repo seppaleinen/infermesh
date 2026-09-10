@@ -53,7 +53,7 @@ func GenerateSelfSignedCA(dir string) (certFile, keyFile string, err error) {
 	if err != nil {
 		return "", "", fmt.Errorf("failed to write CA cert: %w", err)
 	}
-	defer certOut.Close()
+	defer func() { _ = certOut.Close() }()
 
 	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: caCertBytes}); err != nil {
 		return "", "", fmt.Errorf("failed to encode CA cert: %w", err)
@@ -63,7 +63,7 @@ func GenerateSelfSignedCA(dir string) (certFile, keyFile string, err error) {
 	if err != nil {
 		return "", "", fmt.Errorf("failed to write CA key: %w", err)
 	}
-	defer keyOut.Close()
+	defer func() { _ = keyOut.Close() }()
 
 	caKeyBytes, err := x509.MarshalECPrivateKey(caKey)
 	if err != nil {
@@ -146,7 +146,7 @@ func GenerateNodeCert(dir, caCertPath, caKeyPath, commonName string) (certFile, 
 	if err != nil {
 		return "", "", fmt.Errorf("failed to write node cert: %w", err)
 	}
-	defer certOut.Close()
+	defer func() { _ = certOut.Close() }()
 
 	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: nodeCertBytes}); err != nil {
 		return "", "", fmt.Errorf("failed to encode node cert: %w", err)
@@ -156,7 +156,7 @@ func GenerateNodeCert(dir, caCertPath, caKeyPath, commonName string) (certFile, 
 	if err != nil {
 		return "", "", fmt.Errorf("failed to write node key: %w", err)
 	}
-	defer keyOut.Close()
+	defer func() { _ = keyOut.Close() }()
 
 	nodeKeyBytes, err := x509.MarshalECPrivateKey(nodeKey)
 	if err != nil {

@@ -66,7 +66,7 @@ type WorkerInfo struct {
 	Capabilities Capabilities `json:"capabilities"`  // GPU, models, etc.
 	Status     WorkerStatus `json:"status"`         // availability
 	Version    string      `json:"version"`         // InferMesh protocol version
-	LastSeen   time.Time   `json:"-,omitempty"`     // set by router; not serialized
+	LastSeen   time.Time   `json:"-"`               // set by router; not serialized
 }
 
 // DiscoveryEventType categorizes a discovery event.

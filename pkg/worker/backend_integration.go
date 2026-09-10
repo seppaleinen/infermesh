@@ -318,7 +318,7 @@ func (b *OpenAICompatibleBackend) completeChatInternal(ctx context.Context, mode
 	if err != nil {
 		return ChatResponse{}, fmt.Errorf("backend request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -382,7 +382,7 @@ func (b *OpenAICompatibleBackend) StreamChat(ctx context.Context, model string, 
 			errCh <- fmt.Errorf("backend request failed: %w", err)
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
@@ -474,7 +474,7 @@ func (b *OpenAICompatibleBackend) CompleteCompletions(ctx context.Context, model
 	if err != nil {
 		return CompletionResponse{}, fmt.Errorf("backend request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -538,7 +538,7 @@ func (b *OpenAICompatibleBackend) StreamCompletions(ctx context.Context, model s
 			errCh <- fmt.Errorf("backend request failed: %w", err)
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
@@ -601,33 +601,51 @@ func (b *OpenAICompatibleBackend) ListModels() ([]protocol.ModelInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to list models: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("backend returned %d", resp.StatusCode)
 	}
 
-	// Parse OpenAI-compatible model list response.
-	// The response format is {"data":[{"id":"model-name",...},...]}.
-	// We need to map the "id" field to the "name" field in ModelInfo.
-	type modelInfoResponse struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		OwnedBy string `json:"owned_by"`
-	}
+	// Parse OpenAI-compatible model list response. Real backends
+	// (LM Studio, Ollama, vLLM) return {"data":[{"id":"...","object":"model",...}]}
+	// while our internal ModelInfo uses "name". Accept both shapes and
+	// treat catalogue entries as loaded (dev-mode backends serve whatever
+	// they list; there is no separate load lifecycle to query).
 	var result struct {
-		Data []modelInfoResponse `json:"data"`
+		Data []struct {
+			ID           string `json:"id"`
+			Name         string `json:"name"`
+			Object       string `json:"object"`
+			OwnedBy      string `json:"owned_by"`
+			Backend      string `json:"backend"`
+			Quantization string `json:"quantization"`
+			Loaded       *bool  `json:"loaded"`
+		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode models response: %w", err)
 	}
 
-	models := make([]protocol.ModelInfo, len(result.Data))
-	for i, raw := range result.Data {
-		models[i] = protocol.ModelInfo{
-			Name:   raw.ID,
-			Loaded: true, // Models reported by the backend are assumed loaded.
+	models := make([]protocol.ModelInfo, 0, len(result.Data))
+	for _, m := range result.Data {
+		name := m.Name
+		if name == "" {
+			name = m.ID
 		}
+		if name == "" {
+			continue
+		}
+		loaded := true
+		if m.Loaded != nil {
+			loaded = *m.Loaded
+		}
+		models = append(models, protocol.ModelInfo{
+			Name:         name,
+			Backend:      m.Backend,
+			Quantization: m.Quantization,
+			Loaded:       loaded,
+		})
 	}
 
 	return models, nil

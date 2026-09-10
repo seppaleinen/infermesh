@@ -169,6 +169,14 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/workers", s.handleWorkersList)
 	mux.HandleFunc("/v1/dev/register", s.handleDevRegister)
 
+	// Start the capability cache event loop so registry events populate
+	// the cache that /v1/models, /v1/workers and worker selection read from.
+	// Without this, dev HTTP registrations land in the registry but the
+	// cache stays empty → empty workers list, null models, no_workers.
+	if s.cache != nil && s.reg != nil {
+		s.cache.Start(ctx)
+	}
+
 	var handler http.Handler = mux
 	if !security.IsDevMode(s.cfg) {
 		// Prod mode: enforce mTLS - router requires client cert from worker
@@ -209,7 +217,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	go func() {
 		<-ctx.Done()
-		s.server.Shutdown(context.Background())
+		_ = s.server.Shutdown(context.Background())
 	}()
 
 	return s.server.ListenAndServe()
@@ -308,27 +316,33 @@ func (s *Server) handleWorkersList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.cache.mu.RLock()
-	defer s.cache.mu.RUnlock()
+	w.Header().Set("Content-Type", "application/json")
 
-	workers := make([]WorkerInfo, 0, len(s.cache.cache))
-	for _, w := range s.cache.cache {
-		info := WorkerInfo{
-			ID:            w.ID,
-			Hostname:      w.Hostname,
-			IP:            w.IP,
-			Port:          w.Port,
-			Status:        w.Status,
-			Version:       w.Version,
-			LoadedModels:  getLoadedModelNames(w.Capabilities.Models),
-			LastSeen:      w.LastSeen,
-		}
-		workers = append(workers, info)
+	// Prefer the capability cache (has hydrated capabilities), fall back
+	// to the registry so workers are visible even before capability fetch.
+	var cached []protocol.WorkerInfo
+	if s.cache != nil {
+		cached = s.cache.List()
+	}
+	if len(cached) == 0 && s.reg != nil {
+		cached = s.reg.ListAvailable()
+	}
+
+	workers := make([]WorkerInfo, 0, len(cached))
+	for _, w := range cached {
+		workers = append(workers, WorkerInfo{
+			ID:           w.ID,
+			Hostname:     w.Hostname,
+			IP:           w.IP,
+			Port:         w.Port,
+			Status:       w.Status,
+			Version:      w.Version,
+			LoadedModels: getLoadedModelNames(w.Capabilities.Models),
+			LastSeen:     w.LastSeen,
+		})
 	}
 
 	response := WorkersResponse{Workers: workers}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		s.log.Error("failed to encode workers response", "error", err)
 	}
@@ -344,7 +358,6 @@ func getLoadedModelNames(models []protocol.ModelInfo) []string {
 	}
 	return names
 }
-
 // handleModelsList handles the /v1/models HTTP endpoint.
 func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -353,6 +366,11 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+
+	if s.cache == nil {
+		_ = json.NewEncoder(w).Encode(ModelsResponse{Object: "list", Data: []protocol.ModelInfo{}})
+		return
+	}
 
 	// Get capabilities from cache
 	s.cache.mu.RLock()
@@ -363,8 +381,9 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 		workers = append(workers, w)
 	}
 
-	// Aggregate models from all workers, only including loaded models
-	var models []protocol.ModelInfo
+	// Aggregate models from all workers, only including loaded models.
+	// Initialized as empty slice (not nil) so JSON encodes as [] not null.
+	models := []protocol.ModelInfo{}
 	for _, worker := range workers {
 		for _, m := range worker.Capabilities.Models {
 			if m.Loaded {
@@ -430,6 +449,9 @@ func (s *Server) handleDevRegister(w http.ResponseWriter, r *http.Request) {
 
 // selectWorker selects a worker for the given model (simple round-robin for now).
 func (s *Server) selectWorker(model string) (protocol.WorkerInfo, error) {
+	if s.cache == nil {
+		return protocol.WorkerInfo{}, fmt.Errorf("capability cache not configured")
+	}
 	s.cache.mu.RLock()
 	defer s.cache.mu.RUnlock()
 
@@ -470,13 +492,29 @@ func (s *Server) selectWorker(model string) (protocol.WorkerInfo, error) {
 		}
 	}
 
-	if len(candidates) == 0 {
-		return protocol.WorkerInfo{}, fmt.Errorf("no worker found with model %s loaded", model)
+	if len(candidates) > 0 {
+		// Simple round-robin selection (use timestamp for now)
+		return candidates[0], nil
 	}
 
-	// Simple round-robin selection (use timestamp for now)
-	selected := candidates[0]
-	return selected, nil
+	// Fallback: if no exact loaded-model match, route to any cached worker
+	// that advertises the model (even if not marked loaded), then to any
+	// available worker. This keeps dev-mode usable when backends report
+	// catalogue models without load state (e.g. LM Studio /v1/models).
+	for _, worker := range s.cache.cache {
+		for _, m := range worker.Capabilities.Models {
+			if m.Name == model {
+				s.log.Warn("routing to worker with model not marked loaded", "model", model, "worker", worker.ID)
+				return worker, nil
+			}
+		}
+	}
+	for _, worker := range s.cache.cache {
+		s.log.Warn("no worker has requested model, falling back to available worker", "model", model, "worker", worker.ID)
+		return worker, nil
+	}
+
+	return protocol.WorkerInfo{}, fmt.Errorf("no worker found with model %s loaded", model)
 }
 
 // loadModelOnWorker attempts to load a model on a worker using HTTP proxy
@@ -494,7 +532,7 @@ func (s *Server) loadModelOnWorker(worker protocol.WorkerInfo, modelName string)
 	if err != nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	return resp.StatusCode == http.StatusOK
 }
@@ -561,7 +599,7 @@ func (s *Server) proxyChatStream(w http.ResponseWriter, r *http.Request, worker 
 		writeErrorResponse(w, http.StatusServiceUnavailable, "worker unavailable", "server_error", "connection_error")
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Check worker's status code
 	if resp.StatusCode != http.StatusOK {
@@ -634,7 +672,7 @@ func (s *Server) proxyCompletionStream(w http.ResponseWriter, r *http.Request, w
 		writeErrorResponse(w, http.StatusServiceUnavailable, "worker unavailable", "server_error", "connection_error")
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Check worker's status code
 	if resp.StatusCode != http.StatusOK {

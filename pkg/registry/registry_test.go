@@ -108,7 +108,7 @@ func TestRegistryHandleEventAdded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error: %v", err)
 	}
-	defer reg.Stop()
+	defer func() { _ = reg.Stop() }()
 
 	ctx := testContext()
 	if err := reg.Start(ctx); err != nil {
@@ -148,7 +148,7 @@ func TestRegistryHandleEventUpdated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error: %v", err)
 	}
-	defer reg.Stop()
+	defer func() { _ = reg.Stop() }()
 
 	ctx := testContext()
 	if err := reg.Start(ctx); err != nil {
@@ -190,7 +190,7 @@ func TestRegistryHandleEventRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error: %v", err)
 	}
-	defer reg.Stop()
+	defer func() { _ = reg.Stop() }()
 
 	ctx := testContext()
 	if err := reg.Start(ctx); err != nil {
@@ -228,7 +228,7 @@ func TestRegistryHandleEventExpired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error: %v", err)
 	}
-	defer reg.Stop()
+	defer func() { _ = reg.Stop() }()
 
 	ctx := testContext()
 	if err := reg.Start(ctx); err != nil {
@@ -268,7 +268,7 @@ func TestRegistryList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error: %v", err)
 	}
-	defer reg.Stop()
+	defer func() { _ = reg.Stop() }()
 
 	ctx := testContext()
 	if err := reg.Start(ctx); err != nil {
@@ -304,7 +304,7 @@ func TestRegistryListAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error: %v", err)
 	}
-	defer reg.Stop()
+	defer func() { _ = reg.Stop() }()
 
 	ctx := testContext()
 	if err := reg.Start(ctx); err != nil {
@@ -339,7 +339,7 @@ func TestRegistryGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error: %v", err)
 	}
-	defer reg.Stop()
+	defer func() { _ = reg.Stop() }()
 
 	ctx := testContext()
 	if err := reg.Start(ctx); err != nil {
@@ -371,7 +371,7 @@ func TestRegistryGetNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error: %v", err)
 	}
-	defer reg.Stop()
+	defer func() { _ = reg.Stop() }()
 
 	_, ok := reg.Get("nonexistent")
 	if ok {
@@ -385,7 +385,7 @@ func TestRegistrySubscribe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error: %v", err)
 	}
-	defer reg.Stop()
+	defer func() { _ = reg.Stop() }()
 
 	ctx := testContext()
 	if err := reg.Start(ctx); err != nil {
@@ -445,7 +445,7 @@ func TestRegistrySweepMarksUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error: %v", err)
 	}
-	defer reg.Stop()
+	defer func() { _ = reg.Stop() }()
 
 	ctx := testContext()
 	if err := reg.Start(ctx); err != nil {
@@ -482,7 +482,7 @@ func TestRegistrySweepRemoves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error: %v", err)
 	}
-	defer reg.Stop()
+	defer func() { _ = reg.Stop() }()
 
 	ctx := testContext()
 	if err := reg.Start(ctx); err != nil {
@@ -514,7 +514,7 @@ func TestRegistryReRegisterAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error: %v", err)
 	}
-	defer reg.Stop()
+	defer func() { _ = reg.Stop() }()
 
 	ctx := testContext()
 	if err := reg.Start(ctx); err != nil {

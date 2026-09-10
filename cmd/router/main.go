@@ -57,25 +57,35 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Create discovery listener
-	listener, err := discovery.NewListener(discovery.BackendMDNS, cfg, log)
-	if err != nil {
-		log.Error("failed to create listener", "error", err)
-		os.Exit(1)
-	}
-	if err := listener.Start(ctx); err != nil {
-		log.Error("failed to start listener", "error", err)
-		os.Exit(1)
-	}
-
-	// Bridge: discovery events → registry
-	go func() {
-		for event := range listener.Events() {
-			if err := reg.HandleEvent(event); err != nil {
-				log.Warn("failed to handle discovery event", "error", err)
-			}
+	// Create discovery listener (prod-mode only).
+	// In dev-mode workers register via HTTP POST /v1/dev/register, so the
+	// mDNS listener is skipped entirely. This avoids the hashicorp/mdns
+	// udp6 [ff02::fb]:5353 bind spam on hosts without IPv6 multicast
+	// (docker, CI, minimal VMs) where every 5s probe logs
+	// "[ERR] mdns: Failed to bind to udp6 port" with no functional benefit.
+	var listener discovery.Listener
+	if !isDevMode {
+		listener, err = discovery.NewListener(discovery.BackendMDNS, cfg, log)
+		if err != nil {
+			log.Error("failed to create listener", "error", err)
+			os.Exit(1)
 		}
-	}()
+		if err := listener.Start(ctx); err != nil {
+			log.Error("failed to start listener", "error", err)
+			os.Exit(1)
+		}
+
+		// Bridge: discovery events → registry
+		go func() {
+			for event := range listener.Events() {
+				if err := reg.HandleEvent(event); err != nil {
+					log.Warn("failed to handle discovery event", "error", err)
+				}
+			}
+		}()
+	} else {
+		log.Info("dev-mode: mDNS discovery disabled, using HTTP registration (/v1/dev/register)")
+	}
 
 	// Subscribe to registry events for logging
 	sub := reg.Subscribe()
@@ -109,6 +119,8 @@ func main() {
 
 	log.Info("shutting down")
 	cancel()
-	listener.Stop()
-	reg.Stop()
+	if listener != nil {
+		_ = listener.Stop()
+	}
+	_ = reg.Stop()
 }
