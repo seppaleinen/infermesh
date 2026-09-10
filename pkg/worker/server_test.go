@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -472,12 +474,15 @@ func TestRegisterURL(t *testing.T) {
 // TestRegisterLoopTrailingSlash sends a base URL with a trailing slash and
 // verifies the router still receives the request at /v1/dev/register (not //v1/dev/register).
 func TestRegisterLoopTrailingSlash(t *testing.T) {
+	var mu sync.Mutex
 	var receivedPath string
-	callCount := 0
+	var callCount atomic.Int64
 
 	router := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
 		receivedPath = r.URL.Path
-		callCount++
+		mu.Unlock()
+		callCount.Add(1)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer router.Close()
@@ -498,11 +503,14 @@ func TestRegisterLoopTrailingSlash(t *testing.T) {
 	cancel()
 	time.Sleep(50 * time.Millisecond)
 
-	if callCount < 2 {
-		t.Errorf("expected at least 2 calls, got %d", callCount)
+	if callCount.Load() < 2 {
+		t.Errorf("expected at least 2 calls, got %d", callCount.Load())
 	}
-	if receivedPath != "/v1/dev/register" {
-		t.Errorf("expected path '/v1/dev/register', got '%s'", receivedPath)
+	mu.Lock()
+	path := receivedPath
+	mu.Unlock()
+	if path != "/v1/dev/register" {
+		t.Errorf("expected path '/v1/dev/register', got '%s'", path)
 	}
 }
 
@@ -510,19 +518,26 @@ func TestRegisterLoopTrailingSlash(t *testing.T) {
 
 // TestRegisterLoopSendsPost verifies that RegisterLoop posts worker info to the router.
 func TestRegisterLoopSendsPost(t *testing.T) {
+	var mu sync.Mutex
 	var receivedBody protocol.WorkerInfo
 	var receivedMethod string
 	var receivedPath string
-	callCount := 0
+	var callCount atomic.Int64
 
 	router := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedMethod = r.Method
-		receivedPath = r.URL.Path
-		if err := json.NewDecoder(r.Body).Decode(&receivedBody); err != nil {
+		method := r.Method
+		path := r.URL.Path
+		var body protocol.WorkerInfo
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "bad body", http.StatusBadRequest)
 			return
 		}
-		callCount++
+		mu.Lock()
+		receivedMethod = method
+		receivedPath = path
+		receivedBody = body
+		mu.Unlock()
+		callCount.Add(1)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	}))
@@ -545,32 +560,38 @@ func TestRegisterLoopSendsPost(t *testing.T) {
 	cancel()
 	time.Sleep(50 * time.Millisecond) // let goroutine exit
 
-	if callCount < 2 {
-		t.Errorf("expected at least 2 calls, got %d", callCount)
+	mu.Lock()
+	method := receivedMethod
+	path := receivedPath
+	body := receivedBody
+	mu.Unlock()
+
+	if callCount.Load() < 2 {
+		t.Errorf("expected at least 2 calls, got %d", callCount.Load())
 	}
-	if receivedMethod != http.MethodPost {
-		t.Errorf("expected POST, got %s", receivedMethod)
+	if method != http.MethodPost {
+		t.Errorf("expected POST, got %s", method)
 	}
-	if receivedPath != "/v1/dev/register" {
-		t.Errorf("expected path '/v1/dev/register', got '%s'", receivedPath)
+	if path != "/v1/dev/register" {
+		t.Errorf("expected path '/v1/dev/register', got '%s'", path)
 	}
-	if receivedBody.ID != "loop-worker-1" {
-		t.Errorf("expected worker ID 'loop-worker-1', got '%s'", receivedBody.ID)
+	if body.ID != "loop-worker-1" {
+		t.Errorf("expected worker ID 'loop-worker-1', got '%s'", body.ID)
 	}
-	if receivedBody.IP != "127.0.0.1" {
-		t.Errorf("expected IP '127.0.0.1', got '%s'", receivedBody.IP)
+	if body.IP != "127.0.0.1" {
+		t.Errorf("expected IP '127.0.0.1', got '%s'", body.IP)
 	}
-	if receivedBody.Port != 8081 {
-		t.Errorf("expected port 8081, got %d", receivedBody.Port)
+	if body.Port != 8081 {
+		t.Errorf("expected port 8081, got %d", body.Port)
 	}
 }
 
 // TestRegisterLoopContextCancellation verifies the loop stops when context is cancelled.
 func TestRegisterLoopContextCancellation(t *testing.T) {
-	callCount := 0
+	var callCount atomic.Int64
 
 	router := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
+		callCount.Add(1)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer router.Close()
@@ -591,7 +612,7 @@ func TestRegisterLoopContextCancellation(t *testing.T) {
 
 	// Let a couple of heartbeats fire
 	time.Sleep(150 * time.Millisecond)
-	countBeforeCancel := callCount
+	countBeforeCancel := callCount.Load()
 
 	cancel()
 
@@ -604,7 +625,7 @@ func TestRegisterLoopContextCancellation(t *testing.T) {
 
 	// After cancel, no more calls should happen
 	time.Sleep(200 * time.Millisecond)
-	countAfterCancel := callCount
+	countAfterCancel := callCount.Load()
 
 	if countAfterCancel != countBeforeCancel {
 		t.Errorf("expected no more calls after cancel, got %d before and %d after", countBeforeCancel, countAfterCancel)
@@ -648,10 +669,10 @@ func TestRegisterLoopNon200DoesNotCrash(t *testing.T) {
 
 // TestRegisterLoopImmediatePost verifies that RegisterLoop posts immediately (before first tick).
 func TestRegisterLoopImmediatePost(t *testing.T) {
-	var callCount int32
+	var callCount atomic.Int64
 
 	router := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
+		callCount.Add(1)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer router.Close()
@@ -672,8 +693,8 @@ func TestRegisterLoopImmediatePost(t *testing.T) {
 	cancel()
 	time.Sleep(50 * time.Millisecond)
 
-	if callCount < 1 {
-		t.Errorf("expected at least 1 immediate call, got %d", callCount)
+	if callCount.Load() < 1 {
+		t.Errorf("expected at least 1 immediate call, got %d", callCount.Load())
 	}
 }
 

@@ -16,7 +16,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.25.0'
+        go-version: '1.27'
     
     - name: Install dependencies
       run: go mod tidy
@@ -29,11 +29,11 @@ jobs:
         # bogus typecheck errors even on trivial modules); v2.13.2 is also
         # what `make lint` runs locally (see README Contributing).
         
-    - name: Run tests
-      run: go test ./... -v -cover -race
-    
     - name: Run Go vet
       run: go vet ./...
     
-    - name: Build binary
-      run: go build ./...
+    - name: Build binaries
+      run: make build
+    
+    - name: Run tests
+      run: go test ./... -v -cover -race

@@ -1,12 +1,12 @@
 # InferMesh Agent Guidance
 
-Go 1.25+ mono-repo: an inference **router** + **worker** binaries that turn heterogeneous machines with spare GPU capacity into a dynamically discovered, OpenAI-compatible inference pool ("Airbnb for spare inference capacity"). Not Kubernetes, not LiteLLM, not distributed inference.
+Go 1.27+ mono-repo: an inference **router** + **worker** binaries that turn heterogeneous machines with spare GPU capacity into a dynamically discovered, OpenAI-compatible inference pool ("Airbnb for spare inference capacity"). Not Kubernetes, not LiteLLM, not distributed inference.
 
 ## Repo gotchas (read before building)
 
-- **`go.mod`/`go.sum` are gitignored and NOT tracked.** A fresh clone has no module definition and `go build` fails. If you hit this, restore `go.mod`: `module github.com/seppaleinen/infermesh`, `go 1.25.0`, deps only `github.com/hashicorp/mdns` + `gopkg.in/yaml.v3`.
-- **Stale ~11 MB binaries `router` and `worker` are tracked at the repo root** (leftovers of local builds). Real build output is `bin/` (gitignored). Don't commit root-level binaries.
-- **CI pins Go 1.23 but `go.mod` requires 1.25.0** — `.github/workflows/ci.yml` is inconsistent (its `go build ./../...` path is also broken). Local toolchain is newer (1.27+).
+- **`go.mod`/`go.sum` are tracked since `a720766`.** If you hit a missing module definition, restore `go.mod`: `module github.com/seppaleinen/infermesh`, `go 1.27`, deps only `github.com/hashicorp/mdns` + `gopkg.in/yaml.v3`, then `go mod tidy`.
+- **Stale ~11 MB binaries `router` and `worker` were removed from tracking in `a720766`.** Real build output is `bin/` (gitignored). Don't commit root-level binaries.
+- **CI pins Go 1.27 and golangci-lint v2** (`golangci-lint-action@v9`, `version: v2.13.2`) — keep these on current stable, don't regress to old pins.
 - **mDNS is flaky on some networks/VMs.** The worker's `--router http://127.0.0.1:8080` flag (dev mode only) registers over plain HTTP and skips mDNS entirely — this is the reliable way to run the full loop on one machine.
 
 ## Build & run
@@ -40,7 +40,7 @@ make test             # unit: go test ./pkg/...
 make test-integration # go test ./tests/integration/...
 make test-e2e         # go test ./tests/e2e/...
 make test-security    # go test ./pkg/security/...
-make coverage         # go tool funccover (requires Go 1.25+)
+make coverage         # go tool funccover (requires Go 1.27+)
 go test ./pkg/discovery/...   # single package (Makefile has NO PKG= variable)
 ./hack/test_platforms.sh [--build|--cross|--all]
 ```
@@ -102,4 +102,4 @@ Dependencies are intentionally minimal: stdlib + `hashicorp/mdns` + `yaml.v3`. K
 
 ---
 
-*Last updated: 2026-09-09*
+*Last updated: 2026-09-10*

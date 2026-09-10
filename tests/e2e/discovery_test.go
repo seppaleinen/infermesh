@@ -4,6 +4,7 @@ import (
     "context"
     "encoding/json"
     "net/http"
+    "os"
     "os/exec"
     "testing"
     "time"
@@ -47,6 +48,15 @@ func TestMDNSDiscoveryE2E(t *testing.T) {
     // Paths to the built binaries.
     routerPath := "../../bin/infermesh-router"
     workerPath := "../../bin/infermesh-worker"
+
+    // Local dev loop: skip gracefully when binaries are absent instead of
+    // failing with fork/exec. CI always runs `make build` first so e2e
+    // actually executes there.
+    for _, p := range []string{routerPath, workerPath} {
+        if _, err := os.Stat(p); err != nil {
+            t.Skipf("skipping e2e: binary %s not found (run `make build` first): %v", p, err)
+        }
+    }
 
     // Start router in dev mode.
     routerCmd := startCmd(t, routerPath, "--dev-mode")

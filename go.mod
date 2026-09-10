@@ -1,6 +1,6 @@
 module github.com/seppaleinen/infermesh
 
-go 1.25.0
+go 1.27
 
 require (
 	github.com/hashicorp/mdns v1.0.2
