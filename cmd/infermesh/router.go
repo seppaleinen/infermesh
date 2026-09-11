@@ -29,12 +29,12 @@ type RouterFlags struct {
 	MTLSCert           string
 	MTLSKey            string
 	CertDir            string
-	APIKey            string
-	Addr             string
-	Worker           bool
-	Port             int
-	Backend          string
-	ModelPath        string
+	APIKey             string
+	Addr               string
+	Worker             bool
+	Port               int
+	Backend            string
+	ModelPath          string
 	EnableHealthChecks bool
 }
 

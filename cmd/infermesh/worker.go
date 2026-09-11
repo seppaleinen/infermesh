@@ -16,16 +16,16 @@ import (
 
 // WorkerFlags holds the parsed flags for the worker subcommand.
 type WorkerFlags struct {
-	Capabilities     bool
-	DevMode          bool
-	ProdMode         bool
-	MTLSCert         string
-	MTLSKey          string
-	Port             int
-	CertDir          string
-	ModelPath        string
-	Backend          string
-	Router           string
+	Capabilities       bool
+	DevMode            bool
+	ProdMode           bool
+	MTLSCert           string
+	MTLSKey            string
+	Port               int
+	CertDir            string
+	ModelPath          string
+	Backend            string
+	Router             string
 	EnableHealthChecks bool
 }
 

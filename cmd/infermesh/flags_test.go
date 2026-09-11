@@ -131,10 +131,10 @@ func TestListenPort(t *testing.T) {
 		{"127.0.0.1:9000", 9000, false},
 		{"0.0.0.0:1", 1, false},
 		{"localhost:65535", 65535, false},
-		{"8080", 0, true},          // no port separator
-		{"host:0", 0, true},        // out of range
-		{"host:70000", 0, true},    // out of range
-		{"host:abc", 0, true},      // non-numeric
+		{"8080", 0, true},       // no port separator
+		{"host:0", 0, true},     // out of range
+		{"host:70000", 0, true}, // out of range
+		{"host:abc", 0, true},   // non-numeric
 	}
 	for _, tt := range tests {
 		got, err := listenPort(tt.addr)
@@ -153,4 +153,3 @@ func TestListenPort(t *testing.T) {
 		}
 	}
 }
-
