@@ -148,6 +148,10 @@ team-lead → dev-architect (design) → backend-engineer (implementation) → t
 - **Production readiness**: Architecture is solid, tests demonstrate functionality
 - **Future improvements**: Fix mDNS environment issues for CI/CD
 
+## Combined CLI (issue #23) — Verification Status
+- Hermetic e2e tests (`tests/e2e/combined_test.go`) pass without a real backend: worker self-registration verified via `/v1/workers`, `/v1/models` + `/v1/workers` respond, SIGTERM yields exit 0, and both fail-fast negatives (worker/router port collision, `--prod-mode --worker`) exit non-zero with clear messages.
+- Manual smoke with a real backend (LM Studio: `./bin/infermesh router --dev-mode --worker` + `curl /v1/chat/completions`) is **PENDING** — LM Studio is not running in this environment, so the hermetic e2e + unit tests are the verification for the combined binary here.
+
 ## Recommendations
 1. **For CI/CD**: Use Linux-based runners for mDNS integration tests
 2. **For local development**: Use Docker or VM environments with proper network support
