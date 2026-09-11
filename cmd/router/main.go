@@ -21,6 +21,7 @@ func main() {
 	mtlsKey := flag.String("mtls-key", "", "path to mTLS key file")
 	certDir := flag.String("cert-dir", "", "path to certificate directory (for CA)")
 	apiKey := flag.String("api-key", "", "API key for authentication (production mode)")
+	addr := flag.String("addr", ":8080", "listen address (host:port) for the router HTTP server")
 	flag.Parse()
 
 	// Determine dev mode: --prod-mode disables dev mode, --dev-mode enables it
@@ -105,7 +106,7 @@ func main() {
 	}
 
 	// Start router HTTP server
-	srv := router.NewServer(reg, log, ":8080", secCfg)
+	srv := router.NewServer(reg, log, *addr, secCfg)
 	go func() {
 		if err := srv.Start(ctx); err != nil {
 			log.Error("router server error", "error", err)
