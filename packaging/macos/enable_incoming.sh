@@ -2,19 +2,37 @@
 # Enable incoming connections / local network access for the InferMesh .app
 # bundles built by build_app.sh.
 #
-# On macOS Sequoia+ with the Application Firewall enabled, unsigned CLI
-# binaries are silently blocked for inbound LAN connections. The .app bundles
-# have a real identity and trigger the one-time "Allow incoming connections?"
-# GUI prompt — no admin required. This script automates the socketfilterfw
-# step when sudo is available, and prints GUI instructions otherwise.
+# IMPORTANT: On macOS Sequoia+ (26.6.1 confirmed), the Application Firewall
+# silently blocks inbound LAN connections to unsigned / ad-hoc-signed binaries.
+# There is NO "Allow incoming connections?" prompt for apps that lack a
+# Developer-ID certificate.  Launching the app with `open` or running the
+# bare binary does NOT surface a prompt — the block is permanent and silent.
+#
+# This script provides two paths:
+#
+#   1. SUDO AVAILABLE (admin):
+#      Use socketfilterfw to explicitly allow the inner Mach-O binary.
+#      This DOES require root and does NOT need a prompt.
+#
+#   2. NO SUDO (non-admin / no passwordless sudo):
+#      On Sequoia+ there is no prompt-based workaround.
+#      Use the SSH reverse tunnel instead — see packaging/macos/worker_tunnel.sh.
+#
+# On macOS versions before Sequoia (Ventura, Monterey, etc.), launching an
+# unsigned binary DID trigger a one-time Allow prompt — that path still
+# works on those older versions.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DIST_DIR="$REPO_ROOT/dist"
 
-WORKER_EXE="$DIST_DIR/InferMesh Worker.app/Contents/MacOS/infermesh-worker"
-ROUTER_EXE="$DIST_DIR/InferMesh Router.app/Contents/MacOS/infermesh-router"
+WORKER_APP="$DIST_DIR/InferMesh Worker.app"
+ROUTER_APP="$DIST_DIR/InferMesh Router.app"
+
+# The inner Mach-O binary is what socketfilterfw operates on.
+WORKER_EXE="$WORKER_APP/Contents/MacOS/infermesh-worker"
+ROUTER_EXE="$ROUTER_APP/Contents/MacOS/infermesh-router"
 
 for exe in "$WORKER_EXE" "$ROUTER_EXE"; do
     if [ ! -f "$exe" ]; then
@@ -30,35 +48,52 @@ if sudo -n true 2>/dev/null; then
 fi
 
 if [ "$HAS_SUDO" = true ]; then
+    echo "Passwordless sudo available — configuring socketfilterfw."
+    echo ""
+    echo "Note: this adds and unblocks the inner Mach-O binary directly."
+    echo "This is the only no-prompt way we have verified on Sequoia+;"
+    echo "it requires root. No GUI prompt will appear."
+    echo ""
+
     for exe in "$WORKER_EXE" "$ROUTER_EXE"; do
         sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add "$exe"
         sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp "$exe"
         echo "Allowed incoming connections for: $exe"
     done
+
     echo ""
     echo "Done. Next steps:"
-    echo "    System Settings → Privacy & Security → Local Network"
-    echo "    Ensure both 'InferMesh Router' and 'InferMesh Worker' are toggled ON."
-    echo "    System Settings → Network → Firewall → Options (if visible): confirm both apps are set to \"Allow incoming connections\""
+    echo "    1. System Settings -> Privacy & Security -> Local Network"
+    echo "       Ensure both 'InferMesh Router' and 'InferMesh Worker' are toggled ON."
+    echo "    2. System Settings -> Network -> Firewall -> Options (if visible):"
+    echo "       Confirm both apps are set to 'Allow incoming connections'."
+    echo ""
+    echo "If the app bundle was built with 'make app', note that the ad-hoc"
+    echo "signature changes on every rebuild.  Re-run this script after each"
+    echo "'make app' to re-allow the updated binary."
 else
-    echo "No passwordless sudo available — using the GUI workflow:"
+    echo "No passwordless sudo available."
     echo ""
-    echo "1. Launch the worker bundle once to trigger the"
-    echo "   'Allow incoming connections for InferMesh Worker?' prompt:"
-    echo "       ./dist/InferMesh\\ Worker.app/Contents/MacOS/infermesh-worker \\"
-    echo "           --dev-mode --backend custom --enable-health-checks=false"
-    echo "   Click 'Allow'."
+    echo "On macOS Sequoia+, there is NO Allow prompt for unsigned or"
+    echo "ad-hoc-signed binaries.  Launching the app with 'open' or running"
+    echo "the binary directly does NOT trigger a prompt — the firewall"
+    echo "silently blocks all inbound connections."
     echo ""
-    echo "2. Launch the router bundle once:"
-    echo "       ./dist/InferMesh\\ Router.app/Contents/MacOS/infermesh-router --dev-mode"
-    echo "   Click 'Allow' when prompted."
+    echo "The only no-admin workaround is an SSH reverse tunnel, which"
+    echo "exposes the worker on the router host's loopback (127.0.0.1)"
+    echo "so the firewall is never consulted."
     echo ""
-    echo "3. Open System Settings → Privacy & Security → Local Network and"
-    echo "   ensure both 'InferMesh Router' and 'InferMesh Worker' are toggled ON."
+    echo "Use the tunnel script:"
+    echo ""
+    echo "    ./packaging/macos/worker_tunnel.sh \\"
+    echo "        --router-host <ROUTER_HOST_IP> \\"
+    echo "        --backend lmstudio \\"
+    echo "        --model-path /path/to/model"
+    echo ""
+    echo "Requirements on the router host:"
+    echo "    - sshd running with AllowTcpForwarding yes (default on most distros)"
+    echo "    - SSH key access for your user (ssh $USER@<host> echo ok)"
+    echo ""
+    echo "For older macOS versions (before Sequoia), the Allow prompt DID work."
+    echo "On those systems, launch each app bundle once and click Allow when prompted."
 fi
-
-echo ""
-echo "Note: the ad-hoc signature changes on every 'make app' rebuild, so the"
-echo "firewall prompt may re-fire after a rebuild. A self-signed Keychain cert"
-echo "with 'codesign --sign \"<cert-name>\"' is the stable alternative — see"
-echo "packaging/macos/ for the scripts and template (documented only, not implemented)."

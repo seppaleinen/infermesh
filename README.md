@@ -188,35 +188,50 @@ The first working version should be able to:
 - **Production mode**: mTLS with self-signed certificates. Worker identity verification, audit logging, request-level access control.
 - **Key requirements**: Authentication, worker identity, TLS/mTLS, authorization, request-level access control, worker allow/deny policies, audit logging.
 
-## macOS App Bundles (Firewall / Local Network)
+## macOS Firewall: no-admin workaround (SSH reverse tunnel)
 
-On macOS Sequoia+ with the Application Firewall enabled, unsigned CLI binaries get silently blocked for inbound LAN connections. Bundling the binaries as `.app` bundles gives them a real identity and triggers the one-time "Allow incoming connections?" GUI prompt — no admin required.
+On macOS Sequoia+ (26.6.1 confirmed), the Application Firewall silently blocks inbound LAN connections to unsigned or ad-hoc-signed binaries. There is **no** "Allow incoming connections?" prompt for apps that lack a Developer-ID certificate — the block is permanent and un-surfaced. Launching the app with `open` or running the bare binary does not surface a prompt.
 
-Build both bundles:
+### Recommended: SSH reverse tunnel (no admin required)
+
+The tunnel carries **both directions** over SSH: the worker's callback listener is exposed on the router host's loopback (`-R`), and the worker's registration POST is forwarded to the router host's loopback (`-L`). The router therefore dials `127.0.0.1` and sees a loopback peer for registration — the firewall is never consulted, regardless of the router build.
+
+```
+router host (GPU node)          this machine (macOS, firewall-blocked)
+  sshd listener 127.0.0.1:PORT     worker :PORT
+  ssh -R PORT:127.0.0.1:PORT <────────────────
+  router dials 127.0.0.1:PORT           |
+  ssh -L ROUTER_PORT:127.0.0.1:ROUTER_PORT ────▶ registration POST via loopback
+```
 
 ```bash
+# Build first
+make build
+
+# Start worker with SSH tunnel (needs sshd + key access on router host)
+./packaging/macos/worker_tunnel.sh \
+    --router-host 192.168.1.216 \
+    --backend lmstudio \
+    --model-path /path/to/model
+```
+
+Requirements on the router host: sshd with `AllowTcpForwarding yes` (default on most distros) and SSH key access for your user.
+
+See `packaging/macos/worker_tunnel.sh --help` for all flags.
+
+### Alternative: admin path (socketfilterfw)
+
+If you have admin / passwordless sudo, you can explicitly allow the app bundles through the firewall:
+
+```bash
+# Build the app bundles (optional — only useful with this path)
 make app
-```
 
-Outputs `dist/InferMesh Router.app` and `dist/InferMesh Worker.app`.
-
-Run the bundled worker (same flags as the bare binary):
-
-```bash
-./dist/InferMesh\ Worker.app/Contents/MacOS/infermesh-worker --dev-mode --backend custom --router http://127.0.0.1:8080
-```
-
-Enable firewall / local network access:
-
-```bash
+# Allow through firewall (requires sudo)
 bash packaging/macos/enable_incoming.sh
 ```
 
-This uses `socketfilterfw` when passwordless sudo is available; otherwise it prints GUI instructions (launch each bundle once, click Allow, then check System Settings → Privacy & Security → Local Network).
-
-The bundles can be copied to `~/Applications` or `/Applications` and run from there.
-
-**Rebuild caveat**: the ad-hoc signature changes on every `make app` build, so the firewall prompt may re-fire after a rebuild. A self-signed Keychain certificate with `codesign --sign "<cert-name>"` is the stable alternative (documented only — see `packaging/macos/` for the scripts and plist template).
+This uses `socketfilterfw` to add and unblock the inner Mach-O binary directly. No prompt is needed — it requires root. Re-run after each `make app` rebuild since the ad-hoc signature changes.
 
 ## Contributing
 
