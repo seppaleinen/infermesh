@@ -121,13 +121,16 @@ The E2E test successfully avoids these mDNS limitations by:
 - `pkg/registry/memory.go` - In-memory registry
 
 ### Entry Points
-- `cmd/router/main.go` - Router binary
-- `cmd/worker/main.go` - Worker binary
+- `cmd/infermesh/main.go` - Unified binary (router + worker subcommands)
+- `cmd/infermesh/router.go` - Router subcommand (incl. `--worker` combined mode)
+- `cmd/infermesh/worker.go` - Worker subcommand
+- `pkg/worker/run.go` - Worker runtime (server, register loop, backend factory)
 
 ### Tests
 - `pkg/discovery/discovery_test.go` - Unit tests (62 passed)
 - `tests/integration/discovery_test.go` - Integration tests (5 passed, 7 failed)
 - `tests/e2e/discovery_test.go` - E2E tests (1 passed)
+- `tests/e2e/combined_test.go` - E2E tests for combined-mode CLI (`router --dev-mode --worker`)
 
 ### Build System
 - `Makefile` - Build, test, lint commands

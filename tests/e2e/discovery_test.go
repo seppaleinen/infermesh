@@ -45,21 +45,18 @@ func waitForHTTP(t *testing.T, url string, timeout time.Duration) {
 }
 
 func TestMDNSDiscoveryE2E(t *testing.T) {
-    // Paths to the built binaries.
-    routerPath := "../../bin/infermesh-router"
-    workerPath := "../../bin/infermesh-worker"
+    // Path to the built unified binary.
+    binPath := "../../bin/infermesh"
 
-    // Local dev loop: skip gracefully when binaries are absent instead of
+    // Local dev loop: skip gracefully when the binary is absent instead of
     // failing with fork/exec. CI always runs `make build` first so e2e
     // actually executes there.
-    for _, p := range []string{routerPath, workerPath} {
-        if _, err := os.Stat(p); err != nil {
-            t.Skipf("skipping e2e: binary %s not found (run `make build` first): %v", p, err)
-        }
+    if _, err := os.Stat(binPath); err != nil {
+        t.Skipf("skipping e2e: binary %s not found (run `make build` first): %v", binPath, err)
     }
 
     // Start router in dev mode.
-    routerCmd := startCmd(t, routerPath, "--dev-mode")
+    routerCmd := startCmd(t, binPath, "router", "--dev-mode")
     defer func() {
         _ = routerCmd.Process.Kill()
         _ = routerCmd.Wait()
@@ -69,7 +66,7 @@ func TestMDNSDiscoveryE2E(t *testing.T) {
     waitForHTTP(t, "http://localhost:8080/v1/workers", 5*time.Second)
 
     // Start worker in dev mode on a non‑default port.
-    workerCmd := startCmd(t, workerPath, "--dev-mode", "-port", "8081")
+    workerCmd := startCmd(t, binPath, "worker", "--dev-mode", "-port", "8081")
     defer func() {
         _ = workerCmd.Process.Kill()
         _ = workerCmd.Wait()

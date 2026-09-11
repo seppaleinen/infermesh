@@ -100,7 +100,7 @@ func TestValidateCombinedFlags(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateCombinedFlags(tt.prodMode, tt.workerMode, tt.routerPort, tt.workerPort, tt.backend)
+			err := ValidateCombinedFlags(tt.prodMode, tt.workerMode, tt.routerPort, tt.workerPort, tt.backend)
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)

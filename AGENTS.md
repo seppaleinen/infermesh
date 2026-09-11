@@ -1,6 +1,6 @@
 # InferMesh Agent Guidance
 
-Go 1.27+ mono-repo: an inference **router** + **worker** binaries that turn heterogeneous machines with spare GPU capacity into a dynamically discovered, OpenAI-compatible inference pool ("Airbnb for spare inference capacity"). Not Kubernetes, not LiteLLM, not distributed inference.
+Go 1.27+ mono-repo: a single unified **infermesh** binary (`router` and `worker` subcommands) that turns heterogeneous machines with spare GPU capacity into a dynamically discovered, OpenAI-compatible inference pool ("Airbnb for spare inference capacity"). Not Kubernetes, not LiteLLM, not distributed inference.
 
 ## Repo gotchas (read before building)
 
@@ -12,8 +12,8 @@ Go 1.27+ mono-repo: an inference **router** + **worker** binaries that turn hete
 ## Build & run
 
 ```bash
-make build            # -> bin/infermesh-router, bin/infermesh-worker (from ./cmd/router, ./cmd/worker)
-make build-static     # cross-platform: linux-amd64 + darwin-arm64, CGO_ENABLED=0
+make build            # -> bin/infermesh (from ./cmd/infermesh)
+make build-static     # cross-platform: bin/infermesh-linux-amd64 + bin/infermesh-darwin-arm64, CGO_ENABLED=0
 make lint             # golangci-lint run
 make tidy             # go mod tidy
 make clean            # removes bin/, cover/
@@ -22,16 +22,18 @@ make clean            # removes bin/, cover/
 Run (defaults to **dev mode** if neither `--dev-mode` nor `--prod-mode` is passed):
 
 ```bash
-./bin/infermesh-router --dev-mode                    # listens on :8080 (hardcoded, no port flag)
-./bin/infermesh-worker --dev-mode --router http://127.0.0.1:8080 \
+./bin/infermesh router --dev-mode                    # listens on :8080 (default --addr, hardcoded in router)
+./bin/infermesh worker --dev-mode --router http://127.0.0.1:8080 \
   --backend lmstudio --model-path /path/to/model     # default port 8081
+./bin/infermesh router --dev-mode --worker \
+  --backend lmstudio --model-path /path/to/model     # one process: router + in-process worker (dev mode only)
 ./test.sh                                             # tmux one-machine harness: router + LM Studio worker (gpt-oss-20b) + curl
 ```
 
-CLI flags (verified in `cmd/*/main.go`):
-- **Router**: `--dev-mode`, `--prod-mode`, `--mtls-cert`, `--mtls-key`, `--cert-dir`, `--api-key`
-- **Worker**: `--port` (default 8081), `--backend` (llama-cpp | ollama | lmstudio | vllm | custom), `--model-path`, `--router` (HTTP registration, dev-mode only), `--capabilities` (print and exit), `--enable-health-checks` (default on), plus the mTLS flags. Prod mode **requires** `--model-path`.
-- Backend endpoints are hardcoded in `cmd/worker/main.go`: llama-cpp `localhost:8080` (**collides with the router port!**), ollama `localhost:11434`, lmstudio `127.0.0.1:1234`, vllm `localhost:8000`.
+CLI flags (verified in `cmd/infermesh/`):
+- **Router subcommand**: `--dev-mode`, `--prod-mode`, `--mtls-cert`, `--mtls-key`, `--cert-dir`, `--api-key`, `--addr` (default `:8080`). With `--worker` (dev mode **only**): worker passthrough flags `--port` (default 8081), `--backend`, `--model-path`, `--enable-health-checks` (default on). `router --prod-mode --worker` and worker/router port collisions fail fast with exit 2.
+- **Worker subcommand**: `--port` (default 8081), `--backend` (llama-cpp | ollama | lmstudio | vllm | custom), `--model-path`, `--router` (HTTP registration, dev-mode only), `--capabilities` (print and exit), `--enable-health-checks` (default on), plus the mTLS flags. Prod mode **requires** `--model-path`.
+- Backend endpoints are hardcoded in `pkg/worker/backend_integration.go`: llama-cpp `localhost:8080` (**collides with the router port!**), ollama `localhost:11434`, lmstudio `127.0.0.1:1234`, vllm `localhost:8000`.
 
 ## Testing
 
@@ -46,7 +48,7 @@ go test ./pkg/discovery/...   # single package (Makefile has NO PKG= variable)
 ```
 
 - Unit tests live **inside `pkg/*`** (table-driven); `tests/unit/` and `tests/integration/` are currently empty dirs.
-- What actually exists today: `tests/e2e/discovery_test.go`, `tests/integration_security/security_test.go`.
+- What actually exists today: `tests/e2e/discovery_test.go`, `tests/e2e/combined_test.go`, `tests/integration_security/security_test.go`.
 - Coverage target: **80% on `pkg/`**.
 - mDNS timing contract: service type `_infermesh-worker._tcp.local.`, heartbeat TTL 30s, unavailable at 60s, removed at 120s (see `docs/contracts/discovery-v1.md`).
 
@@ -55,7 +57,7 @@ go test ./pkg/discovery/...   # single package (Makefile has NO PKG= variable)
 The README and CONTEXT.md directory trees are stale (`internal/`, `scripts/`, `pkg/contracts` don't exist). Actual layout:
 
 ```
-cmd/router, cmd/worker        # binary entry points
+cmd/infermesh                 # unified binary entry point (router + worker subcommands)
 pkg/protocol                  # shared types (WorkerInfo, Capabilities, events)
 pkg/discovery                 # mDNS listener (router) / announcer (worker), pluggable backends
 pkg/registry                  # in-memory worker registry, heartbeats

@@ -453,10 +453,10 @@ func writeCapabilities(w io.Writer, caps protocol.Capabilities) error {
 	return nil
 }
 
-// validateCombinedFlags performs fail-fast validation for the combined
+// ValidateCombinedFlags performs fail-fast validation for the combined
 // router+worker mode, returning an error (for exit 2 with a clear message)
 // when the flags cannot run in one process.
-func validateCombinedFlags(prodMode, workerMode bool, routerPort, workerPort int, backend string) error {
+func ValidateCombinedFlags(prodMode, workerMode bool, routerPort, workerPort int, backend string) error {
 	if prodMode && workerMode {
 		return errors.New("--worker is only supported in dev mode; use 'router --dev-mode --worker'")
 	}

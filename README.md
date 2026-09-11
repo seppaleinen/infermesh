@@ -9,14 +9,19 @@ Not: Kubernetes, LiteLLM, or distributed model inference.
 ## Quick Start
 
 ```bash
-# Build the router and worker binaries
+# Build the unified infermesh binary
 make build
 
 # Run router in dev mode (no auth, localhost)
-./bin/infermesh-router --dev-mode
+./bin/infermesh router --dev-mode
 
-# Run worker (also dev mode, auto-discovers router via mDNS)
-./bin/infermesh-worker --dev-mode \
+# Run a worker (also dev mode, auto-discovers router via mDNS)
+./bin/infermesh worker --dev-mode \
+  --model-path /path/to/model.gguf \
+  --backend llama-cpp
+
+# Or run the router and an in-process worker in one command (dev mode only)
+./bin/infermesh router --dev-mode --worker \
   --model-path /path/to/model.gguf \
   --backend llama-cpp
 
@@ -99,8 +104,7 @@ GET  /v1/models                # Available model list
 ```
 infermesh/
 ├── cmd/
-│   ├── router/                    # Router binary entry point
-│   └── worker/                    # Worker binary entry point
+│   └── infermesh/                 # Unified binary entry point (router + worker subcommands)
 ├── pkg/
 │   ├── discovery/                 # mDNS service discovery
 │   │   └── discovery_test.go      # Unit tests
@@ -137,7 +141,7 @@ The project uses an **agent pipeline** for development:
 ### Build Commands
 
 ```bash
-make build        # Build router and worker binaries
+make build        # Build the unified infermesh binary
 make test         # Run unit tests
 make test-integration  # Run integration tests
 make test-e2e     # Run end-to-end tests
