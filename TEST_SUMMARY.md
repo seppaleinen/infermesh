@@ -19,8 +19,8 @@ Implemented the mDNS discovery feature for InferMesh following the design contra
 - Registry heartbeat logic: Marks unavailable, removes stale workers
 
 ✅ **Entry Points**
-- `cmd/router/main.go` - Router starts listener + registry + HTTP server
-- `cmd/worker/main.go` - Worker creates announcer + starts HTTP server
+- `cmd/infermesh/router.go` - Router starts listener + registry + HTTP server
+- `cmd/infermesh/worker.go` - Worker creates announcer + starts HTTP server
 
 ✅ **Configuration System**
 - Discovery config with dev/prod defaults

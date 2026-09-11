@@ -896,7 +896,7 @@ func (r *memoryRegistry) Stop() error {
 ### Dependency Chain (Router Side)
 
 ```
-cmd/router/main.go
+cmd/infermesh/router.go           (router subcommand of the unified binary)
   → pkg/router/server.go          (HTTP server, OpenAI API)
     → pkg/registry.New()          (in-memory worker registry)
     → pkg/discovery.NewListener() (mDNS listener)
@@ -907,7 +907,7 @@ cmd/router/main.go
 ### Dependency Chain (Worker Side)
 
 ```
-cmd/worker/main.go
+cmd/infermesh/worker.go           (worker subcommand of the unified binary)
   → pkg/worker/server.go          (HTTP server, /health, /capabilities, etc.)
     → pkg/discovery.NewAnnouncer() (mDNS announcer)
     → announcer.Announce()         (advertise worker info)
@@ -1020,8 +1020,7 @@ require (
 .PHONY: build test test-integration test-e2e lint tidy
 
 build:
-	go build -o bin/infermesh-router ./cmd/router
-	go build -o bin/infermesh-worker ./cmd/worker
+  go build -o bin/infermesh ./cmd/infermesh
 
 test:
 	go test -v -race -cover ./pkg/...
@@ -1097,8 +1096,8 @@ Simulated worker join/leave with mDNS:
 
 Real network dynamic join/leave:
 
-1. Start `infermesh-router` binary on machine A
-2. Start `infermesh-worker` binary on machine B (same LAN)
+1. Start `infermesh router` on machine A
+2. Start `infermesh worker` on machine B (same LAN)
 3. Assert: router logs show worker registration
 4. Kill the worker process on machine B
 5. Assert: router logs show worker marked unavailable
