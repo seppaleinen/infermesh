@@ -192,6 +192,36 @@ The first working version should be able to:
 - **Production mode**: mTLS with self-signed certificates. Worker identity verification, audit logging, request-level access control.
 - **Key requirements**: Authentication, worker identity, TLS/mTLS, authorization, request-level access control, worker allow/deny policies, audit logging.
 
+## macOS App Bundles (Firewall / Local Network)
+
+On macOS Sequoia+ with the Application Firewall enabled, unsigned CLI binaries get silently blocked for inbound LAN connections. Bundling the binaries as `.app` bundles gives them a real identity and triggers the one-time "Allow incoming connections?" GUI prompt — no admin required.
+
+Build both bundles:
+
+```bash
+make app
+```
+
+Outputs `dist/InferMesh Router.app` and `dist/InferMesh Worker.app`.
+
+Run the bundled worker (same flags as the bare binary):
+
+```bash
+./dist/InferMesh\ Worker.app/Contents/MacOS/infermesh-worker --dev-mode --backend custom --router http://127.0.0.1:8080
+```
+
+Enable firewall / local network access:
+
+```bash
+bash packaging/macos/enable_incoming.sh
+```
+
+This uses `socketfilterfw` when passwordless sudo is available; otherwise it prints GUI instructions (launch each bundle once, click Allow, then check System Settings → Privacy & Security → Local Network).
+
+The bundles can be copied to `~/Applications` or `/Applications` and run from there.
+
+**Rebuild caveat**: the ad-hoc signature changes on every `make app` build, so the firewall prompt may re-fire after a rebuild. A self-signed Keychain certificate with `codesign --sign "<cert-name>"` is the stable alternative (documented only — see `packaging/macos/` for the scripts and plist template).
+
 ## Contributing
 
 1. Fork the repository

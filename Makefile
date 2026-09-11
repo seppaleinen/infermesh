@@ -49,9 +49,14 @@ tidy:
 # Clean build artifacts
 clean:
 	rm -rf bin/
+	rm -rf dist/
 	rm -rf cover/
 	find . -type f -name "*.cover" -delete
 	find . -type d -name "cover" -exec rm -rf {} +
+
+# macOS app bundles (firewall / local network workaround)
+app:
+	bash packaging/macos/build_app.sh
 
 # Coverage
 coverage:
@@ -59,4 +64,4 @@ coverage:
 	go tool funccover -mode=count -func=cover/coverage.out
 	@echo "Coverage report: cover/coverage.out"
 
-.PHONY: build build-static test test-integration test-e2e test-platform test-all-platforms lint install-hooks tidy clean coverage
+.PHONY: build build-static test test-security test-integration test-e2e test-platform test-all-platforms lint install-hooks tidy clean app coverage
