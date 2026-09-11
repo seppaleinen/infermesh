@@ -4,6 +4,7 @@ Thumbs.db
 
 # Build artifacts
 /bin
+/dist
 /obj
 /*_obj
 
