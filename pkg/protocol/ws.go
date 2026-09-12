@@ -26,6 +26,7 @@ const (
 	MsgPing              MessageType = "ping"
 	MsgError             MessageType = "error"
 	MsgClose             MessageType = "close"
+	MsgRouterReady       MessageType = "router_ready"
 )
 
 // Message is the JSON envelope carried in every WebSocket frame on the
@@ -35,6 +36,7 @@ const (
 type Message struct {
 	ID      string          `json:"id"`
 	Type    MessageType     `json:"type"`
+	WorkerID string         `json:"worker_id,omitempty"`
 	Payload json.RawMessage `json:"payload"`
 }
 
@@ -75,6 +77,7 @@ func NewMessageID() string {
 // handshake completes.
 type RegisterPayload struct {
 	Worker WorkerInfo `json:"worker"`
+	Relay bool        `json:"relay,omitempty"` // true if this is a relay registration
 }
 
 // WelcomePayload is sent by the router after it accepts a registration.

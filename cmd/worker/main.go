@@ -49,6 +49,7 @@ func main() {
 	modelPath := flag.String("model-path", "", "path to model file (optional, auto-discovery used if not provided)")
 	backend := flag.String("backend", "llama-cpp", "backend adapter (llama-cpp, ollama, vllm, lmstudio)")
 	routerAddr := flag.String("router", "", "router base URL (http/https in dev-mode, ws/wss otherwise); empty means mDNS")
+	relayURL := flag.String("relay-url", "", "relay URL for HTTP registration and traffic forwarding (http://relay:port); overrides direct router connection")
 	enableHealthChecks := flag.Bool("enable-health-checks", true, "enable periodic backend health checks")
 	apiKey := flag.String("api-key", "", "API key for authentication (production mode)")
 	flag.Parse()
@@ -184,18 +185,20 @@ func main() {
 		APIKey:       *apiKey,
 	}
 
-	// --router flag: explicit URL (http:// or ws://) registers with the router
-	// over the specified transport; no flag at all falls through to mDNS.
+	// --relay-url: connect to relay via WebSocket instead of router directly.
+	// The worker treats the relay URL as its router WebSocket endpoint;
+	// the relay forwards register/heartbeat/inference messages to the router.
 	routerURL := *routerAddr
-	if routerURL == "" && isDevMode {
+	if *relayURL != "" {
+		routerURL = *relayURL
+	} else if routerURL == "" && isDevMode {
 		// Dev-mode convenience: workers talk to a local router without any flag.
 		routerURL = "ws://127.0.0.1:8080"
 	}
 
 	if routerURL != "" {
-		// Dev-mode http:// → HTTP POST /v1/dev/register (backward compat).
-		// All other schemes (ws://, wss://, http:// in prod) → WebSocket transport.
 		if isDevMode && strings.HasPrefix(routerURL, "http://") {
+			// Dev-mode http:// → HTTP POST /v1/dev/register (backward compat).
 			log.Info("dev-mode: registering with router via HTTP", "router", routerURL)
 			baseInfo := info
 			go worker.RegisterLoopWithRefresh(ctx, routerURL, func() protocol.WorkerInfo {
@@ -211,8 +214,13 @@ func main() {
 				return current
 			}, worker.DefaultRegisterInterval, log)
 		} else {
+			// All other schemes (ws://, wss://, http:// in prod) → WebSocket transport.
 			info.Transport = protocol.TransportWS
-			log.Info("registering with router via websocket", "router", routerURL)
+			if *relayURL != "" {
+				log.Info("registering with relay via websocket", "relay", routerURL)
+			} else {
+				log.Info("registering with router via websocket", "router", routerURL)
+			}
 			baseInfo := info
 			go worker.WSRegisterLoop(ctx, worker.WSConfig{RouterURL: routerURL}, func() protocol.WorkerInfo {
 				current := baseInfo

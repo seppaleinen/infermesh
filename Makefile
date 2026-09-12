@@ -1,5 +1,5 @@
 # Build binaries
-build: build-router build-worker
+build: build-router build-worker build-relay
 
 build-router:
 	go build -o bin/infermesh-router ./cmd/router
@@ -7,17 +7,23 @@ build-router:
 build-worker:
 	go build -o bin/infermesh-worker ./cmd/worker
 
+build-relay:
+	go build -o bin/infermesh-relay ./cmd/relay
+
 # Build static binaries (CGO_ENABLED=0 for cross-platform compatibility)
 build-static:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/infermesh-router-linux-amd64 ./cmd/router
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/infermesh-router-darwin-arm64 ./cmd/router
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/infermesh-worker-linux-amd64 ./cmd/worker
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/infermesh-worker-darwin-arm64 ./cmd/worker
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/infermesh-relay-linux-amd64 ./cmd/relay
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/infermesh-relay-darwin-arm64 ./cmd/relay
 
 # Build for current platform
 build-current:
 	go build -o bin/infermesh-router ./cmd/router
 	go build -o bin/infermesh-worker ./cmd/worker
+	go build -o bin/infermesh-relay ./cmd/relay
 
 # Unit tests (method-level, table-driven)
 test:
@@ -76,4 +82,4 @@ coverage:
 	go tool funccover -mode=count -func=cover/coverage.out
 	@echo "Coverage report: cover/coverage.out"
 
-.PHONY: build build-router build-worker build-static build-current test test-integration test-e2e test-platform test-all-platforms lint install-hooks tidy clean coverage app
+.PHONY: build build-router build-worker build-relay build-static build-current test test-security test-integration test-e2e test-platform test-all-platforms lint install-hooks tidy clean coverage app

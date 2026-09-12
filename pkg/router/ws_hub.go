@@ -35,6 +35,12 @@ type WSHub struct {
 	mu    sync.RWMutex
 	conns map[string]*wsConnection
 
+	relayURL    string
+	relayMu     sync.RWMutex
+	relayConn   *websocket.Conn
+	relaySendCh chan []byte
+	relayDone   chan struct{}
+
 	writeTimeout  time.Duration
 	sendQueueSize int
 	apiKey        string
@@ -44,9 +50,11 @@ type WSHub struct {
 // registry. reg may be nil (events are then dropped).
 func NewWSHub(reg registry.Registry, log *slog.Logger) *WSHub {
 	return &WSHub{
-		log:           log,
-		reg:           reg,
-		conns:         make(map[string]*wsConnection),
+		log:         log,
+		reg:         reg,
+		conns:       make(map[string]*wsConnection),
+		relaySendCh: make(chan []byte, wsutil.SendQueueSize),
+		relayDone:   make(chan struct{}),
 		writeTimeout:  wsutil.WriteTimeout,
 		sendQueueSize: wsutil.SendQueueSize,
 	}
@@ -57,8 +65,25 @@ func (h *WSHub) SetAPIKey(key string) {
 	h.apiKey = key
 }
 
+// SetRelayURL configures the relay WebSocket URL. When set, the hub
+// does not accept direct worker connections via Handler(); instead,
+// DialRelay must be called to connect to the relay.
+func (h *WSHub) SetRelayURL(url string) {
+	h.relayURL = url
+}
+
+// relayConnected returns true if the relay connection is active.
+func (h *WSHub) relayConnected() bool {
+	h.relayMu.RLock()
+	defer h.relayMu.RUnlock()
+	return h.relayConn != nil
+}
+
 // Handler returns the /v1/connect upgrade handler.
 func (h *WSHub) Handler() http.Handler {
+	if h.relayURL != "" {
+		return nil
+	}
 	return wsutil.Server(h.handleConn)
 }
 
@@ -330,6 +355,27 @@ func (c *wsConnection) writerLoop() {
 
 // send enqueues a marshaled envelope, honoring ctx cancellation.
 func (c *wsConnection) send(ctx context.Context, msg protocol.Message) error {
+	// If relay is configured, send through relay with WorkerID set
+	if c.hub.relayConnected() {
+		msg.WorkerID = c.id
+		data, err := json.Marshal(msg)
+		if err != nil {
+			return fmt.Errorf("marshal websocket message: %w", err)
+		}
+		c.hub.mu.Lock()
+		sendCh := c.hub.relaySendCh
+		c.hub.mu.Unlock()
+		
+		select {
+		case sendCh <- data:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-c.doneCh:
+			return errConnClosed
+		}
+	}
+
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal websocket message: %w", err)
@@ -347,6 +393,27 @@ func (c *wsConnection) send(ctx context.Context, msg protocol.Message) error {
 // enqueue enqueues a message without blocking; returns false if the queue is
 // full or the connection is closing (the message is dropped).
 func (c *wsConnection) enqueue(msg protocol.Message) bool {
+	// If relay is configured, send through relay with WorkerID set
+	if c.hub.relayConnected() {
+		msg.WorkerID = c.id
+		data, err := json.Marshal(msg)
+		if err != nil {
+			return false
+		}
+		c.hub.mu.Lock()
+		sendCh := c.hub.relaySendCh
+		c.hub.mu.Unlock()
+		
+		select {
+		case sendCh <- data:
+			return true
+		case <-c.doneCh:
+			return false
+		default:
+			return false
+		}
+	}
+
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return false
@@ -783,4 +850,135 @@ func forceNonStreaming(body []byte) ([]byte, error) {
 	}
 	m["stream"] = false
 	return json.Marshal(m)
+}
+
+// DialRelay dials the relay WebSocket connection, sends router_ready
+// as the first frame, and starts reader/writer loops that bridge the
+// relay connection into the hub's existing dispatch and connection maps.
+func (h *WSHub) DialRelay(ctx context.Context, url string) error {
+	conn, err := wsutil.Dial(ctx, url, "")
+	if err != nil {
+		return fmt.Errorf("dial relay: %w", err)
+	}
+
+	h.relayMu.Lock()
+	h.relayConn = conn
+	h.relayMu.Unlock()
+
+	// Send router_ready as the first frame
+	readyMsg := protocol.Message{Type: protocol.MsgRouterReady}
+	if err := wsutil.SendJSON(conn, readyMsg); err != nil {
+		h.relayMu.Lock()
+		h.relayConn = nil
+		h.relayMu.Unlock()
+		_ = conn.Close()
+		return fmt.Errorf("send router_ready: %w", err)
+	}
+
+	h.log.Info("connected to relay", "url", url)
+
+	go h.relayReaderLoop(ctx)
+	go h.relayWriterLoop(ctx)
+	return nil
+}
+
+
+
+// dispatchRelayMessage routes a message received from the relay
+// to the correct worker connection based on WorkerID.
+func (h *WSHub) dispatchRelayMessage(msg protocol.Message) {
+	h.mu.RLock()
+	c, ok := h.conns[msg.WorkerID]
+	h.mu.RUnlock()
+
+	if !ok {
+		h.log.Debug("no worker connection for relay message", "worker_id", msg.WorkerID)
+		return
+	}
+
+	c.hub.dispatch(c, msg)
+}
+
+// relayWriterLoop sends messages from the relaySendCh to the relay connection.
+func (h *WSHub) relayWriterLoop(ctx context.Context) {
+	defer func() {
+		h.relayMu.Lock()
+		if h.relayConn != nil {
+			h.relayConn.Close()
+		}
+		h.relayMu.Unlock()
+		close(h.relayDone)
+		h.log.Info("relay writer loop exited")
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case data, ok := <-h.relaySendCh:
+			if !ok {
+				return
+			}
+			h.relayMu.Lock()
+			conn := h.relayConn
+			h.relayMu.Unlock()
+			if conn == nil {
+				continue
+			}
+			if err := wsutil.SendJSON(conn, data); err != nil {
+				h.log.Warn("failed to send to relay", "error", err)
+			}
+		}
+	}
+}
+
+// relayReaderLoop reads messages from the relay and dispatches them
+// to the appropriate worker connection based on WorkerID.
+func (h *WSHub) relayReaderLoop(ctx context.Context) {
+	defer func() {
+		h.relayMu.Lock()
+		if h.relayConn != nil {
+			h.relayConn.Close()
+		}
+		h.relayMu.Unlock()
+		h.log.Info("relay reader loop exited")
+	}()
+
+	for {
+		if err := wsutil.SetReadDeadline(h.relayConn, time.Now().Add(wsutil.ReadTimeout)); err != nil {
+			return
+		}
+		var msg protocol.Message
+		if err := wsutil.ReceiveJSON(h.relayConn, &msg); err != nil {
+			if errors.Is(err, wsutil.ErrMessageTooLarge) {
+				h.log.Warn("oversized message from relay")
+			} else {
+				h.log.Debug("relay read failed", "error", err)
+			}
+			return
+		}
+
+		// Messages from relay have WorkerID set by the worker
+		if msg.WorkerID != "" {
+			h.mu.RLock()
+			c, ok := h.conns[msg.WorkerID]
+			h.mu.RUnlock()
+			if ok {
+				c.hub.dispatch(c, msg)
+			} else {
+				h.log.Debug("no worker connection for relay message", "worker_id", msg.WorkerID)
+			}
+		} else {
+			// Broadcast to all workers or log
+			h.mu.RLock()
+			conns := make([]*wsConnection, 0, len(h.conns))
+			for _, c := range h.conns {
+				conns = append(conns, c)
+			}
+			h.mu.RUnlock()
+			for _, c := range conns {
+				c.hub.dispatch(c, msg)
+			}
+		}
+	}
 }

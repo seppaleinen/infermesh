@@ -151,17 +151,27 @@ type ModelsResponse struct {
 
 // NewServer creates a new router HTTP server.
 func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg security.Config) *Server {
-	cache := NewCapabilityCache(reg, log)
-	hub := NewWSHub(reg, log)
-	hub.SetAPIKey(cfg.APIKey)
-	return &Server{
-		log:   log,
-		reg:   reg,
-		addr:  addr,
-		cache: cache,
-		cfg:   cfg,
-		hub:   hub,
-	}
+    cache := NewCapabilityCache(reg, log)
+    hub := NewWSHub(reg, log)
+    hub.SetAPIKey(cfg.APIKey)
+    return &Server{
+        log:   log,
+        reg:   reg,
+        addr:  addr,
+        cache: cache,
+        cfg: cfg,
+        hub:   hub,
+    }
+}
+
+// SetRelayURL configures the relay WebSocket URL for outbound-only mode.
+func (s *Server) SetRelayURL(url string) {
+    s.hub.SetRelayURL(url)
+}
+
+// DialRelay dials the relay WebSocket connection and starts the relay reader/writer loops.
+func (s *Server) DialRelay(ctx context.Context, url string) error {
+    return s.hub.DialRelay(ctx, url)
 }
 
 // Start runs the HTTP server.

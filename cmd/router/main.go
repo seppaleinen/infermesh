@@ -23,6 +23,7 @@ func main() {
 	certDir := flag.String("cert-dir", "", "path to certificate directory (for CA)")
 	apiKey := flag.String("api-key", "", "API key for authentication (production mode)")
 	addr := flag.String("addr", ":8080", "address to bind router (host:port)")
+	relayURL := flag.String("relay-url", "", "relay URL for informational purposes")
 	flag.Parse()
 
 	// Determine dev mode: --prod-mode disables dev mode, --dev-mode enables it
@@ -108,12 +109,22 @@ func main() {
 
 	// Start router HTTP server
 	srv := router.NewServer(reg, log, *addr, secCfg)
+	if *relayURL != "" {
+		srv.SetRelayURL(*relayURL)
+		go func() {
+			if err := srv.DialRelay(ctx, *relayURL); err != nil {
+				log.Error("failed to dial relay", "error", err)
+				cancel()
+				return
+			}
+		}()
+	}
 	go func() {
 		if err := srv.Start(ctx); err != nil {
 			log.Error("router server error", "error", err)
 		}
 	}()
-	log.Info("router listening", "addr", *addr, "ws_connect", fmt.Sprintf("ws://%s/v1/connect", *addr), "dev_mode", isDevMode)
+	log.Info("router listening", "addr", *addr, "ws_connect", fmt.Sprintf("ws://%s/v1/connect", *addr), "dev_mode", isDevMode, "relay_url", *relayURL)
 
 	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
