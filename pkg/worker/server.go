@@ -593,6 +593,20 @@ func (s *Server) modelsList(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// loadModelByName marks a declared model as loaded, mirroring the HTTP
+// /v1/models/load handler. It is used by the WebSocket model_load_request
+// dispatch; the next heartbeat carries the updated models so the router's
+// capability cache sees the load.
+func (s *Server) loadModelByName(name string) (bool, string) {
+	for i, m := range s.models {
+		if m.Name == name {
+			s.models[i].Loaded = true
+			return true, ""
+		}
+	}
+	return false, "model not found"
+}
+
 // loadModelHandler handles the /v1/models/load HTTP endpoint.
 func (s *Server) loadModelHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

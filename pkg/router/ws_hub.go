@@ -1,0 +1,786 @@
+package router
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"golang.org/x/net/websocket"
+
+	"github.com/seppaleinen/infermesh/pkg/protocol"
+	"github.com/seppaleinen/infermesh/pkg/registry"
+	"github.com/seppaleinen/infermesh/pkg/wsutil"
+)
+
+// errConnClosed is delivered to in-flight calls when their connection dies.
+var errConnClosed = errors.New("websocket connection closed")
+
+// WSHub manages outbound WebSocket connections from workers. Workers dial the
+// router (never the reverse), so the hub holds an active connection per worker
+// ID and multiplexes inference traffic over it.
+//
+// Concurrency: each connection has exactly one reader goroutine (readerLoop)
+// and exactly one writer goroutine (writerLoop); all outbound frames go
+// through the connection's send queue.
+type WSHub struct {
+	log *slog.Logger
+	reg registry.Registry
+
+	mu    sync.RWMutex
+	conns map[string]*wsConnection
+
+	writeTimeout  time.Duration
+	sendQueueSize int
+	apiKey        string
+}
+
+// NewWSHub creates a hub bridging WebSocket worker connections into the
+// registry. reg may be nil (events are then dropped).
+func NewWSHub(reg registry.Registry, log *slog.Logger) *WSHub {
+	return &WSHub{
+		log:           log,
+		reg:           reg,
+		conns:         make(map[string]*wsConnection),
+		writeTimeout:  wsutil.WriteTimeout,
+		sendQueueSize: wsutil.SendQueueSize,
+	}
+}
+
+// SetAPIKey sets the API key used to validate worker registrations.
+func (h *WSHub) SetAPIKey(key string) {
+	h.apiKey = key
+}
+
+// Handler returns the /v1/connect upgrade handler.
+func (h *WSHub) Handler() http.Handler {
+	return wsutil.Server(h.handleConn)
+}
+
+// Start launches the idle ping loop that keeps liveness traffic flowing on
+// otherwise quiet connections.
+func (h *WSHub) Start(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(wsutil.DefaultPingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				h.mu.RLock()
+				conns := make([]*wsConnection, 0, len(h.conns))
+				for _, c := range h.conns {
+					conns = append(conns, c)
+				}
+				h.mu.RUnlock()
+				msg, err := protocol.NewMessage(protocol.MsgPing, protocol.PingPayload{Timestamp: time.Now().Unix()})
+				if err != nil {
+					continue
+				}
+				for _, c := range conns {
+					c.enqueue(msg)
+				}
+			}
+		}
+	}()
+}
+
+// Client returns a WorkerClient bound to the active WebSocket connection for
+// id, or nil if the worker is not connected over WebSocket.
+func (h *WSHub) Client(id string) WorkerClient {
+	h.mu.RLock()
+	c, ok := h.conns[id]
+	h.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	return &wsWorkerClient{conn: c, log: h.log}
+}
+
+// handleConn is invoked once per upgraded connection. The first frame must be
+// a register message; afterwards the worker's heartbeats, capabilities pushes
+// and inference responses are dispatched until the connection dies.
+func (h *WSHub) handleConn(ws *websocket.Conn) {
+	var msg protocol.Message
+	if err := wsutil.ReceiveJSON(ws, &msg); err != nil {
+		h.log.Warn("websocket register read failed", "error", err)
+		return
+	}
+	if msg.Type != protocol.MsgRegister {
+		h.log.Warn("first websocket message is not a register", "type", msg.Type)
+		_ = sendErrorRaw(ws, "first message must be register")
+		return
+	}
+	var reg protocol.RegisterPayload
+	if err := msg.DecodePayload(&reg); err != nil {
+		h.log.Warn("bad register payload", "error", err)
+		_ = sendErrorRaw(ws, "bad register payload")
+		return
+	}
+	worker := reg.Worker
+	if worker.ID == "" {
+		h.log.Warn("register without worker id")
+		_ = sendErrorRaw(ws, "register requires worker id")
+		return
+	}
+
+	// Validate API key if configured
+	if h.apiKey != "" && worker.APIKey != h.apiKey {
+		h.log.Warn("invalid API key for websocket registration", "worker", worker.ID)
+		_ = sendErrorRaw(ws, "invalid or missing API key")
+		return
+	}
+
+	worker.Transport = protocol.TransportWS
+	if worker.Status == "" {
+		worker.Status = protocol.StatusAvailable
+	}
+
+	conn := &wsConnection{
+		hub:     h,
+		id:      worker.ID,
+		ws:      ws,
+		worker:  worker,
+		sendCh:  make(chan []byte, h.sendQueueSize),
+		doneCh:  make(chan struct{}),
+		pending: make(map[string]*pendingCall),
+	}
+
+	// One active connection per worker ID: a newer connection supersedes the
+	// old one, which is politely asked to close.
+	h.mu.Lock()
+	if old, ok := h.conns[worker.ID]; ok {
+		h.log.Info("superseding existing websocket connection", "worker", worker.ID)
+		old.enqueueClose("superseded")
+	}
+	h.conns[worker.ID] = conn
+	h.mu.Unlock()
+
+	h.bridge(protocol.DiscoveryEvent{Type: protocol.EventAdded, Worker: worker})
+
+	go conn.writerLoop()
+	welcome, _ := protocol.NewMessage(protocol.MsgWelcome, protocol.WelcomePayload{
+		WorkerID: worker.ID,
+		Message:  "registered",
+	})
+	conn.enqueue(welcome)
+	h.log.Info("websocket worker registered", "worker", worker.ID, "ip", worker.IP, "port", worker.Port)
+
+	// Block until the connection ends; the HTTP server goroutine stays
+	// parked here for the life of the connection.
+	conn.readerLoop()
+}
+
+// bridge forwards a discovery event into the registry, which in turn feeds
+// the capability cache and /v1/workers.
+func (h *WSHub) bridge(event protocol.DiscoveryEvent) {
+	if h.reg == nil {
+		return
+	}
+	if err := h.reg.HandleEvent(event); err != nil {
+		h.log.Warn("registry event failed", "type", event.Type, "worker", event.Worker.ID, "error", err)
+	}
+}
+
+// sendErrorRaw writes an error message on a not-yet-registered connection.
+func sendErrorRaw(ws *websocket.Conn, message string) error {
+	msg, err := protocol.NewMessage(protocol.MsgError, protocol.ErrorPayload{Message: message})
+	if err != nil {
+		return err
+	}
+	return wsutil.SendJSON(ws, msg)
+}
+
+// dispatch routes an inbound message for a registered connection.
+func (h *WSHub) dispatch(c *wsConnection, msg protocol.Message) {
+	switch msg.Type {
+	case protocol.MsgHeartbeat:
+		var p protocol.HeartbeatPayload
+		if err := msg.DecodePayload(&p); err != nil {
+			h.log.Warn("bad heartbeat payload", "worker", c.id, "error", err)
+			return
+		}
+		if p.Worker.ID == "" {
+			p.Worker.ID = c.id
+		}
+		p.Worker.Transport = protocol.TransportWS
+		c.setWorker(p.Worker)
+		h.bridge(protocol.DiscoveryEvent{Type: protocol.EventUpdated, Worker: p.Worker})
+
+	case protocol.MsgCapabilities:
+		var p protocol.CapabilitiesPayload
+		if err := msg.DecodePayload(&p); err != nil {
+			h.log.Warn("bad capabilities payload", "worker", c.id, "error", err)
+			return
+		}
+		w := c.workerSnapshot()
+		w.Capabilities = p.Capabilities
+		w.Transport = protocol.TransportWS
+		c.setWorker(w)
+		h.bridge(protocol.DiscoveryEvent{Type: protocol.EventUpdated, Worker: w})
+
+	case protocol.MsgPing:
+		// Keepalive echo from the worker. lastRead is refreshed by the
+		// reader loop, so nothing else to do.
+
+	case protocol.MsgInferenceChunk, protocol.MsgInferenceResponse, protocol.MsgModelLoadResponse:
+		c.routeResponse(msg)
+
+	case protocol.MsgError:
+		var p protocol.ErrorPayload
+		_ = msg.DecodePayload(&p)
+		if p.ID != "" {
+			c.failPending(p.ID, errors.New(p.Message))
+		} else {
+			h.log.Warn("worker websocket error", "worker", c.id, "message", p.Message, "code", p.Code)
+		}
+
+	case protocol.MsgClose:
+		var p protocol.ClosePayload
+		_ = msg.DecodePayload(&p)
+		h.log.Info("worker closed websocket connection", "worker", c.id, "reason", p.Reason)
+		c.shutdown("worker requested close")
+
+	default:
+		h.log.Debug("ignoring unexpected websocket message", "worker", c.id, "type", msg.Type)
+	}
+}
+
+// wsConnection is one worker's WebSocket connection. It owns the socket, the
+// outbound send queue and the map of in-flight calls keyed by message ID.
+type wsConnection struct {
+	hub *WSHub
+	id  string
+	ws  *websocket.Conn
+
+	sendCh chan []byte
+	doneCh chan struct{}
+
+	lastRead atomic.Int64
+
+	stateMu sync.RWMutex
+	worker  protocol.WorkerInfo // latest known snapshot (register/heartbeat/caps)
+
+	pendingMu sync.Mutex
+	pending   map[string]*pendingCall
+
+	closeOnce sync.Once
+}
+
+func (c *wsConnection) setWorker(w protocol.WorkerInfo) {
+	c.stateMu.Lock()
+	c.worker = w
+	c.stateMu.Unlock()
+}
+
+func (c *wsConnection) workerSnapshot() protocol.WorkerInfo {
+	c.stateMu.RLock()
+	defer c.stateMu.RUnlock()
+	return c.worker
+}
+
+// readerLoop is the single reader goroutine for the connection.
+func (c *wsConnection) readerLoop() {
+	defer c.shutdown("read loop exited")
+	for {
+		if err := wsutil.SetReadDeadline(c.ws, time.Now().Add(wsutil.ReadTimeout)); err != nil {
+			c.hub.log.Debug("set read deadline failed", "worker", c.id, "error", err)
+			return
+		}
+		var msg protocol.Message
+		if err := wsutil.ReceiveJSON(c.ws, &msg); err != nil {
+			if errors.Is(err, wsutil.ErrMessageTooLarge) {
+				c.hub.log.Warn("oversized websocket message", "worker", c.id)
+			} else {
+				c.hub.log.Debug("websocket read failed", "worker", c.id, "error", err)
+			}
+			return
+		}
+		c.lastRead.Store(time.Now().UnixNano())
+		c.hub.dispatch(c, msg)
+	}
+}
+
+// writerLoop is the single writer goroutine for the connection. It applies
+// the write deadline to every frame and shuts the connection down on failure.
+func (c *wsConnection) writerLoop() {
+	for {
+		select {
+		case data := <-c.sendCh:
+			if err := wsutil.SetWriteDeadline(c.ws, time.Now().Add(c.hub.writeTimeout)); err != nil {
+				c.shutdown("write deadline error")
+				return
+			}
+			if err := wsutil.SendText(c.ws, data); err != nil {
+				c.hub.log.Warn("websocket write failed", "worker", c.id, "error", err)
+				c.shutdown("write error")
+				return
+			}
+		case <-c.doneCh:
+			return
+		}
+	}
+}
+
+// send enqueues a marshaled envelope, honoring ctx cancellation.
+func (c *wsConnection) send(ctx context.Context, msg protocol.Message) error {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal websocket message: %w", err)
+	}
+	select {
+	case c.sendCh <- data:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.doneCh:
+		return errConnClosed
+	}
+}
+
+// enqueue enqueues a message without blocking; returns false if the queue is
+// full or the connection is closing (the message is dropped).
+func (c *wsConnection) enqueue(msg protocol.Message) bool {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return false
+	}
+	select {
+	case c.sendCh <- data:
+		return true
+	case <-c.doneCh:
+		return false
+	default:
+		c.hub.log.Warn("websocket send queue full; dropping message", "worker", c.id, "type", msg.Type)
+		return false
+	}
+}
+
+// enqueueClose politely asks the peer to close, then force-closes if it does
+// not comply within a grace period.
+func (c *wsConnection) enqueueClose(reason string) bool {
+	msg, err := protocol.NewMessage(protocol.MsgClose, protocol.ClosePayload{Reason: reason})
+	if err != nil {
+		return false
+	}
+	ok := c.enqueue(msg)
+	go func() {
+		select {
+		case <-time.After(3 * time.Second):
+			c.shutdown("close grace period expired")
+		case <-c.doneCh:
+		}
+	}()
+	return ok
+}
+
+// shutdown tears the connection down exactly once: it closes the socket,
+// removes the connection from the hub, fails in-flight calls and deregisters
+// the worker from the registry.
+func (c *wsConnection) shutdown(reason string) {
+	c.closeOnce.Do(func() {
+		c.hub.log.Info("websocket connection closed", "worker", c.id, "reason", reason)
+		close(c.doneCh)
+		_ = c.ws.Close()
+
+		c.hub.mu.Lock()
+		if cur, ok := c.hub.conns[c.id]; ok && cur == c {
+			delete(c.hub.conns, c.id)
+		}
+		c.hub.mu.Unlock()
+
+		c.pendingMu.Lock()
+		pend := make([]*pendingCall, 0, len(c.pending))
+		for _, pc := range c.pending {
+			pend = append(pend, pc)
+		}
+		c.pending = make(map[string]*pendingCall)
+		c.pendingMu.Unlock()
+		for _, pc := range pend {
+			pc.fail(errConnClosed)
+		}
+
+		w := c.workerSnapshot()
+		if w.ID != "" {
+			c.hub.bridge(protocol.DiscoveryEvent{Type: protocol.EventRemoved, Worker: w})
+		}
+	})
+}
+
+// routeResponse delivers a chunk/response message to its pending call.
+func (c *wsConnection) routeResponse(msg protocol.Message) {
+	c.pendingMu.Lock()
+	pc, ok := c.pending[msg.ID]
+	c.pendingMu.Unlock()
+	if !ok {
+		c.hub.log.Debug("response for unknown request id", "worker", c.id, "id", msg.ID)
+		return
+	}
+	pc.handle(msg)
+}
+
+// failPending terminates the pending call for id with err.
+func (c *wsConnection) failPending(id string, err error) {
+	c.pendingMu.Lock()
+	pc, ok := c.pending[id]
+	c.pendingMu.Unlock()
+	if ok {
+		pc.fail(err)
+	}
+}
+
+// addPending registers a pending call, rejecting duplicate IDs.
+func (c *wsConnection) addPending(pc *pendingCall) error {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	if _, exists := c.pending[pc.id]; exists {
+		return fmt.Errorf("duplicate pending message id %s", pc.id)
+	}
+	c.pending[pc.id] = pc
+	return nil
+}
+
+// registerStream registers a streaming inference call. Inbound chunks are
+// framed as SSE events (data: <json>\n\n); the terminal response emits
+// "data: [DONE]" with Done=true ahead of the channel closing.
+func (c *wsConnection) registerStream(id string, chunkCh chan StreamEvent, errCh chan error) (*pendingCall, error) {
+	pc := &pendingCall{
+		conn:    c,
+		id:      id,
+		chunkCh: chunkCh,
+		errCh:   errCh,
+		doneCh:  make(chan struct{}),
+	}
+	pc.handle = func(msg protocol.Message) {
+		switch msg.Type {
+		case protocol.MsgInferenceChunk:
+			var p protocol.InferenceChunkPayload
+			if err := msg.DecodePayload(&p); err != nil {
+				pc.fail(fmt.Errorf("bad chunk payload: %w", err))
+				return
+			}
+			framed := append([]byte("data: "), p.Chunk...)
+			framed = append(framed, '\n', '\n')
+			select {
+			case pc.chunkCh <- StreamEvent{Data: framed}:
+			case <-pc.doneCh:
+			}
+		case protocol.MsgInferenceResponse:
+			var p protocol.InferenceResponsePayload
+			if err := msg.DecodePayload(&p); err != nil {
+				pc.fail(fmt.Errorf("bad response payload: %w", err))
+				return
+			}
+			if p.Error != "" {
+				pc.fail(errors.New(p.Error))
+				return
+			}
+			if len(p.Response) > 0 {
+				framed := append([]byte("data: "), p.Response...)
+				framed = append(framed, '\n', '\n')
+				select {
+				case pc.chunkCh <- StreamEvent{Data: framed}:
+				case <-pc.doneCh:
+				}
+			}
+			if p.Done {
+				pc.completeStream()
+			}
+		case protocol.MsgError:
+			var p protocol.ErrorPayload
+			_ = msg.DecodePayload(&p)
+			pc.fail(errors.New(p.Message))
+		}
+	}
+	if err := c.addPending(pc); err != nil {
+		return nil, err
+	}
+	return pc, nil
+}
+
+// registerCall registers a single-response call (model load, non-streaming
+// inference). The first correlated response is forwarded to respCh.
+func (c *wsConnection) registerCall(id string, respCh chan protocol.Message, errCh chan error) (*pendingCall, error) {
+	pc := &pendingCall{
+		conn:   c,
+		id:     id,
+		respCh: respCh,
+		errCh:  errCh,
+		doneCh: make(chan struct{}),
+	}
+	pc.handle = func(msg protocol.Message) {
+		switch msg.Type {
+		case protocol.MsgInferenceResponse:
+			select {
+			case pc.respCh <- msg:
+			case <-pc.doneCh:
+			}
+			pc.completeCall()
+		case protocol.MsgModelLoadResponse:
+			select {
+			case pc.respCh <- msg:
+			case <-pc.doneCh:
+			}
+			pc.completeCall()
+		case protocol.MsgError:
+			var p protocol.ErrorPayload
+			_ = msg.DecodePayload(&p)
+			pc.fail(errors.New(p.Message))
+		}
+	}
+	if err := c.addPending(pc); err != nil {
+		return nil, err
+	}
+	return pc, nil
+}
+
+// pendingCall correlates an in-flight request with its response(s).
+type pendingCall struct {
+	conn   *wsConnection
+	id     string
+	handle func(protocol.Message)
+
+	chunkCh chan StreamEvent      // stream flavor: SSE-framed events
+	respCh  chan protocol.Message // call flavor: raw correlated messages
+	errCh   chan error
+
+	doneCh     chan struct{}
+	closeOnce  sync.Once
+	removeOnce sync.Once
+}
+
+// completeStream terminates a streaming call: it emits the [DONE] sentinel
+// (best effort — dropped if the consumer stopped draining) and closes the
+// channels exactly once.
+func (pc *pendingCall) completeStream() {
+	pc.closeOnce.Do(func() {
+		select {
+		case pc.chunkCh <- StreamEvent{Data: []byte("data: [DONE]\n\n"), Done: true}:
+		default:
+		}
+		pc.finish()
+	})
+}
+
+// completeCall terminates a single-response call.
+func (pc *pendingCall) completeCall() {
+	pc.closeOnce.Do(func() {
+		pc.finish()
+	})
+}
+
+// fail terminates the call with err, delivered on errCh.
+func (pc *pendingCall) fail(err error) {
+	pc.closeOnce.Do(func() {
+		select {
+		case pc.errCh <- err:
+		default:
+		}
+		pc.finish()
+	})
+}
+
+func (pc *pendingCall) finish() {
+	pc.removeOnce.Do(func() {
+		pc.conn.pendingMu.Lock()
+		if cur, ok := pc.conn.pending[pc.id]; ok && cur == pc {
+			delete(pc.conn.pending, pc.id)
+		}
+		pc.conn.pendingMu.Unlock()
+	})
+	close(pc.doneCh)
+	if pc.chunkCh != nil {
+		close(pc.chunkCh)
+	}
+	if pc.respCh != nil {
+		close(pc.respCh)
+	}
+}
+
+// wsWorkerClient sends inference/load requests over a worker's WebSocket
+// connection and consumes the correlated responses.
+type wsWorkerClient struct {
+	conn *wsConnection
+	log  *slog.Logger
+}
+
+func (c *wsWorkerClient) Transport() string { return protocol.TransportWS }
+
+func (c *wsWorkerClient) Stream(ctx context.Context, worker protocol.WorkerInfo, kind string, body []byte) (<-chan StreamEvent, <-chan error) {
+	chunkCh := make(chan StreamEvent, wsutil.SendQueueSize)
+	errCh := make(chan error, 1)
+
+	req, err := inferenceRequest(kind, body)
+	if err != nil {
+		errCh <- err
+		close(chunkCh)
+		return chunkCh, errCh
+	}
+	msg, err := protocol.NewMessage(protocol.MsgInferenceRequest, req)
+	if err != nil {
+		errCh <- err
+		close(chunkCh)
+		return chunkCh, errCh
+	}
+	pc, err := c.conn.registerStream(msg.ID, chunkCh, errCh)
+	if err != nil {
+		errCh <- err
+		close(chunkCh)
+		return chunkCh, errCh
+	}
+	if err := c.conn.send(ctx, msg); err != nil {
+		pc.fail(err)
+		return chunkCh, errCh
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			pc.fail(ctx.Err())
+		case <-pc.doneCh:
+		}
+	}()
+	return chunkCh, errCh
+}
+
+func (c *wsWorkerClient) Complete(ctx context.Context, worker protocol.WorkerInfo, kind string, body []byte) ([]byte, error) {
+	body, err := forceNonStreaming(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := inferenceRequest(kind, body)
+	if err != nil {
+		return nil, err
+	}
+	msg, err := protocol.NewMessage(protocol.MsgInferenceRequest, req)
+	if err != nil {
+		return nil, err
+	}
+	respCh := make(chan protocol.Message, 4)
+	errCh := make(chan error, 1)
+	pc, err := c.conn.registerCall(msg.ID, respCh, errCh)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.conn.send(ctx, msg); err != nil {
+		pc.fail(err)
+		return nil, err
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			pc.fail(ctx.Err())
+		case <-pc.doneCh:
+		}
+	}()
+	return awaitResponse(ctx, respCh, errCh)
+}
+
+func (c *wsWorkerClient) LoadModel(ctx context.Context, worker protocol.WorkerInfo, model string) (bool, error) {
+	msg, err := protocol.NewMessage(protocol.MsgModelLoadRequest, protocol.ModelLoadRequestPayload{Model: model})
+	if err != nil {
+		return false, err
+	}
+	respCh := make(chan protocol.Message, 4)
+	errCh := make(chan error, 1)
+	pc, err := c.conn.registerCall(msg.ID, respCh, errCh)
+	if err != nil {
+		return false, err
+	}
+	if err := c.conn.send(ctx, msg); err != nil {
+		pc.fail(err)
+		return false, err
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			pc.fail(ctx.Err())
+		case <-pc.doneCh:
+		}
+	}()
+	select {
+	case m, ok := <-respCh:
+		if !ok {
+			return false, errConnClosed
+		}
+		var p protocol.ModelLoadResponsePayload
+		if err := m.DecodePayload(&p); err != nil {
+			return false, fmt.Errorf("decode model load response: %w", err)
+		}
+		if p.Error != "" {
+			return false, errors.New(p.Error)
+		}
+		return p.Loaded, nil
+	case err := <-errCh:
+		return false, err
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+}
+
+func (c *wsWorkerClient) Capabilities(ctx context.Context, worker protocol.WorkerInfo) (protocol.Capabilities, error) {
+	// WebSocket workers push capabilities on register/heartbeat; the router
+	// never dials back, so return the hub's latest snapshot.
+	return c.conn.workerSnapshot().Capabilities, nil
+}
+
+func (c *wsWorkerClient) Close() error {
+	c.conn.enqueueClose("client close")
+	return nil
+}
+
+// awaitResponse reads the single correlated response of a call.
+func awaitResponse(ctx context.Context, respCh chan protocol.Message, errCh chan error) ([]byte, error) {
+	for {
+		select {
+		case m, ok := <-respCh:
+			if !ok {
+				return nil, errConnClosed
+			}
+			var p protocol.InferenceResponsePayload
+			if err := m.DecodePayload(&p); err != nil {
+				return nil, fmt.Errorf("decode inference response: %w", err)
+			}
+			if p.Error != "" {
+				return nil, errors.New(p.Error)
+			}
+			if len(p.Response) > 0 {
+				return append([]byte(nil), p.Response...), nil
+			}
+			if p.Done {
+				return nil, errors.New("worker returned empty response")
+			}
+		case err := <-errCh:
+			return nil, err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+// inferenceRequest builds the WS protocol request payload from an
+// OpenAI-compatible request body.
+func inferenceRequest(kind string, body []byte) (protocol.InferenceRequestPayload, error) {
+	var rb struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &rb); err != nil {
+		return protocol.InferenceRequestPayload{}, fmt.Errorf("invalid request body: %w", err)
+	}
+	return protocol.InferenceRequestPayload{Kind: kind, Model: rb.Model, Body: body}, nil
+}
+
+// forceNonStreaming rewrites body so the worker returns a single response.
+func forceNonStreaming(body []byte) ([]byte, error) {
+	var m map[string]interface{}
+	if err := json.Unmarshal(body, &m); err != nil {
+		return nil, fmt.Errorf("invalid request body: %w", err)
+	}
+	m["stream"] = false
+	return json.Marshal(m)
+}

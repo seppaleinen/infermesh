@@ -1,16 +1,16 @@
 package router
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
@@ -51,14 +51,15 @@ func writeErrorResponse(w http.ResponseWriter, statusCode int, errMsg string, er
 
 // WorkerInfo represents a simplified worker information for the /v1/workers endpoint.
 type WorkerInfo struct {
-	ID            string           `json:"id"`
-	Hostname      string           `json:"hostname"`
-	IP            string           `json:"ip"`
-	Port          int              `json:"port"`
-	Status        protocol.WorkerStatus `json:"status"`
-	Version       string           `json:"version"`
-	LoadedModels  []string         `json:"loaded_models"`
-	LastSeen      time.Time        `json:"last_seen"`
+	ID           string                `json:"id"`
+	Hostname     string                `json:"hostname"`
+	IP           string                `json:"ip"`
+	Port         int                   `json:"port"`
+	Status       protocol.WorkerStatus `json:"status"`
+	Version      string                `json:"version"`
+	APIKey       string                `json:"api_key,omitempty"`
+	LoadedModels []string              `json:"loaded_models"`
+	LastSeen     time.Time             `json:"last_seen"`
 }
 
 // WorkersResponse represents the response from the /v1/workers endpoint.
@@ -77,12 +78,13 @@ func (e *ErrModelNotFound) Error() string {
 
 // Server is the HTTP server for the router.
 type Server struct {
-	log     *slog.Logger
-	reg     registry.Registry
-	addr    string
-	cache   *CapabilityCache
-	cfg     security.Config
-	server  *http.Server
+	log    *slog.Logger
+	reg    registry.Registry
+	addr   string
+	cache  *CapabilityCache
+	cfg    security.Config
+	hub    *WSHub
+	server *http.Server
 }
 
 // ChatMessage represents a single message in a chat conversation.
@@ -150,17 +152,27 @@ type ModelsResponse struct {
 // NewServer creates a new router HTTP server.
 func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg security.Config) *Server {
 	cache := NewCapabilityCache(reg, log)
+	hub := NewWSHub(reg, log)
+	hub.SetAPIKey(cfg.APIKey)
 	return &Server{
-		log:     log,
-		reg:     reg,
-		addr:    addr,
-		cache:   cache,
-		cfg:     cfg,
+		log:   log,
+		reg:   reg,
+		addr:  addr,
+		cache: cache,
+		cfg:   cfg,
+		hub:   hub,
 	}
 }
 
 // Start runs the HTTP server.
 func (s *Server) Start(ctx context.Context) error {
+	// Guard: in prod mode, bind address must be loopback.
+	if !security.IsDevMode(s.cfg) {
+		if !strings.HasPrefix(s.addr, "127.0.0.1") && !strings.HasPrefix(s.addr, "localhost") {
+			panic("production mode requires bind address to be loopback (127.0.0.1 or localhost)")
+		}
+	}
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
@@ -168,6 +180,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/models", s.handleModelsList)
 	mux.HandleFunc("/v1/workers", s.handleWorkersList)
 	mux.HandleFunc("/v1/dev/register", s.handleDevRegister)
+	// Outbound WebSocket worker connectivity: workers dial ws://router:8080/v1/connect
+	mux.Handle("/v1/connect", s.hub.Handler())
 
 	// Start the capability cache event loop so registry events populate
 	// the cache that /v1/models, /v1/workers and worker selection read from.
@@ -176,6 +190,8 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.cache != nil && s.reg != nil {
 		s.cache.Start(ctx)
 	}
+	// Keep idle WebSocket connections alive with periodic pings.
+	s.hub.Start(ctx)
 
 	var handler http.Handler = mux
 	if !security.IsDevMode(s.cfg) {
@@ -220,6 +236,9 @@ func (s *Server) Start(ctx context.Context) error {
 		_ = s.server.Shutdown(context.Background())
 	}()
 
+	if s.server.TLSConfig != nil {
+		return s.server.ListenAndServeTLS("", "")
+	}
 	return s.server.ListenAndServe()
 }
 
@@ -337,6 +356,7 @@ func (s *Server) handleWorkersList(w http.ResponseWriter, r *http.Request) {
 			Port:         w.Port,
 			Status:       w.Status,
 			Version:      w.Version,
+			APIKey:       w.APIKey,
 			LoadedModels: getLoadedModelNames(w.Capabilities.Models),
 			LastSeen:     w.LastSeen,
 		})
@@ -358,6 +378,7 @@ func getLoadedModelNames(models []protocol.ModelInfo) []string {
 	}
 	return names
 }
+
 // handleModelsList handles the /v1/models HTTP endpoint.
 func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -429,6 +450,15 @@ func (s *Server) handleDevRegister(w http.ResponseWriter, r *http.Request) {
 	if worker.IP != "127.0.0.1" && worker.IP != "localhost" {
 		writeErrorResponse(w, http.StatusForbidden, "non-loopback IP not allowed", "authentication_error", "ip_validation_error")
 		return
+	}
+
+	// Validate API key if configured
+	if s.cfg.APIKey != "" {
+		auth := r.Header.Get("Authorization")
+		if !strings.EqualFold(auth, "Bearer "+s.cfg.APIKey) {
+			writeErrorResponse(w, http.StatusUnauthorized, "invalid or missing API key", "authentication_error", "api_key_error")
+			return
+		}
 	}
 
 	// Force status to available for dev mode
@@ -517,187 +547,123 @@ func (s *Server) selectWorker(model string) (protocol.WorkerInfo, error) {
 	return protocol.WorkerInfo{}, fmt.Errorf("no worker found with model %s loaded", model)
 }
 
-// loadModelOnWorker attempts to load a model on a worker using HTTP proxy
+// clientFor returns a WorkerClient for the given worker, preferring the
+// active WebSocket connection for WS workers and falling back to HTTP
+// dial-back for legacy (mDNS/dev-HTTP) workers.
+func (s *Server) clientFor(worker protocol.WorkerInfo) WorkerClient {
+	if worker.Transport == protocol.TransportWS {
+		if c := s.hub.Client(worker.ID); c != nil {
+			return c
+		}
+		s.log.Warn("worker advertises websocket transport but has no active connection; falling back to http", "worker", worker.ID)
+	}
+	return newHTTPWorkerClient(s.log)
+}
+
+// loadModelOnWorker attempts to load a model on a worker.
 func (s *Server) loadModelOnWorker(worker protocol.WorkerInfo, modelName string) bool {
-	url := fmt.Sprintf("http://%s:%d/v1/models/load", worker.IP, worker.Port)
-
-	loadReq := map[string]string{"model": modelName}
-	body, err := json.Marshal(loadReq)
-	if err != nil {
-		return false
-	}
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
-	if err != nil {
-		return false
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	return resp.StatusCode == http.StatusOK
-}
-
-// retryDoRequestWithRetry executes an HTTP request with exponential backoff retry logic.
-// Max 3 retries with 1s, 2s, 4s backoff intervals.
-// Returns the response or an error after all retries are exhausted.
-func retryDoRequestWithRetry(client *http.Client, req *http.Request, maxRetries int) (*http.Response, error) {
-	var lastErr error
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		resp, err := client.Do(req)
-		if err == nil {
-			return resp, nil
-		}
-		lastErr = err
-		if attempt < maxRetries {
-			backoff := time.Duration(1<<attempt) * time.Second
-			time.Sleep(backoff)
-		}
-	}
-	return nil, fmt.Errorf("max retries (%d) exceeded: %w", maxRetries, lastErr)
-}
-
-// proxyChatStream proxies a chat completion request to a worker with SSE support.
-func (s *Server) proxyChatStream(w http.ResponseWriter, r *http.Request, worker protocol.WorkerInfo, req ChatRequest) {
-	// Apply context-based timeout (default 30s)
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-
-	workerURL := fmt.Sprintf("http://%s:%d", worker.IP, worker.Port)
-
-	// Create HTTP client with timeout
-	client := &http.Client{
-		Timeout: 30 * time.Second,
+	ok, err := s.clientFor(worker).LoadModel(ctx, worker, modelName)
+	if err != nil {
+		s.log.Warn("failed to load model on worker", "worker", worker.ID, "model", modelName, "error", err)
+		return false
 	}
+	return ok
+}
 
-	// Prepare request to worker
-	jsonBody, err := json.Marshal(req)
+// proxyChatStream proxies a chat completion request to a worker.
+func (s *Server) proxyChatStream(w http.ResponseWriter, r *http.Request, worker protocol.WorkerInfo, req ChatRequest) {
+	body, err := json.Marshal(req)
 	if err != nil {
 		s.log.Error("failed to marshal chat request", "error", err)
 		writeErrorResponse(w, http.StatusInternalServerError, "internal server error", "server_error", "marshal_error")
 		return
 	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", workerURL+"/v1/chat/completions", bytes.NewReader(jsonBody))
-	if err != nil {
-		s.log.Error("failed to create request to worker", "error", err)
-		writeErrorResponse(w, http.StatusInternalServerError, "internal server error", "server_error", "request_error")
-		return
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	// Forward request to worker with retry logic
-	resp, err := retryDoRequestWithRetry(client, httpReq, 3)
-	if err != nil {
-		// Check if the error was due to timeout
-		if ctx.Err() == context.DeadlineExceeded {
-			s.log.Error("request timed out after retries", "worker", workerURL, "timeout", "30s")
-			writeErrorResponse(w, http.StatusGatewayTimeout, "request timeout", "server_error", "timeout_error")
-			return
-		}
-		s.log.Error("failed to connect to worker after retries", "error", err)
-		writeErrorResponse(w, http.StatusServiceUnavailable, "worker unavailable", "server_error", "connection_error")
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	// Check worker's status code
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		s.log.Error("worker returned error", "status", resp.StatusCode, "body", string(body))
-		writeErrorResponse(w, resp.StatusCode, "worker error", "server_error", "worker_error")
-		return
-	}
-
-	// Set headers for SSE response
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		s.log.Error("streaming unsupported")
-		writeErrorResponse(w, http.StatusInternalServerError, "streaming unsupported", "server_error", "streaming_error")
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	// Copy SSE stream from worker to client
-	_, err = io.Copy(w, resp.Body)
-	if err != nil {
-		s.log.Error("failed to stream response from worker", "error", err)
-	}
-	flusher.Flush()
+	s.proxyStream(w, r, s.clientFor(worker), worker, "chat", body)
 }
 
-// proxyCompletionStream proxies a completion request to a worker with SSE support.
+// proxyCompletionStream proxies a completion request to a worker.
 func (s *Server) proxyCompletionStream(w http.ResponseWriter, r *http.Request, worker protocol.WorkerInfo, req CompletionRequest) {
-	// Apply context-based timeout (default 30s)
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-
-	workerURL := fmt.Sprintf("http://%s:%d", worker.IP, worker.Port)
-
-	// Create HTTP client with timeout
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	// Prepare request to worker
-	jsonBody, err := json.Marshal(req)
+	body, err := json.Marshal(req)
 	if err != nil {
 		s.log.Error("failed to marshal completion request", "error", err)
 		writeErrorResponse(w, http.StatusInternalServerError, "internal server error", "server_error", "marshal_error")
 		return
 	}
+	s.proxyStream(w, r, s.clientFor(worker), worker, "completion", body)
+}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", workerURL+"/v1/completions", bytes.NewReader(jsonBody))
-	if err != nil {
-		s.log.Error("failed to create request to worker", "error", err)
-		writeErrorResponse(w, http.StatusInternalServerError, "internal server error", "server_error", "request_error")
-		return
-	}
+// proxyStream relays an inference request to the worker via the transport
+// appropriate for it and streams the response back to the client as SSE.
+func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client WorkerClient, worker protocol.WorkerInfo, kind string, body []byte) {
+	// Apply context-based timeout (default 30s).
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 
-	httpReq.Header.Set("Content-Type", "application/json")
+	chunks, errs := client.Stream(ctx, worker, kind, body)
+	flusher, _ := w.(http.Flusher)
+	started := false
+	sawDone := false
 
-	// Forward request to worker with retry logic
-	resp, err := retryDoRequestWithRetry(client, httpReq, 3)
-	if err != nil {
-		// Check if the error was due to timeout
-		if ctx.Err() == context.DeadlineExceeded {
-			s.log.Error("request timed out after retries", "worker", workerURL, "timeout", "30s")
-			writeErrorResponse(w, http.StatusGatewayTimeout, "request timeout", "server_error", "timeout_error")
+	for {
+		select {
+		case chunk, ok := <-chunks:
+			if !ok {
+				// Channel closed without an explicit Done sentinel (e.g. the
+				// sentinel was dropped when the queue was full). Terminate the
+				// SSE stream so clients don't wait forever.
+				if started && !sawDone {
+					_, _ = w.Write([]byte("data: [DONE]\n\n"))
+					if flusher != nil {
+						flusher.Flush()
+					}
+				}
+				return
+			}
+			if !started {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				started = true
+			}
+			sawDone = sawDone || chunk.Done
+			_, _ = w.Write(chunk.Data)
+			if flusher != nil {
+				flusher.Flush()
+			}
+			if chunk.Done {
+				return
+			}
+		case err, ok := <-errs:
+			if !ok {
+				errs = nil
+				continue
+			}
+			if !started {
+				var herr *WorkerHTTPError
+				if errors.As(err, &herr) {
+					s.log.Error("worker returned error", "worker", worker.ID, "status", herr.StatusCode, "body", herr.Body)
+					writeErrorResponse(w, herr.StatusCode, "worker error", "server_error", "worker_error")
+				} else if ctx.Err() == context.DeadlineExceeded {
+					s.log.Error("request timed out after retries", "worker", worker.ID, "timeout", "30s")
+					writeErrorResponse(w, http.StatusGatewayTimeout, "request timeout", "server_error", "timeout_error")
+				} else {
+					s.log.Error("failed to connect to worker after retries", "error", err)
+					writeErrorResponse(w, http.StatusServiceUnavailable, "worker unavailable", "server_error", "connection_error")
+				}
+				return
+			}
+			s.log.Warn("stream interrupted", "worker", worker.ID, "error", err)
+			if !sawDone {
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			return
+		case <-ctx.Done():
 			return
 		}
-		s.log.Error("failed to connect to worker after retries", "error", err)
-		writeErrorResponse(w, http.StatusServiceUnavailable, "worker unavailable", "server_error", "connection_error")
-		return
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	// Check worker's status code
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		s.log.Error("worker returned error", "status", resp.StatusCode, "body", string(body))
-		writeErrorResponse(w, resp.StatusCode, "worker error", "server_error", "worker_error")
-		return
-	}
-
-	// Set headers for SSE response
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		s.log.Error("streaming unsupported")
-		writeErrorResponse(w, http.StatusInternalServerError, "streaming unsupported", "server_error", "streaming_error")
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	// Copy SSE stream from worker to client
-	_, err = io.Copy(w, resp.Body)
-	if err != nil {
-		s.log.Error("failed to stream response from worker", "error", err)
-	}
-	flusher.Flush()
 }

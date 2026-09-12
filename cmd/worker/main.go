@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/seppaleinen/infermesh/pkg/capabilities"
@@ -47,8 +48,9 @@ func main() {
 	certDir := flag.String("cert-dir", "", "path to certificate directory (for CA)")
 	modelPath := flag.String("model-path", "", "path to model file (optional, auto-discovery used if not provided)")
 	backend := flag.String("backend", "llama-cpp", "backend adapter (llama-cpp, ollama, vllm, lmstudio)")
-	routerAddr := flag.String("router", "", "router base URL for dev-mode HTTP registration (e.g. http://127.0.0.1:8080); skips mDNS")
+	routerAddr := flag.String("router", "", "router base URL (http/https in dev-mode, ws/wss otherwise); empty means mDNS")
 	enableHealthChecks := flag.Bool("enable-health-checks", true, "enable periodic backend health checks")
+	apiKey := flag.String("api-key", "", "API key for authentication (production mode)")
 	flag.Parse()
 
 	if *showCaps {
@@ -117,7 +119,14 @@ func main() {
 	go agg.StartRefresh(ctx)
 
 	// Create worker HTTP server
-	addr := ":" + strconv.Itoa(*port)
+	var addr string
+	if !isDevMode {
+		// Prod mode: bind to loopback only for security
+		addr = "127.0.0.1:" + strconv.Itoa(*port)
+	} else {
+		// Dev mode: bind to all interfaces
+		addr = ":" + strconv.Itoa(*port)
+	}
 	srv := worker.NewServer(log, addr, secCfg)
 
 	// Set up backend adapter based on --backend flag
@@ -172,27 +181,45 @@ func main() {
 		Capabilities: caps,
 		Status:       protocol.StatusAvailable,
 		Version:      "v1",
+		APIKey:       *apiKey,
 	}
 
-	// Dev-mode HTTP registration (bypasses mDNS)
-	if *routerAddr != "" {
-		if isDevMode {
-			// Override IP to loopback for dev HTTP registration
-			info.IP = "127.0.0.1"
-			log.Info("dev-mode: registering with router via HTTP", "router", *routerAddr)
-			// Send fresh capabilities/models on every heartbeat: the startup
-			// snapshot (info) predates dynamic backend discovery (SetModels),
-			// so without refresh the router sees zero models and selection
-			// fails with no_workers even though the worker logs success.
+	// --router flag: explicit URL (http:// or ws://) registers with the router
+	// over the specified transport; no flag at all falls through to mDNS.
+	routerURL := *routerAddr
+	if routerURL == "" && isDevMode {
+		// Dev-mode convenience: workers talk to a local router without any flag.
+		routerURL = "ws://127.0.0.1:8080"
+	}
+
+	if routerURL != "" {
+		// Dev-mode http:// → HTTP POST /v1/dev/register (backward compat).
+		// All other schemes (ws://, wss://, http:// in prod) → WebSocket transport.
+		if isDevMode && strings.HasPrefix(routerURL, "http://") {
+			log.Info("dev-mode: registering with router via HTTP", "router", routerURL)
 			baseInfo := info
-			go worker.RegisterLoopWithRefresh(ctx, *routerAddr, func() protocol.WorkerInfo {
+			go worker.RegisterLoopWithRefresh(ctx, routerURL, func() protocol.WorkerInfo {
+				current := baseInfo
+				current.Capabilities = caps
+				models := srv.GetModels()
+				for i := range models {
+					if models[i].Name != "" {
+						models[i].Loaded = true
+					}
+				}
+				current.Capabilities.Models = models
+				return current
+			}, worker.DefaultRegisterInterval, log)
+		} else {
+			info.Transport = protocol.TransportWS
+			log.Info("registering with router via websocket", "router", routerURL)
+			baseInfo := info
+			go worker.WSRegisterLoop(ctx, worker.WSConfig{RouterURL: routerURL}, func() protocol.WorkerInfo {
 				current := baseInfo
 				current.Capabilities = caps
 				models := srv.GetModels()
 				if isDevMode {
 					for i := range models {
-						// Dev backends (LM Studio etc.) serve whatever they list;
-						// treat catalogue entries as routable.
 						if models[i].Name != "" {
 							models[i].Loaded = true
 						}
@@ -200,17 +227,16 @@ func main() {
 				}
 				current.Capabilities.Models = models
 				return current
-			}, worker.DefaultRegisterInterval, log)
-			// Skip mDNS — wait for shutdown
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-			<-sigCh
-			log.Info("shutting down")
-			cancel()
-			return
+			}, srv, log)
 		}
-		// Prod mode with --router: warn and fall through to mDNS
-		log.Warn("--router flag is ignored in production mode; using mDNS discovery", "router", *routerAddr)
+
+		// Wait for shutdown signal
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+		log.Info("shutting down")
+		cancel()
+		return
 	}
 
 	// mDNS discovery path (original behavior)

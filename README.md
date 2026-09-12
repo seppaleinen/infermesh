@@ -233,6 +233,53 @@ bash packaging/macos/enable_incoming.sh
 
 This uses `socketfilterfw` to add and unblock the inner Mach-O binary directly. No prompt is needed — it requires root. Re-run after each `make app` rebuild since the ad-hoc signature changes.
 
+## Outbound-only Architecture
+
+Workers connect **outbound** to the router via WebSocket — the router never dials workers directly. This eliminates the macOS Application Firewall and NAT traversal issues entirely.
+
+### How it works
+
+```
+┌─────────────────────┐
+│   AI Client         │
+│ OpenAI API client   │
+│ Agent / IDE         │
+└──────────┬──────────┘
+            │
+            ▼
+┌─────────────────────┐
+│   Inference Router  │
+│ listens on :8080    │
+│ (mTLS / API key)    │
+└──────────┬──────────┘
+            │  ▲
+            │  │ worker dials ws://router:8080/v1/connect
+            │  │ (outbound WebSocket, no inbound firewall)
+            ▼  │
+┌─────────────────────┐
+│   Worker            │
+│ connects outbound   │
+└─────────────────────┘
+```
+
+- Workers dial the router over `wss://` (WebSocket over TLS) when mTLS is configured, or `ws://` in dev mode.
+- The router serves the `/v1/connect` endpoint and accepts WebSocket upgrades.
+- No firewall rules are needed on worker machines; workers initiate all connections.
+
+### Configuration
+
+```bash
+# Router with mTLS and API key (production)
+./bin/infermesh-router --prod-mode --mtls-cert cert.pem --mtls-key key.pem --api-key mysecret
+
+# Worker connecting to router with API key
+./bin/infermesh-worker --prod-mode --router wss://router-host:8080 --api-key mysecret \
+  --model-path /path/to/model.gguf --backend llama-cpp
+```
+
+- `--api-key` on both router and worker enables authentication. The worker sends its API key in the `Authorization: Bearer <key>` header during registration.
+- Workers always bind to `127.0.0.1` in production mode, exposing their HTTP API only locally.
+
 ## Contributing
 
 1. Fork the repository

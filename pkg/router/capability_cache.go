@@ -2,10 +2,7 @@ package router
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"log/slog"
-	"net/http"
 	"sync"
 	"time"
 
@@ -40,6 +37,15 @@ func (c *CapabilityCache) Get(id string) (protocol.WorkerInfo, bool) {
 	return w, ok
 }
 
+// Set stores a worker snapshot directly. WebSocket workers push fresh
+// capabilities on register/heartbeat, so no dial-back fetch is needed.
+func (c *CapabilityCache) Set(worker protocol.WorkerInfo) {
+	c.mu.Lock()
+	c.cache[worker.ID] = worker
+	c.mu.Unlock()
+	c.log.Debug("capability cache set", "worker", worker.ID, "transport", worker.Transport)
+}
+
 // List returns all cached workers.
 func (c *CapabilityCache) List() []protocol.WorkerInfo {
 	c.mu.RLock()
@@ -52,14 +58,21 @@ func (c *CapabilityCache) List() []protocol.WorkerInfo {
 }
 
 // Update fetches capabilities from a worker's /capabilities endpoint.
+// WebSocket workers (Transport == "ws") push capabilities on
+// register/heartbeat, so Update only seeds the cache for them.
 func (c *CapabilityCache) Update(worker protocol.WorkerInfo) error {
-	// Always seed the cache with the discovery info so the worker is
+	// Always seed the cache with the discovery/register info so the worker is
 	// visible even if capability fetch fails.
-	c.mu.Lock()
-	c.cache[worker.ID] = worker
-	c.mu.Unlock()
+	c.Set(worker)
 
-	caps, err := c.fetchCapabilities(worker)
+	if worker.Transport == protocol.TransportWS {
+		return nil
+	}
+
+	client := newHTTPWorkerClient(c.log)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	caps, err := client.Capabilities(ctx, worker)
 	if err != nil {
 		c.log.Warn("failed to fetch capabilities from worker",
 			"worker", worker.ID, "error", err)
@@ -71,32 +84,6 @@ func (c *CapabilityCache) Update(worker protocol.WorkerInfo) error {
 	c.cache[worker.ID] = worker
 	c.mu.Unlock()
 	return nil
-}
-
-// fetchCapabilities fetches capabilities from a worker's HTTP endpoint.
-func (c *CapabilityCache) fetchCapabilities(worker protocol.WorkerInfo) (protocol.Capabilities, error) {
-	url := fmt.Sprintf("http://%s:%d/capabilities", worker.IP, worker.Port)
-
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-	}
-
-	resp, err := client.Get(url)
-	if err != nil {
-		return protocol.Capabilities{}, fmt.Errorf("fetching capabilities: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return protocol.Capabilities{}, fmt.Errorf("unexpected status: %s", resp.Status)
-	}
-
-	var workerResp protocol.WorkerInfo
-	if err := json.NewDecoder(resp.Body).Decode(&workerResp); err != nil {
-		return protocol.Capabilities{}, fmt.Errorf("decoding capabilities: %w", err)
-	}
-
-	return workerResp.Capabilities, nil
 }
 
 // Start starts the capability cache and listens for registry events.

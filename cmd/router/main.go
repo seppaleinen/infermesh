@@ -97,11 +97,11 @@ func main() {
 
 	// Security configuration
 	secCfg := security.Config{
-		DevMode:    isDevMode,
-		MTLSCert:   *mtlsCert,
-		MTLSKey:    *mtlsKey,
-		CertDir:    *certDir,
-		APIKey:     *apiKey,
+		DevMode:  isDevMode,
+		MTLSCert: *mtlsCert,
+		MTLSKey:  *mtlsKey,
+		CertDir:  *certDir,
+		APIKey:   *apiKey,
 	}
 
 	// Start router HTTP server
@@ -111,6 +111,7 @@ func main() {
 			log.Error("router server error", "error", err)
 		}
 	}()
+	log.Info("router listening", "addr", ":8080", "ws_connect", "ws://:8080/v1/connect", "dev_mode", isDevMode)
 
 	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
