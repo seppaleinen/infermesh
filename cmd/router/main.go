@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -21,6 +22,7 @@ func main() {
 	mtlsKey := flag.String("mtls-key", "", "path to mTLS key file")
 	certDir := flag.String("cert-dir", "", "path to certificate directory (for CA)")
 	apiKey := flag.String("api-key", "", "API key for authentication (production mode)")
+	addr := flag.String("addr", ":8080", "address to bind router (host:port)")
 	flag.Parse()
 
 	// Determine dev mode: --prod-mode disables dev mode, --dev-mode enables it
@@ -105,13 +107,13 @@ func main() {
 	}
 
 	// Start router HTTP server
-	srv := router.NewServer(reg, log, ":8080", secCfg)
+	srv := router.NewServer(reg, log, *addr, secCfg)
 	go func() {
 		if err := srv.Start(ctx); err != nil {
 			log.Error("router server error", "error", err)
 		}
 	}()
-	log.Info("router listening", "addr", ":8080", "ws_connect", "ws://:8080/v1/connect", "dev_mode", isDevMode)
+	log.Info("router listening", "addr", *addr, "ws_connect", fmt.Sprintf("ws://%s/v1/connect", *addr), "dev_mode", isDevMode)
 
 	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)

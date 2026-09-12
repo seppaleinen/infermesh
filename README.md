@@ -15,6 +15,12 @@ make build
 # Run router in dev mode (no auth, localhost)
 ./bin/infermesh-router --dev-mode
 
+# Run router in prod mode (mTLS, loopback required)
+./bin/infermesh-router --prod-mode \
+  --mtls-cert cert.pem \
+  --mtls-key key.pem \
+  --api-key secretkey
+
 # Run worker (also dev mode, auto-discovers router via mDNS)
 ./bin/infermesh-worker --dev-mode \
   --model-path /path/to/model.gguf \
@@ -24,6 +30,20 @@ make build
 export OPENAI_BASE_URL=http://localhost:8080/v1
 export OPENAI_API_KEY=unused
 ```
+
+## Configuration
+
+Router supports an `--addr` flag to configure the listening address (host:port). Default is `:8080` (all interfaces).
+
+```bash
+# Bind to localhost only (recommended for production)
+./bin/infermesh-router --prod-mode --addr 127.0.0.1:8443
+
+# Bind to specific network interface
+./bin/infermesh-router --dev-mode --addr 192.168.1.100:8080
+```
+
+⚠️  **Important:** In production mode (`--prod-mode`), the `--addr` must be a loopback address (`127.0.0.1` or `localhost`) for security reasons. Non-loopback addresses will cause a panic during startup to prevent exposure.
 
 ## Architecture
 

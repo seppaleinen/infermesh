@@ -3,7 +3,9 @@ package router
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -295,4 +297,9 @@ func TestWSHubLoadModel(t *testing.T) {
 	if !loaded {
 		t.Fatal("expected load model to succeed")
 	}
+}
+
+// testLogger returns a default test logger.
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stdout, nil))
 }
