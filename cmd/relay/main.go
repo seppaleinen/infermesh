@@ -157,8 +157,9 @@ func (r *Relay) handleWorker(ws *websocket.Conn, msg protocol.Message) {
 	// If router is connected, flush buffered messages
 	r.flushBufferedMessages()
 
-	// Start reading messages from this worker
-	go r.workerReadLoop(ws, workerID)
+	// Block until the connection closes (handler must not return or
+	// net/http will close the WebSocket connection immediately).
+	r.workerReadLoop(ws, workerID)
 }
 
 // handleRouter registers a router connection and starts relay loops.
@@ -171,14 +172,15 @@ func (r *Relay) handleWorker(ws *websocket.Conn, msg protocol.Message) {
 		r.routerConn = ws
 		r.routerMu.Unlock()
 
-		r.log.Info("router connected")
+r.log.Info("router connected")
 
-		// Flush buffered messages for all workers when router reconnects
-		r.flushBufferedMessages()
+	// Flush buffered messages for all workers when router reconnects
+	r.flushBufferedMessages()
 
-		// Start reading messages from router
-		go r.routerReadLoop(ws)
-	}
+	// Block until the connection closes (handler must not return or
+	// net/http will close the WebSocket connection immediately).
+	r.routerReadLoop(ws)
+}
 
 // workerReadLoop reads messages from a worker and forwards them to the router.
 func (r *Relay) workerReadLoop(ws *websocket.Conn, workerID string) {

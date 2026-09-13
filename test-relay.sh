@@ -7,7 +7,6 @@ set -euo pipefail
 
 RELAY_ADDR=":8090"
 ROUTER_ADDR=":8080"
-WORKER_ADDR=":8081"
 RELAY_URL="ws://127.0.0.1:8090"
 BIN="./bin"
 
@@ -46,8 +45,9 @@ ROUTER_PID=$!
 sleep 2
 
 # Start worker (dials relay outbound)
+# Note: --relay-url overrides the router WS address; worker HTTP port is 8081 by default.
 echo "=== Starting worker on $WORKER_ADDR with relay $RELAY_URL ==="
-$BIN/infermesh-worker --dev-mode --port $WORKER_ADDR --router $RELAY_URL --backend llama-cpp > /tmp/worker.log 2>&1 &
+$BIN/infermesh-worker --dev-mode --router $RELAY_URL --backend llama-cpp > /tmp/worker.log 2>&1 &
 WORKER_PID=$!
 sleep 4
 
