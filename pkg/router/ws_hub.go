@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,6 +43,11 @@ type WSHub struct {
 	relaySendCh chan []byte
 	relayDone   chan struct{}
 
+	// Relay-specific pending calls for correlating requests/responses when
+	// workers connect via relay (no direct connection).
+	relayPendingMu sync.Mutex
+	relayPending   map[string]*pendingCall
+
 	writeTimeout  time.Duration
 	sendQueueSize int
 	apiKey        string
@@ -55,7 +62,8 @@ func NewWSHub(reg registry.Registry, log *slog.Logger) *WSHub {
 		conns:       make(map[string]*wsConnection),
 		relaySendCh: make(chan []byte, wsutil.SendQueueSize),
 		relayDone:   make(chan struct{}),
-		writeTimeout:  wsutil.WriteTimeout,
+		relayPending: make(map[string]*pendingCall),
+		writeTimeout: wsutil.WriteTimeout,
 		sendQueueSize: wsutil.SendQueueSize,
 	}
 }
@@ -72,11 +80,150 @@ func (h *WSHub) SetRelayURL(url string) {
 	h.relayURL = url
 }
 
+// normalizeRelayURL converts a relay WebSocket URL (possibly http://-style, as
+// accepted by --relay-url) into a WebSocket URL targeting /v1/connect. A bare
+// host/port gets the path appended; an explicit path is kept as-is so callers
+// can point at custom endpoints.
+func normalizeRelayURL(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	switch {
+	case strings.HasPrefix(s, "http://"):
+		s = "ws://" + strings.TrimPrefix(s, "http://")
+	case strings.HasPrefix(s, "https://"):
+		s = "wss://" + strings.TrimPrefix(s, "https://")
+	case !strings.HasPrefix(s, "ws://") && !strings.HasPrefix(s, "wss://"):
+		s = "ws://" + s
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return "", fmt.Errorf("invalid relay url %q: %w", raw, err)
+	}
+	if u.Path == "" || u.Path == "/" {
+		u.Path = "/v1/connect"
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String(), nil
+}
+
 // relayConnected returns true if the relay connection is active.
 func (h *WSHub) relayConnected() bool {
 	h.relayMu.RLock()
 	defer h.relayMu.RUnlock()
 	return h.relayConn != nil
+}
+
+// registerRelayCall registers a pending call on the relay connection,
+// keyed by message ID. Returns the pendingCall or an error if a duplicate
+// ID already exists.
+func (h *WSHub) registerRelayCall(id string, respCh chan protocol.Message, errCh chan error) (*pendingCall, error) {
+	pc := &pendingCall{
+		id:      id,
+		respCh:  respCh,
+		errCh:   errCh,
+		doneCh:  make(chan struct{}),
+		conn:    nil, // no wsConnection; hub-level tracking
+	}
+	pc.handle = func(msg protocol.Message) {
+		switch msg.Type {
+		case protocol.MsgInferenceResponse:
+			select {
+			case pc.respCh <- msg:
+			case <-pc.doneCh:
+			}
+			pc.completeCall()
+		case protocol.MsgModelLoadResponse:
+			select {
+			case pc.respCh <- msg:
+			case <-pc.doneCh:
+			}
+			pc.completeCall()
+		case protocol.MsgError:
+			var p protocol.ErrorPayload
+			_ = msg.DecodePayload(&p)
+			pc.fail(errors.New(p.Message))
+		}
+	}
+	h.relayPendingMu.Lock()
+	defer h.relayPendingMu.Unlock()
+	if _, exists := h.relayPending[id]; exists {
+		return nil, fmt.Errorf("duplicate relay pending message id %s", id)
+	}
+	h.relayPending[id] = pc
+	return pc, nil
+}
+
+// registerRelayStream registers a streaming call on the relay connection.
+func (h *WSHub) registerRelayStream(id string, chunkCh chan StreamEvent, errCh chan error) (*pendingCall, error) {
+	pc := &pendingCall{
+		id:      id,
+		chunkCh: chunkCh,
+		errCh:   errCh,
+		doneCh:  make(chan struct{}),
+		conn:    nil, // no wsConnection; hub-level tracking
+	}
+	pc.handle = func(msg protocol.Message) {
+		switch msg.Type {
+		case protocol.MsgInferenceChunk:
+			var p protocol.InferenceChunkPayload
+			if err := msg.DecodePayload(&p); err != nil {
+				pc.fail(fmt.Errorf("bad chunk payload: %w", err))
+				return
+			}
+			framed := append([]byte("data: "), p.Chunk...)
+			framed = append(framed, '\n', '\n')
+			select {
+			case pc.chunkCh <- StreamEvent{Data: framed}:
+			case <-pc.doneCh:
+			}
+		case protocol.MsgInferenceResponse:
+			var p protocol.InferenceResponsePayload
+			if err := msg.DecodePayload(&p); err != nil {
+				pc.fail(fmt.Errorf("bad response payload: %w", err))
+				return
+			}
+			if p.Error != "" {
+				pc.fail(errors.New(p.Error))
+				return
+			}
+			if len(p.Response) > 0 {
+				framed := append([]byte("data: "), p.Response...)
+				framed = append(framed, '\n', '\n')
+				select {
+				case pc.chunkCh <- StreamEvent{Data: framed}:
+				case <-pc.doneCh:
+				}
+			}
+			if p.Done {
+				pc.completeStream()
+			}
+		case protocol.MsgError:
+			var p protocol.ErrorPayload
+			_ = msg.DecodePayload(&p)
+			pc.fail(errors.New(p.Message))
+		}
+	}
+	h.relayPendingMu.Lock()
+	defer h.relayPendingMu.Unlock()
+	if _, exists := h.relayPending[id]; exists {
+		return nil, fmt.Errorf("duplicate relay pending message id %s", id)
+	}
+	h.relayPending[id] = pc
+	return pc, nil
+}
+
+// routeRelayResponse routes a response message (from the relay) to the
+// pending call identified by msg.ID. If no pending call exists, the
+// message is silently ignored.
+func (h *WSHub) routeRelayResponse(msg protocol.Message) {
+	h.relayPendingMu.Lock()
+	pc, ok := h.relayPending[msg.ID]
+	h.relayPendingMu.Unlock()
+	if !ok {
+		h.log.Debug("relay response for unknown request id", "id", msg.ID)
+		return
+	}
+	pc.handle(msg)
 }
 
 // Handler returns the /v1/connect upgrade handler.
@@ -431,12 +578,19 @@ func (c *wsConnection) enqueue(msg protocol.Message) bool {
 
 // enqueueClose politely asks the peer to close, then force-closes if it does
 // not comply within a grace period.
+// In relay mode, the relay connection is shared and should not be closed.
 func (c *wsConnection) enqueueClose(reason string) bool {
 	msg, err := protocol.NewMessage(protocol.MsgClose, protocol.ClosePayload{Reason: reason})
 	if err != nil {
 		return false
 	}
 	ok := c.enqueue(msg)
+
+	// In relay mode, don't force-close the shared relay connection.
+	if c.hub.relayConnected() {
+		return ok
+	}
+
 	go func() {
 		select {
 		case <-time.After(3 * time.Second):
@@ -856,7 +1010,11 @@ func forceNonStreaming(body []byte) ([]byte, error) {
 // as the first frame, and starts reader/writer loops that bridge the
 // relay connection into the hub's existing dispatch and connection maps.
 func (h *WSHub) DialRelay(ctx context.Context, url string) error {
-	conn, err := wsutil.Dial(ctx, url, "")
+	normalized, err := normalizeRelayURL(url)
+	if err != nil {
+		return fmt.Errorf("dial relay: %w", err)
+	}
+	conn, err := wsutil.Dial(ctx, normalized, "")
 	if err != nil {
 		return fmt.Errorf("dial relay: %w", err)
 	}
@@ -958,6 +1116,14 @@ func (h *WSHub) relayReaderLoop(ctx context.Context) {
 			return
 		}
 
+		// Route relay-internal response messages to pending calls
+		// (inference responses, model load responses, errors, chunks).
+		switch msg.Type {
+		case protocol.MsgInferenceResponse, protocol.MsgModelLoadResponse,
+			protocol.MsgError, protocol.MsgInferenceChunk:
+			h.routeRelayResponse(msg)
+		}
+
 		// Messages from relay have WorkerID set by the worker
 		if msg.WorkerID != "" {
 			h.mu.RLock()
@@ -982,3 +1148,166 @@ func (h *WSHub) relayReaderLoop(ctx context.Context) {
 		}
 	}
 }
+
+// relayWorkerClient is a WorkerClient that sends inference/model-load
+// requests over a shared relay WebSocket connection. It is used when
+// workers connect via relay (no direct connection exists) and the
+// normal HTTP fallback is blocked by the firewall.
+type relayWorkerClient struct {
+	hub *WSHub
+	log *slog.Logger
+}
+
+func newRelayWorkerClient(hub *WSHub, log *slog.Logger) *relayWorkerClient {
+	return &relayWorkerClient{hub: hub, log: log}
+}
+
+// Transport returns "ws" for relay connections.
+func (c *relayWorkerClient) Transport() string { return protocol.TransportWS }
+
+// Complete sends a non-streaming inference request via the relay and
+// awaits the correlated inference response.
+func (c *relayWorkerClient) Complete(ctx context.Context, worker protocol.WorkerInfo, kind string, body []byte) ([]byte, error) {
+	body, err := forceNonStreaming(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := inferenceRequest(kind, body)
+	if err != nil {
+		return nil, err
+	}
+	msg, err := protocol.NewMessage(protocol.MsgInferenceRequest, req)
+	if err != nil {
+		return nil, err
+	}
+	msg.WorkerID = worker.ID
+
+	respCh := make(chan protocol.Message, 4)
+	errCh := make(chan error, 1)
+	pc, err := c.hub.registerRelayCall(msg.ID, respCh, errCh)
+	if err != nil {
+		return nil, err
+	}
+	if err := wsutil.SendJSON(c.hub.relayConn, msg); err != nil {
+		pc.fail(err)
+		return nil, err
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			pc.fail(ctx.Err())
+		case <-pc.doneCh:
+		}
+	}()
+	return awaitResponse(ctx, respCh, errCh)
+}
+
+// Stream sends an inference request via the relay and returns a channel
+// of SSE-framed stream events plus an error channel.
+func (c *relayWorkerClient) Stream(ctx context.Context, worker protocol.WorkerInfo, kind string, body []byte) (<-chan StreamEvent, <-chan error) {
+	chunkCh := make(chan StreamEvent, wsutil.SendQueueSize)
+	errCh := make(chan error, 1)
+
+	req, err := inferenceRequest(kind, body)
+	if err != nil {
+		errCh <- err
+		close(chunkCh)
+		return chunkCh, errCh
+	}
+	msg, err := protocol.NewMessage(protocol.MsgInferenceRequest, req)
+	if err != nil {
+		errCh <- err
+		close(chunkCh)
+		return chunkCh, errCh
+	}
+	msg.WorkerID = worker.ID
+
+	pc, err := c.hub.registerRelayStream(msg.ID, chunkCh, errCh)
+	if err != nil {
+		errCh <- err
+		close(chunkCh)
+		return chunkCh, errCh
+	}
+	if err := wsutil.SendJSON(c.hub.relayConn, msg); err != nil {
+		pc.fail(err)
+		return chunkCh, errCh
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			pc.fail(ctx.Err())
+		case <-pc.doneCh:
+		}
+	}()
+	return chunkCh, errCh
+}
+
+// LoadModel sends a model load request via the relay and awaits the
+// correlated model load response.
+func (c *relayWorkerClient) LoadModel(ctx context.Context, worker protocol.WorkerInfo, model string) (bool, error) {
+	msg, err := protocol.NewMessage(protocol.MsgModelLoadRequest, protocol.ModelLoadRequestPayload{Model: model})
+	if err != nil {
+		return false, err
+	}
+	msg.WorkerID = worker.ID
+
+	respCh := make(chan protocol.Message, 4)
+	errCh := make(chan error, 1)
+	pc, err := c.hub.registerRelayCall(msg.ID, respCh, errCh)
+	if err != nil {
+		return false, err
+	}
+	if err := wsutil.SendJSON(c.hub.relayConn, msg); err != nil {
+		pc.fail(err)
+		return false, err
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			pc.fail(ctx.Err())
+		case <-pc.doneCh:
+		}
+	}()
+	select {
+	case m, ok := <-respCh:
+		if !ok {
+			return false, errConnClosed
+		}
+		var p protocol.ModelLoadResponsePayload
+		if err := m.DecodePayload(&p); err != nil {
+			return false, fmt.Errorf("decode model load response: %w", err)
+		}
+		if p.Error != "" {
+			return false, errors.New(p.Error)
+		}
+		return p.Loaded, nil
+	case err := <-errCh:
+		return false, err
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+}
+
+// Capabilities returns the worker's capabilities from the registry.
+// No HTTP call is needed; the relay worker is already registered.
+func (c *relayWorkerClient) Capabilities(ctx context.Context, worker protocol.WorkerInfo) (protocol.Capabilities, error) {
+	h := c.hub
+	h.mu.RLock()
+	conn, ok := h.conns[worker.ID]
+	h.mu.RUnlock()
+	if ok {
+		return conn.workerSnapshot().Capabilities, nil
+	}
+	// Fallback: try the registry.
+	if h.reg != nil {
+		w, ok := h.reg.Get(worker.ID)
+		if ok {
+			return w.Capabilities, nil
+		}
+	}
+	return protocol.Capabilities{}, errors.New("worker not found")
+}
+
+// Close is a no-op for relay workers; the shared relay connection
+// stays open.
+func (c *relayWorkerClient) Close() error { return nil }

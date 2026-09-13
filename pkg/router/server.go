@@ -564,10 +564,16 @@ func (s *Server) selectWorker(model string) (protocol.WorkerInfo, error) {
 // clientFor returns a WorkerClient for the given worker, preferring the
 // active WebSocket connection for WS workers and falling back to HTTP
 // dial-back for legacy (mDNS/dev-HTTP) workers.
+// If the worker is a WS worker but has no direct connection and the relay
+// is connected, use the relay worker client.
 func (s *Server) clientFor(worker protocol.WorkerInfo) WorkerClient {
 	if worker.Transport == protocol.TransportWS {
 		if c := s.hub.Client(worker.ID); c != nil {
 			return c
+		}
+		// If no direct WS connection but relay is connected, use relay client
+		if s.hub.relayConnected() {
+			return newRelayWorkerClient(s.hub, s.log)
 		}
 		s.log.Warn("worker advertises websocket transport but has no active connection; falling back to http", "worker", worker.ID)
 	}
