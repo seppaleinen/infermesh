@@ -191,7 +191,11 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/workers", s.handleWorkersList)
 	mux.HandleFunc("/v1/dev/register", s.handleDevRegister)
 	// Outbound WebSocket worker connectivity: workers dial ws://router:8080/v1/connect
-	mux.Handle("/v1/connect", s.hub.Handler())
+	// Only mount when NOT in relay mode — in relay mode, Handler() returns nil
+	// (workers connect via the relay instead of directly to the router).
+	if h := s.hub.Handler(); h != nil {
+		mux.Handle("/v1/connect", h)
+	}
 
 	// Start the capability cache event loop so registry events populate
 	// the cache that /v1/models, /v1/workers and worker selection read from.

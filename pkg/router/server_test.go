@@ -1137,3 +1137,71 @@ func TestProdModeNonLoopbackPanics(t *testing.T) {
 	defer cancel()
 	_ = srv.Start(ctx)
 }
+
+// TestRelayModeHandlerIsNil verifies that the hub handler is nil when
+// relay mode is configured.
+func TestRelayModeHandlerIsNil(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	reg, err := registry.New(registry.Defaults(), log)
+	if err != nil {
+		t.Fatalf("registry.New: %v", err)
+	}
+	defer func() { _ = reg.Stop() }()
+
+	srv := NewServer(reg, log, ":0", security.Config{DevMode: true})
+	srv.SetRelayURL("ws://relay.example.com:8080")
+
+	// Handler should be nil in relay mode — workers connect via the relay.
+	if h := srv.hub.Handler(); h != nil {
+		t.Fatalf("expected nil handler in relay mode, got %T", h)
+	}
+}
+
+// TestRelayModeStartDoesNotPanic verifies that starting the server in relay
+// mode does not panic with "http: nil handler" when the /v1/connect handler
+// is not mounted.
+func TestRelayModeStartDoesNotPanic(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	reg, err := registry.New(registry.Defaults(), log)
+	if err != nil {
+		t.Fatalf("registry.New: %v", err)
+	}
+	if err := reg.Start(context.Background()); err != nil {
+		t.Fatalf("registry.Start: %v", err)
+	}
+	defer func() { _ = reg.Stop() }()
+
+	srv := NewServer(reg, log, ":0", security.Config{DevMode: true})
+	srv.SetRelayURL("ws://relay.example.com:8080")
+
+	// Starting the server in relay mode should not panic.
+	// The /v1/connect handler is not mounted in relay mode, so there is no
+	// nil handler to panic on.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- srv.Start(ctx)
+	}()
+
+	// Wait briefly to ensure the server starts without panicking.
+	select {
+	case err := <-done:
+		if err != nil && err != http.ErrServerClosed {
+			t.Fatalf("server.Start returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		// Server is still running, which is expected.
+	}
+
+	// Stop the server to avoid leaking the goroutine.
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for server to stop")
+	}
+}

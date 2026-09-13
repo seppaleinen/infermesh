@@ -111,13 +111,13 @@ func main() {
 	srv := router.NewServer(reg, log, *addr, secCfg)
 	if *relayURL != "" {
 		srv.SetRelayURL(*relayURL)
-		go func() {
-			if err := srv.DialRelay(ctx, *relayURL); err != nil {
-				log.Error("failed to dial relay", "error", err)
-				cancel()
-				return
-			}
-		}()
+		// Establish the relay connection BEFORE the HTTP server starts so that
+		// the router is ready to accept worker connections via the relay
+		// when clients query it. If the dial fails, log and exit.
+		if err := srv.DialRelay(ctx, *relayURL); err != nil {
+			log.Error("failed to dial relay", "error", err)
+			os.Exit(1)
+		}
 	}
 	go func() {
 		if err := srv.Start(ctx); err != nil {
