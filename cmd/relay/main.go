@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"log/slog"
@@ -42,9 +41,9 @@ type Relay struct {
 
 	mu          sync.RWMutex
 	workers     map[string]*websocket.Conn // worker ID → connection
-	routerConn  *websocket.Conn             // single router connection
+	routerConn  *websocket.Conn            // single router connection
 	routerMu    sync.Mutex
-	workerQueue []protocol.Message          // buffered messages when router is disconnected
+	workerQueue []protocol.Message // buffered messages when router is disconnected
 }
 
 func main() {
@@ -62,9 +61,9 @@ func main() {
 	defer cancel()
 
 	relay := &Relay{
-		log:        log,
-		listenAddr: *relayListen,
-		workers:    make(map[string]*websocket.Conn),
+		log:         log,
+		listenAddr:  *relayListen,
+		workers:     make(map[string]*websocket.Conn),
 		workerQueue: make([]protocol.Message, 0),
 	}
 
@@ -152,6 +151,28 @@ func (r *Relay) handleWorker(ws *websocket.Conn, msg protocol.Message) {
 	r.workers[workerID] = ws
 	r.mu.Unlock()
 
+	// Forward the register to the router so it knows this worker exists.
+	msg.WorkerID = workerID
+
+	r.routerMu.Lock()
+	conn := r.routerConn
+	r.routerMu.Unlock()
+
+	if conn != nil {
+		if err := r.sendToRouter(msg); err != nil {
+			r.log.Warn("failed to forward worker register to router; buffering", "worker_id", workerID, "error", err)
+			r.mu.Lock()
+			r.workerQueue = append(r.workerQueue, msg)
+			r.mu.Unlock()
+		}
+	} else {
+		// Buffer the register for when the router connects
+		r.mu.Lock()
+		r.workerQueue = append(r.workerQueue, msg)
+		r.mu.Unlock()
+		r.log.Debug("buffered worker register (router disconnected)", "worker_id", workerID)
+	}
+
 	r.log.Info("worker connected", "worker_id", workerID)
 
 	// If router is connected, flush buffered messages
@@ -163,16 +184,16 @@ func (r *Relay) handleWorker(ws *websocket.Conn, msg protocol.Message) {
 }
 
 // handleRouter registers a router connection and starts relay loops.
-	func (r *Relay) handleRouter(ws *websocket.Conn) {
-		r.routerMu.Lock()
-		if r.routerConn != nil {
-			r.log.Warn("router already connected, closing old connection")
-			_ = r.routerConn.Close()
-		}
-		r.routerConn = ws
-		r.routerMu.Unlock()
+func (r *Relay) handleRouter(ws *websocket.Conn) {
+	r.routerMu.Lock()
+	if r.routerConn != nil {
+		r.log.Warn("router already connected, closing old connection")
+		_ = r.routerConn.Close()
+	}
+	r.routerConn = ws
+	r.routerMu.Unlock()
 
-r.log.Info("router connected")
+	r.log.Info("router connected")
 
 	// Flush buffered messages for all workers when router reconnects
 	r.flushBufferedMessages()
@@ -309,16 +330,6 @@ func (r *Relay) sendToRouter(msg protocol.Message) error {
 
 // flushBufferedMessages sends all buffered messages when router reconnects.
 func (r *Relay) flushBufferedMessages() {
-	if len(r.workerQueue) == 0 {
-		return
-	}
-
-	r.mu.Lock()
-	workers := make([]protocol.Message, len(r.workerQueue))
-	copy(workers, r.workerQueue)
-	r.workerQueue = r.workerQueue[:0]
-	r.mu.Unlock()
-
 	r.routerMu.Lock()
 	conn := r.routerConn
 	r.routerMu.Unlock()
@@ -326,6 +337,16 @@ func (r *Relay) flushBufferedMessages() {
 	if conn == nil {
 		return
 	}
+
+	r.mu.Lock()
+	if len(r.workerQueue) == 0 {
+		r.mu.Unlock()
+		return
+	}
+	workers := make([]protocol.Message, len(r.workerQueue))
+	copy(workers, r.workerQueue)
+	r.workerQueue = r.workerQueue[:0]
+	r.mu.Unlock()
 
 	// Send all buffered messages
 	for _, msg := range workers {
@@ -336,6 +357,3 @@ func (r *Relay) flushBufferedMessages() {
 
 	r.log.Info("flushed buffered messages", "count", len(workers))
 }
-
-// _ ensures imports are used
-var _ = json.Marshal

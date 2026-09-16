@@ -57,13 +57,13 @@ type WSHub struct {
 // registry. reg may be nil (events are then dropped).
 func NewWSHub(reg registry.Registry, log *slog.Logger) *WSHub {
 	return &WSHub{
-		log:         log,
-		reg:         reg,
-		conns:       make(map[string]*wsConnection),
-		relaySendCh: make(chan []byte, wsutil.SendQueueSize),
-		relayDone:   make(chan struct{}),
-		relayPending: make(map[string]*pendingCall),
-		writeTimeout: wsutil.WriteTimeout,
+		log:           log,
+		reg:           reg,
+		conns:         make(map[string]*wsConnection),
+		relaySendCh:   make(chan []byte, wsutil.SendQueueSize),
+		relayDone:     make(chan struct{}),
+		relayPending:  make(map[string]*pendingCall),
+		writeTimeout:  wsutil.WriteTimeout,
 		sendQueueSize: wsutil.SendQueueSize,
 	}
 }
@@ -118,11 +118,11 @@ func (h *WSHub) relayConnected() bool {
 // ID already exists.
 func (h *WSHub) registerRelayCall(id string, respCh chan protocol.Message, errCh chan error) (*pendingCall, error) {
 	pc := &pendingCall{
-		id:      id,
-		respCh:  respCh,
-		errCh:   errCh,
-		doneCh:  make(chan struct{}),
-		conn:    nil, // no wsConnection; hub-level tracking
+		id:     id,
+		respCh: respCh,
+		errCh:  errCh,
+		doneCh: make(chan struct{}),
+		conn:   nil, // no wsConnection; hub-level tracking
 	}
 	pc.handle = func(msg protocol.Message) {
 		switch msg.Type {
@@ -213,17 +213,17 @@ func (h *WSHub) registerRelayStream(id string, chunkCh chan StreamEvent, errCh c
 }
 
 // routeRelayResponse routes a response message (from the relay) to the
-// pending call identified by msg.ID. If no pending call exists, the
-// message is silently ignored.
-func (h *WSHub) routeRelayResponse(msg protocol.Message) {
+// pending call identified by msg.ID. Returns true if a pending call was
+// found and the message was consumed; false otherwise.
+func (h *WSHub) routeRelayResponse(msg protocol.Message) bool {
 	h.relayPendingMu.Lock()
 	pc, ok := h.relayPending[msg.ID]
 	h.relayPendingMu.Unlock()
 	if !ok {
-		h.log.Debug("relay response for unknown request id", "id", msg.ID)
-		return
+		return false
 	}
 	pc.handle(msg)
+	return true
 }
 
 // Handler returns the /v1/connect upgrade handler.
@@ -347,6 +347,64 @@ func (h *WSHub) handleConn(ws *websocket.Conn) {
 	// Block until the connection ends; the HTTP server goroutine stays
 	// parked here for the life of the connection.
 	conn.readerLoop()
+}
+
+// handleRelayRegister processes a MsgRegister received through the relay.
+// It creates a synthetic wsConnection (no real socket) so that the worker
+// appears in h.conns and can receive outbound frames via relaySendCh.
+func (h *WSHub) handleRelayRegister(msg protocol.Message) {
+	var reg protocol.RegisterPayload
+	if err := msg.DecodePayload(&reg); err != nil {
+		h.log.Warn("bad relay register payload", "error", err)
+		return
+	}
+	worker := reg.Worker
+	if worker.ID == "" {
+		h.log.Warn("relay register without worker id")
+		return
+	}
+
+	// Validate API key if configured
+	if h.apiKey != "" && worker.APIKey != h.apiKey {
+		h.log.Warn("invalid API key for relay registration", "worker", worker.ID)
+		return
+	}
+
+	worker.Transport = protocol.TransportWS
+	if worker.Status == "" {
+		worker.Status = protocol.StatusAvailable
+	}
+
+	conn := &wsConnection{
+		hub:     h,
+		id:      worker.ID,
+		ws:      nil, // no real socket — relay handles transport
+		worker:  worker,
+		sendCh:  make(chan []byte, h.sendQueueSize),
+		doneCh:  make(chan struct{}),
+		pending: make(map[string]*pendingCall),
+	}
+
+	// One active connection per worker ID: a newer connection supersedes the old one.
+	h.mu.Lock()
+	if old, ok := h.conns[worker.ID]; ok {
+		h.log.Info("superseding existing relay connection", "worker", worker.ID)
+		old.enqueueClose("superseded")
+	}
+	h.conns[worker.ID] = conn
+	h.mu.Unlock()
+
+	h.bridge(protocol.DiscoveryEvent{Type: protocol.EventAdded, Worker: worker})
+
+	// Do NOT start writerLoop — there is no socket; relaySendCh handles outbound.
+	// Do NOT start readerLoop — the relay reader loop remains the single reader.
+
+	welcome, _ := protocol.NewMessage(protocol.MsgWelcome, protocol.WelcomePayload{
+		WorkerID: worker.ID,
+		Message:  "registered via relay",
+	})
+	conn.enqueue(welcome)
+	h.log.Info("websocket worker registered", "worker", worker.ID, "ip", worker.IP, "port", worker.Port)
 }
 
 // bridge forwards a discovery event into the registry, which in turn feeds
@@ -512,7 +570,7 @@ func (c *wsConnection) send(ctx context.Context, msg protocol.Message) error {
 		c.hub.mu.Lock()
 		sendCh := c.hub.relaySendCh
 		c.hub.mu.Unlock()
-		
+
 		select {
 		case sendCh <- data:
 			return nil
@@ -550,7 +608,7 @@ func (c *wsConnection) enqueue(msg protocol.Message) bool {
 		c.hub.mu.Lock()
 		sendCh := c.hub.relaySendCh
 		c.hub.mu.Unlock()
-		
+
 		select {
 		case sendCh <- data:
 			return true
@@ -608,7 +666,9 @@ func (c *wsConnection) shutdown(reason string) {
 	c.closeOnce.Do(func() {
 		c.hub.log.Info("websocket connection closed", "worker", c.id, "reason", reason)
 		close(c.doneCh)
-		_ = c.ws.Close()
+		if c.ws != nil {
+			_ = c.ws.Close()
+		}
 
 		c.hub.mu.Lock()
 		if cur, ok := c.hub.conns[c.id]; ok && cur == c {
@@ -809,11 +869,13 @@ func (pc *pendingCall) fail(err error) {
 
 func (pc *pendingCall) finish() {
 	pc.removeOnce.Do(func() {
-		pc.conn.pendingMu.Lock()
-		if cur, ok := pc.conn.pending[pc.id]; ok && cur == pc {
-			delete(pc.conn.pending, pc.id)
+		if pc.conn != nil {
+			pc.conn.pendingMu.Lock()
+			if cur, ok := pc.conn.pending[pc.id]; ok && cur == pc {
+				delete(pc.conn.pending, pc.id)
+			}
+			pc.conn.pendingMu.Unlock()
 		}
-		pc.conn.pendingMu.Unlock()
 	})
 	close(pc.doneCh)
 	if pc.chunkCh != nil {
@@ -1040,8 +1102,6 @@ func (h *WSHub) DialRelay(ctx context.Context, url string) error {
 	return nil
 }
 
-
-
 // dispatchRelayMessage routes a message received from the relay
 // to the correct worker connection based on WorkerID.
 func (h *WSHub) dispatchRelayMessage(msg protocol.Message) {
@@ -1083,7 +1143,7 @@ func (h *WSHub) relayWriterLoop(ctx context.Context) {
 			if conn == nil {
 				continue
 			}
-			if err := wsutil.SendJSON(conn, data); err != nil {
+			if err := wsutil.SendText(conn, data); err != nil {
 				h.log.Warn("failed to send to relay", "error", err)
 			}
 		}
@@ -1116,23 +1176,35 @@ func (h *WSHub) relayReaderLoop(ctx context.Context) {
 			return
 		}
 
-		// Route relay-internal response messages to pending calls
-		// (inference responses, model load responses, errors, chunks).
+		// Handle relay-internal register messages — create synthetic connections.
+		if msg.Type == protocol.MsgRegister {
+			h.handleRelayRegister(msg)
+			continue
+		}
+
+		// Route response-type messages to relay-level pending calls
+		// (relayWorkerClient path). Returns true if consumed.
+		consumed := false
 		switch msg.Type {
 		case protocol.MsgInferenceResponse, protocol.MsgModelLoadResponse,
 			protocol.MsgError, protocol.MsgInferenceChunk:
-			h.routeRelayResponse(msg)
+			consumed = h.routeRelayResponse(msg)
 		}
 
-		// Messages from relay have WorkerID set by the worker
+		// Messages from relay have WorkerID set by the worker.
+		// Dispatch to the synthetic wsConnection for wsWorkerClient pending
+		// calls and non-response types (heartbeats, capabilities, pings).
+		// Skip if routeRelayResponse already consumed the message.
 		if msg.WorkerID != "" {
-			h.mu.RLock()
-			c, ok := h.conns[msg.WorkerID]
-			h.mu.RUnlock()
-			if ok {
-				c.hub.dispatch(c, msg)
-			} else {
-				h.log.Debug("no worker connection for relay message", "worker_id", msg.WorkerID)
+			if !consumed {
+				h.mu.RLock()
+				c, ok := h.conns[msg.WorkerID]
+				h.mu.RUnlock()
+				if ok {
+					c.hub.dispatch(c, msg)
+				} else {
+					h.log.Debug("no worker connection for relay message", "worker_id", msg.WorkerID)
+				}
 			}
 		} else {
 			// Broadcast to all workers or log

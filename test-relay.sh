@@ -46,7 +46,7 @@ sleep 2
 
 # Start worker (dials relay outbound)
 # Note: --relay-url overrides the router WS address; worker HTTP port is 8081 by default.
-echo "=== Starting worker on $WORKER_ADDR with relay $RELAY_URL ==="
+echo "=== Starting worker (HTTP :8081) with relay $RELAY_URL ==="
 $BIN/infermesh-worker --dev-mode --router $RELAY_URL --backend llama-cpp > /tmp/worker.log 2>&1 &
 WORKER_PID=$!
 sleep 4
