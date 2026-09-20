@@ -1177,7 +1177,7 @@ func (h *WSHub) relayWriterLoop(ctx context.Context, done chan struct{}) {
 	defer func() {
 		h.relayMu.Lock()
 		if h.relayConn != nil {
-			h.relayConn.Close()
+			_ = h.relayConn.Close() // best-effort close; the connection is already dead
 		}
 		h.relayMu.Unlock()
 		h.log.Info("relay writer loop exited")

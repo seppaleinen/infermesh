@@ -142,7 +142,7 @@ func wsConnectOnce(ctx context.Context, connectURL string, cfg WSConfig, infoFn 
 	if err != nil {
 		return fmt.Errorf("dial router: %w", err)
 	}
-	defer wsutil.Close(conn)
+	defer func() { _ = wsutil.Close(conn) }()
 	log.Info("websocket connected to router", "router", connectURL)
 
 	out := &wsOutbound{conn: conn, timeout: cfg.WriteTimeout}

@@ -22,13 +22,7 @@ import (
 var (
 	relayListen = flag.String("listen", ":8090", "address to listen on for worker and router connections")
 	relayDev    = flag.Bool("dev-mode", false, "dev mode (no auth, loopback only)")
-	relayProd   = flag.Bool("prod-mode", false, "production mode (mTLS required)")
 )
-
-// relayWorkerEntry holds a connected worker's WebSocket connection.
-type relayWorkerEntry struct {
-	conn *websocket.Conn
-}
 
 // Relay is a WebSocket broker that bridges workers and routers.
 // Workers connect outbound to the relay and send "register" as their
