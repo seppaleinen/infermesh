@@ -135,6 +135,7 @@ func (h *WSHub) registerRelayCall(id string, respCh chan protocol.Message, errCh
 		errCh:  errCh,
 		doneCh: make(chan struct{}),
 		conn:   nil, // no wsConnection; hub-level tracking
+		hub:    h,
 	}
 	pc.handle = func(msg protocol.Message) {
 		switch msg.Type {
@@ -173,6 +174,7 @@ func (h *WSHub) registerRelayStream(id string, chunkCh chan StreamEvent, errCh c
 		errCh:   errCh,
 		doneCh:  make(chan struct{}),
 		conn:    nil, // no wsConnection; hub-level tracking
+		hub:     h,
 	}
 	pc.handle = func(msg protocol.Message) {
 		switch msg.Type {
@@ -836,6 +838,7 @@ func (c *wsConnection) registerCall(id string, respCh chan protocol.Message, err
 // pendingCall correlates an in-flight request with its response(s).
 type pendingCall struct {
 	conn   *wsConnection
+	hub    *WSHub // non-nil for relay-level calls (conn == nil); used to reap the hub-side pending map entry
 	id     string
 	handle func(protocol.Message)
 
@@ -887,6 +890,16 @@ func (pc *pendingCall) finish() {
 				delete(pc.conn.pending, pc.id)
 			}
 			pc.conn.pendingMu.Unlock()
+			return
+		}
+		// Relay-level call (registered in the hub's relayPending map): reap
+		// the hub-side entry so IDs don't accumulate across relay sessions.
+		if pc.hub != nil {
+			pc.hub.relayPendingMu.Lock()
+			if cur, ok := pc.hub.relayPending[pc.id]; ok && cur == pc {
+				delete(pc.hub.relayPending, pc.id)
+			}
+			pc.hub.relayPendingMu.Unlock()
 		}
 	})
 	close(pc.doneCh)
@@ -1170,16 +1183,30 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 }
 
 // relayWriterLoop sends messages from the relaySendCh to the relay connection.
-// It exits when ctx is cancelled or when the reader loop signals the
-// connection dropped (done closed), so the relay is never written from more
-// than one goroutine at a time.
+// It captures the connection it owns once at startup (DialRelay publishes
+// relayConn before spawning this loop) and only ever writes to that captured
+// conn. It exits when ctx is cancelled, when the reader loop signals the
+// connection dropped (done closed), or when a write fails, so the relay is
+// never written from more than one goroutine at a time and an old loop can
+// never touch a successor's connection.
 func (h *WSHub) relayWriterLoop(ctx context.Context, done chan struct{}) {
+	h.relayMu.RLock()
+	conn := h.relayConn
+	h.relayMu.RUnlock()
+	if conn == nil {
+		h.log.Warn("relay writer loop started without a connection")
+		return
+	}
+
 	defer func() {
 		h.relayMu.Lock()
-		if h.relayConn != nil {
-			_ = h.relayConn.Close() // best-effort close; the connection is already dead
+		if h.relayConn == conn {
+			h.relayConn = nil
 		}
 		h.relayMu.Unlock()
+		if conn != nil {
+			_ = conn.Close()
+		}
 		h.log.Info("relay writer loop exited")
 	}()
 
@@ -1188,19 +1215,16 @@ func (h *WSHub) relayWriterLoop(ctx context.Context, done chan struct{}) {
 		case <-ctx.Done():
 			return
 		case <-done:
-			// The reader loop detected the disconnect and already nil'd and
-			// closed the connection; exit so the next dial owns the conn.
+			// The reader loop detected the disconnect; exit so the next
+			// dial owns the conn.
 			return
 		case data, ok := <-h.relaySendCh:
 			if !ok {
 				return
 			}
-			conn := h.relayConnSnapshot()
-			if conn == nil {
-				continue
-			}
 			if err := wsutil.SendText(conn, data); err != nil {
 				h.log.Warn("failed to send to relay", "error", err)
+				return
 			}
 		}
 	}
@@ -1223,6 +1247,18 @@ func (h *WSHub) relayReaderLoop(ctx context.Context, done chan struct{}) {
 		h.relayMu.Unlock()
 		if conn != nil {
 			_ = conn.Close()
+		}
+		// Fail in-flight relay calls so HTTP clients get a fast error
+		// instead of waiting on a response that can never arrive (the
+		// relay link is gone). Finished calls are no-ops (closeOnce).
+		h.relayPendingMu.Lock()
+		pend := make([]*pendingCall, 0, len(h.relayPending))
+		for _, pc := range h.relayPending {
+			pend = append(pend, pc)
+		}
+		h.relayPendingMu.Unlock()
+		for _, pc := range pend {
+			pc.fail(errRelayDisconnected)
 		}
 		close(done)
 		h.log.Info("relay reader loop exited")
