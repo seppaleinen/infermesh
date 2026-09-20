@@ -14,20 +14,23 @@ build-static:
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/infermesh-relay-darwin-arm64 ./cmd/relay
 
 # Unit tests (method-level, table-driven)
-test:
+test-unit:
 	go test ./pkg/...
 
 # Security unit tests
 test-security:
 	go test ./pkg/security/...
 
-# Integration tests (multi-component interaction)
+# Integration tests (multi-component interaction; skip if dir absent)
 test-integration:
-	go test ./tests/integration/...
+	@if [ -d ./tests/integration ]; then go test ./tests/integration/...; else echo "No ./tests/integration directory; skipping"; fi
 
 # End-to-end tests (full flow, real network)
 test-e2e:
-	go test ./tests/e2e/...
+	@if [ -d ./tests/e2e ]; then go test ./tests/e2e/...; else echo "No ./tests/e2e directory; skipping"; fi
+
+# Run all tests: unit + integration + e2e
+test: test-unit test-integration test-e2e
 
 # Platform-aware tests: run on current platform
 test-platform: test test-integration test-e2e

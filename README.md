@@ -30,6 +30,52 @@ export OPENAI_BASE_URL=http://localhost:8080/v1
 export OPENAI_API_KEY=unused
 ```
 
+## Firewall / Outbound-Only Relay
+
+If your worker machine sits behind a firewall that blocks inbound connections (common on macOS Sequoia+, corporate LANs, or restricted VMs), use the **outbound-only relay** architecture. Both the router and every worker dial OUTBOUND to a relay broker on a permissive host — no machine with an unsigned binary ever accepts an inbound connection.
+
+Build the relay binary:
+
+```bash
+make relay
+```
+
+### Three-machine setup
+
+**On the GPU / permissive host** (e.g. `192.168.1.216`):
+
+```bash
+# Terminal 1 — relay broker (listens on :8090)
+./bin/infermesh-relay --listen :8090 --dev-mode
+
+# Terminal 2 — router (connects outbound to the relay)
+./bin/infermesh router --dev-mode --addr :8080 \
+  --relay-url ws://192.168.1.216:8090
+```
+
+**On the worker machine** (firewalled, can only dial outbound):
+
+```bash
+# Terminal 3 — worker (connects outbound to the relay)
+./bin/infermesh worker --dev-mode \
+  --relay-url ws://192.168.1.216:8090 \
+  --backend lmstudio
+```
+
+After all three are up, test inference:
+
+```bash
+curl -X POST http://192.168.1.216:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-oss-20b",
+    "messages": [{"role": "user", "content": "Hello via relay"}],
+    "max_tokens": 16
+  }'
+```
+
+The relay forwards worker registration messages to the router and proxies inference requests from the router back to the worker — all over outbound WebSocket connections.
+
 ## Architecture
 
 ```
