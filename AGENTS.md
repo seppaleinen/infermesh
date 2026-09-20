@@ -31,7 +31,7 @@ Run (defaults to **dev mode** if neither `--dev-mode` nor `--prod-mode` is passe
 CLI flags (verified in `cmd/*/main.go`):
 - **Router**: `--dev-mode`, `--prod-mode`, `--mtls-cert`, `--mtls-key`, `--cert-dir`, `--api-key`
 - **Worker**: `--port` (default 8081), `--backend` (llama-cpp | ollama | lmstudio | vllm | custom), `--model-path`, `--router` (HTTP registration, dev-mode only), `--capabilities` (print and exit), `--enable-health-checks` (default on), plus the mTLS flags. Prod mode **requires** `--model-path`.
-- Backend endpoints are hardcoded in `cmd/worker/main.go`: llama-cpp `localhost:8080` (**collides with the router port!**), ollama `localhost:11434`, lmstudio `127.0.0.1:1234`, vllm `localhost:8000`.
+- Backend endpoints are hardcoded in `cmd/worker/main.go`: llama-cpp `localhost:8080` (**collides with the router port!**), ollama `localhost:11434`, lmstudio `127.0.0.1:1234`, vllm `localhost:8000`. `--backend-url` overrides the endpoint for testing (e.g. point the worker at a mock backend on an arbitrary port).
 
 ## Testing
 

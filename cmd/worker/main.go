@@ -21,20 +21,38 @@ import (
 	"github.com/seppaleinen/infermesh/pkg/worker"
 )
 
-func createBackend(backendName, modelPath string) (worker.Backend, error) {
+func createBackend(backendName, modelPath, backendURL string) (worker.Backend, error) {
 	switch backendName {
 	case "llama-cpp":
-		return worker.NewLlamaCppBackend("http://localhost:8080", 2048, 4, 1), nil
+		if backendURL == "" {
+			backendURL = "http://localhost:8080"
+		}
+		return worker.NewLlamaCppBackend(backendURL, 2048, 4, 1), nil
 	case "ollama":
-		return worker.NewOllamaBackend("http://localhost:11434", modelPath), nil
+		if backendURL == "" {
+			backendURL = "http://localhost:11434"
+		}
+		return worker.NewOllamaBackend(backendURL, modelPath), nil
 	case "lmstudio":
-		return worker.NewLMStudioBackend("http://127.0.0.1:1234", modelPath), nil
+		if backendURL == "" {
+			backendURL = "http://127.0.0.1:1234"
+		}
+		return worker.NewLMStudioBackend(backendURL, modelPath), nil
 	case "vllm":
-		return worker.NewVLLMBackend("localhost:8000", modelPath), nil
+		if backendURL == "" {
+			backendURL = "localhost:8000"
+		}
+		return worker.NewVLLMBackend(backendURL, modelPath), nil
 	case "custom":
-		return worker.NewCustomBackend("http://localhost:8000", "", "custom"), nil
+		if backendURL == "" {
+			backendURL = "http://localhost:8000"
+		}
+		return worker.NewCustomBackend(backendURL, "", "custom"), nil
 	default:
-		return worker.NewLlamaCppBackend("http://localhost:8080", 2048, 4, 1), nil
+		if backendURL == "" {
+			backendURL = "http://localhost:8080"
+		}
+		return worker.NewLlamaCppBackend(backendURL, 2048, 4, 1), nil
 	}
 }
 
@@ -48,6 +66,7 @@ func main() {
 	certDir := flag.String("cert-dir", "", "path to certificate directory (for CA)")
 	modelPath := flag.String("model-path", "", "path to model file (optional, auto-discovery used if not provided)")
 	backend := flag.String("backend", "llama-cpp", "backend adapter (llama-cpp, ollama, vllm, lmstudio)")
+	backendURL := flag.String("backend-url", "", "backend base URL override (default: built-in per-backend endpoint)")
 	routerAddr := flag.String("router", "", "router base URL (http/https in dev-mode, ws/wss otherwise); empty means mDNS")
 	relayURL := flag.String("relay-url", "", "relay URL for HTTP registration and traffic forwarding (http://relay:port); overrides direct router connection")
 	enableHealthChecks := flag.Bool("enable-health-checks", true, "enable periodic backend health checks")
@@ -69,10 +88,11 @@ func main() {
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	log.Info("worker configuration",
-		"model_path", *modelPath,
-		"backend", *backend,
-	)
+	logAttrs := []any{"model_path", *modelPath, "backend", *backend}
+	if *backendURL != "" {
+		logAttrs = append(logAttrs, "backend_url", *backendURL)
+	}
+	log.Info("worker configuration", logAttrs...)
 
 	// In production mode, a model path is required so the worker knows what it serves.
 	if !isDevMode && *modelPath == "" {
@@ -131,7 +151,7 @@ func main() {
 	srv := worker.NewServer(log, addr, secCfg)
 
 	// Set up backend adapter based on --backend flag
-	backendImpl, err := createBackend(*backend, *modelPath)
+	backendImpl, err := createBackend(*backend, *modelPath, *backendURL)
 	if err != nil {
 		log.Warn("failed to create backend", "backend", *backend, "error", err)
 	} else {
