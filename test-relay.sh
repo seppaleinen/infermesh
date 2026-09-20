@@ -185,9 +185,16 @@ sleep 2
 
 # Send a test inference request to the router
 echo "=== Sending test request to router ==="
-RESPONSE=$(curl -s -X POST http://127.0.0.1:8080/v1/chat/completions \
+if ! RESPONSE=$(curl -fsS -m 15 -X POST http://127.0.0.1:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "llama-3-8b", "messages": [{"role": "user", "content": "Hello via relay"}], "max_tokens": 16, "stream": false}')
+  -d '{"model": "llama-3-8b", "messages": [{"role": "user", "content": "Hello via relay"}], "max_tokens": 16, "stream": false}'); then
+    echo "ERROR: Inference request failed (curl exited nonzero: HTTP error or timeout)"
+    echo "--- Router log ---"
+    cat /tmp/router.log
+    echo "--- Worker log ---"
+    cat /tmp/worker.log
+    exit 1
+fi
 
 echo "Response: $RESPONSE"
 
