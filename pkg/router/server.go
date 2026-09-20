@@ -174,6 +174,14 @@ func (s *Server) DialRelay(ctx context.Context, url string) error {
     return s.hub.DialRelay(ctx, url)
 }
 
+// RunRelay maintains the outbound relay connection, dialing immediately and
+// re-dialing with exponential backoff after any disconnect until ctx is
+// cancelled. It blocks; call it in a goroutine. The router's HTTP server
+// keeps serving while only the relay link retries.
+func (s *Server) RunRelay(ctx context.Context, url string) {
+    s.hub.runRelay(ctx, url)
+}
+
 // Start runs the HTTP server.
 func (s *Server) Start(ctx context.Context) error {
 	// Guard: in prod mode, bind address must be loopback.

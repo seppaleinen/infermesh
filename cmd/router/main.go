@@ -111,20 +111,27 @@ func main() {
 	srv := router.NewServer(reg, log, *addr, secCfg)
 	if *relayURL != "" {
 		srv.SetRelayURL(*relayURL)
-		// Establish the relay connection BEFORE the HTTP server starts so that
-		// the router is ready to accept worker connections via the relay
-		// when clients query it. If the dial fails, log and exit.
-		if err := srv.DialRelay(ctx, *relayURL); err != nil {
-			log.Error("failed to dial relay", "error", err)
-			os.Exit(1)
-		}
+		// Establish the relay connection in the background with retry. The
+		// HTTP server starts serving immediately; only the relay link
+		// retries (exponential backoff) if the initial dial fails or the
+		// connection later drops.
+		go srv.RunRelay(ctx, *relayURL)
 	}
 	go func() {
 		if err := srv.Start(ctx); err != nil {
 			log.Error("router server error", "error", err)
 		}
 	}()
-	log.Info("router listening", "addr", *addr, "ws_connect", fmt.Sprintf("ws://%s/v1/connect", *addr), "dev_mode", isDevMode, "relay_url", *relayURL)
+	if *relayURL != "" {
+		log.Info("router listening",
+			"addr", *addr,
+			"mode", "relay-only",
+			"note", "/v1/connect not mounted (workers connect via relay)",
+			"relay_url", *relayURL,
+			"dev_mode", isDevMode)
+	} else {
+		log.Info("router listening", "addr", *addr, "ws_connect", fmt.Sprintf("ws://%s/v1/connect", *addr), "dev_mode", isDevMode)
+	}
 
 	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)

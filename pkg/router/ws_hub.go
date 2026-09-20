@@ -23,6 +23,10 @@ import (
 // errConnClosed is delivered to in-flight calls when their connection dies.
 var errConnClosed = errors.New("websocket connection closed")
 
+// errRelayDisconnected is returned when a relay worker request cannot be
+// sent because the relay connection is down.
+var errRelayDisconnected = errors.New("relay connection unavailable")
+
 // WSHub manages outbound WebSocket connections from workers. Workers dial the
 // router (never the reverse), so the hub holds an active connection per worker
 // ID and multiplexes inference traffic over it.
@@ -111,6 +115,14 @@ func (h *WSHub) relayConnected() bool {
 	h.relayMu.RLock()
 	defer h.relayMu.RUnlock()
 	return h.relayConn != nil
+}
+
+// relayConnSnapshot returns the current relay connection, or nil when the
+// relay is not connected. Callers must treat a nil result as "relay down".
+func (h *WSHub) relayConnSnapshot() *websocket.Conn {
+	h.relayMu.RLock()
+	defer h.relayMu.RUnlock()
+	return h.relayConn
 }
 
 // registerRelayCall registers a pending call on the relay connection,
@@ -1081,51 +1093,93 @@ func (h *WSHub) DialRelay(ctx context.Context, url string) error {
 		return fmt.Errorf("dial relay: %w", err)
 	}
 
-	h.relayMu.Lock()
-	h.relayConn = conn
-	h.relayMu.Unlock()
-
-	// Send router_ready as the first frame
+	// Send router_ready as the first frame. On failure the connection is
+	// discarded before it is ever published, so relayConnected() stays false.
 	readyMsg := protocol.Message{Type: protocol.MsgRouterReady}
 	if err := wsutil.SendJSON(conn, readyMsg); err != nil {
-		h.relayMu.Lock()
-		h.relayConn = nil
-		h.relayMu.Unlock()
 		_ = conn.Close()
 		return fmt.Errorf("send router_ready: %w", err)
 	}
 
+	// Publish the new connection and a fresh drop-signal channel. The reader
+	// loop closes `done` when this connection dies; runRelay waits on it to
+	// decide when to re-dial.
+	h.relayMu.Lock()
+	h.relayConn = conn
+	done := make(chan struct{})
+	h.relayDone = done
+	h.relayMu.Unlock()
+
 	h.log.Info("connected to relay", "url", url)
 
-	go h.relayReaderLoop(ctx)
-	go h.relayWriterLoop(ctx)
+	go h.relayReaderLoop(ctx, done)
+	go h.relayWriterLoop(ctx, done)
 	return nil
 }
 
-// dispatchRelayMessage routes a message received from the relay
-// to the correct worker connection based on WorkerID.
-func (h *WSHub) dispatchRelayMessage(msg protocol.Message) {
-	h.mu.RLock()
-	c, ok := h.conns[msg.WorkerID]
-	h.mu.RUnlock()
+// relayRetry bounds the exponential backoff applied when re-dialing the
+// relay after a failed or dropped connection.
+const (
+	relayRetryInitial = 2 * time.Second
+	relayRetryMax     = 30 * time.Second
+)
 
-	if !ok {
-		h.log.Debug("no worker connection for relay message", "worker_id", msg.WorkerID)
-		return
+// runRelay maintains the outbound relay connection until ctx is cancelled:
+// it dials immediately, then re-dials with exponential backoff whenever the
+// link drops. The router's HTTP server is unaffected — only the relay link
+// retries. It blocks; call it in a goroutine.
+func (h *WSHub) runRelay(ctx context.Context, url string) {
+	backoff := relayRetryInitial
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := h.DialRelay(ctx, url); err != nil {
+			h.log.Warn("relay dial failed; retrying", "error", err, "retry_in", backoff.String())
+			if !sleepCtx(ctx, backoff) {
+				return
+			}
+			backoff *= 2
+			if backoff > relayRetryMax {
+				backoff = relayRetryMax
+			}
+			continue
+		}
+		backoff = relayRetryInitial
+		h.relayMu.RLock()
+		done := h.relayDone
+		h.relayMu.RUnlock()
+		select {
+		case <-done:
+			h.log.Info("relay connection lost; re-dialing")
+		case <-ctx.Done():
+			return
+		}
 	}
+}
 
-	c.hub.dispatch(c, msg)
+// sleepCtx sleeps for d or until ctx is cancelled; reports whether the full
+// duration elapsed.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
 }
 
 // relayWriterLoop sends messages from the relaySendCh to the relay connection.
-func (h *WSHub) relayWriterLoop(ctx context.Context) {
+// It exits when ctx is cancelled or when the reader loop signals the
+// connection dropped (done closed), so the relay is never written from more
+// than one goroutine at a time.
+func (h *WSHub) relayWriterLoop(ctx context.Context, done chan struct{}) {
 	defer func() {
 		h.relayMu.Lock()
 		if h.relayConn != nil {
 			h.relayConn.Close()
 		}
 		h.relayMu.Unlock()
-		close(h.relayDone)
 		h.log.Info("relay writer loop exited")
 	}()
 
@@ -1133,13 +1187,15 @@ func (h *WSHub) relayWriterLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-done:
+			// The reader loop detected the disconnect and already nil'd and
+			// closed the connection; exit so the next dial owns the conn.
+			return
 		case data, ok := <-h.relaySendCh:
 			if !ok {
 				return
 			}
-			h.relayMu.Lock()
-			conn := h.relayConn
-			h.relayMu.Unlock()
+			conn := h.relayConnSnapshot()
 			if conn == nil {
 				continue
 			}
@@ -1151,23 +1207,33 @@ func (h *WSHub) relayWriterLoop(ctx context.Context) {
 }
 
 // relayReaderLoop reads messages from the relay and dispatches them
-// to the appropriate worker connection based on WorkerID.
-func (h *WSHub) relayReaderLoop(ctx context.Context) {
+// to the appropriate worker connection based on WorkerID. On exit it nils
+// the relayConn field (under relayMu) and closes `done` so runRelay can
+// re-dial.
+func (h *WSHub) relayReaderLoop(ctx context.Context, done chan struct{}) {
+	h.relayMu.RLock()
+	conn := h.relayConn
+	h.relayMu.RUnlock()
+
 	defer func() {
 		h.relayMu.Lock()
-		if h.relayConn != nil {
-			h.relayConn.Close()
+		if h.relayConn == conn {
+			h.relayConn = nil
 		}
 		h.relayMu.Unlock()
+		if conn != nil {
+			_ = conn.Close()
+		}
+		close(done)
 		h.log.Info("relay reader loop exited")
 	}()
 
 	for {
-		if err := wsutil.SetReadDeadline(h.relayConn, time.Now().Add(wsutil.ReadTimeout)); err != nil {
+		if err := wsutil.SetReadDeadline(conn, time.Now().Add(wsutil.ReadTimeout)); err != nil {
 			return
 		}
 		var msg protocol.Message
-		if err := wsutil.ReceiveJSON(h.relayConn, &msg); err != nil {
+		if err := wsutil.ReceiveJSON(conn, &msg); err != nil {
 			if errors.Is(err, wsutil.ErrMessageTooLarge) {
 				h.log.Warn("oversized message from relay")
 			} else {
@@ -1260,7 +1326,12 @@ func (c *relayWorkerClient) Complete(ctx context.Context, worker protocol.Worker
 	if err != nil {
 		return nil, err
 	}
-	if err := wsutil.SendJSON(c.hub.relayConn, msg); err != nil {
+	conn := c.hub.relayConnSnapshot()
+	if conn == nil {
+		pc.fail(errRelayDisconnected)
+		return nil, errRelayDisconnected
+	}
+	if err := wsutil.SendJSON(conn, msg); err != nil {
 		pc.fail(err)
 		return nil, err
 	}
@@ -1300,7 +1371,12 @@ func (c *relayWorkerClient) Stream(ctx context.Context, worker protocol.WorkerIn
 		close(chunkCh)
 		return chunkCh, errCh
 	}
-	if err := wsutil.SendJSON(c.hub.relayConn, msg); err != nil {
+	conn := c.hub.relayConnSnapshot()
+	if conn == nil {
+		pc.fail(errRelayDisconnected)
+		return chunkCh, errCh
+	}
+	if err := wsutil.SendJSON(conn, msg); err != nil {
 		pc.fail(err)
 		return chunkCh, errCh
 	}
@@ -1329,7 +1405,12 @@ func (c *relayWorkerClient) LoadModel(ctx context.Context, worker protocol.Worke
 	if err != nil {
 		return false, err
 	}
-	if err := wsutil.SendJSON(c.hub.relayConn, msg); err != nil {
+	conn := c.hub.relayConnSnapshot()
+	if conn == nil {
+		pc.fail(errRelayDisconnected)
+		return false, errRelayDisconnected
+	}
+	if err := wsutil.SendJSON(conn, msg); err != nil {
 		pc.fail(err)
 		return false, err
 	}
