@@ -26,6 +26,7 @@ type WorkerFlags struct {
 	ModelPath          string
 	Backend            string
 	Router             string
+	RelayURL           string
 	EnableHealthChecks bool
 }
 
@@ -51,6 +52,7 @@ func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	fs.StringVar(&f.ModelPath, "model-path", "", "path to the model file")
 	fs.StringVar(&f.Backend, "backend", "llama-cpp", "backend adapter (llama-cpp, ollama, lmstudio, vllm, custom)")
 	fs.StringVar(&f.Router, "router", "", "router base URL for HTTP registration (e.g. http://127.0.0.1:8080, dev-mode only)")
+	fs.StringVar(&f.RelayURL, "relay-url", "", "relay URL for outbound-only WebSocket connectivity (dev mode only)")
 	fs.BoolVar(&f.EnableHealthChecks, "enable-health-checks", true, "enable periodic backend health checks")
 }
 
@@ -101,6 +103,7 @@ func runWorker(args []string) int {
 		MTLSKey:            f.MTLSKey,
 		CertDir:            f.CertDir,
 		RouterBase:         f.Router,
+		RelayURL:           f.RelayURL,
 		EnableHealthChecks: f.EnableHealthChecks,
 	})
 	if err != nil {

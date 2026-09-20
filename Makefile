@@ -2,10 +2,16 @@
 build:
 	go build -o bin/infermesh ./cmd/infermesh
 
+# Build the relay broker binary (outbound-only WebSocket relay)
+relay:
+	go build -o bin/infermesh-relay ./cmd/relay
+
 # Build static binaries (CGO_ENABLED=0 for cross-platform compatibility)
 build-static:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/infermesh-linux-amd64 ./cmd/infermesh
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/infermesh-darwin-arm64 ./cmd/infermesh
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/infermesh-relay-linux-amd64 ./cmd/relay
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/infermesh-relay-darwin-arm64 ./cmd/relay
 
 # Unit tests (method-level, table-driven)
 test:

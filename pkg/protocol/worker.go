@@ -47,6 +47,15 @@ const (
 	EngineVLLM     EngineType = "vllm"
 )
 
+// Transport identifiers for WorkerInfo.Transport.
+// Legacy/mDNS workers leave Transport empty, which the router treats as
+// TransportHTTP (dial-back). WebSocket workers set TransportWS and are
+// reached through the outbound connection held by the router's WS hub.
+const (
+	TransportHTTP = "http"
+	TransportWS   = "ws"
+)
+
 // Capabilities describes what a worker can do.
 type Capabilities struct {
 	GPU     GPUInfo     `json:"gpu"`
@@ -59,14 +68,16 @@ type Capabilities struct {
 // WorkerInfo is the canonical payload carried in mDNS TXT records.
 // Both worker (announcing) and router (receiving) use this type.
 type WorkerInfo struct {
-	ID         string      `json:"id"`             // unique worker identifier
-	Hostname   string      `json:"hostname"`        // machine hostname
-	IP         string      `json:"ip"`              // resolved IPv4 address
-	Port       int         `json:"port"`            // HTTP API port
-	Capabilities Capabilities `json:"capabilities"`  // GPU, models, etc.
-	Status     WorkerStatus `json:"status"`         // availability
-	Version    string      `json:"version"`         // InferMesh protocol version
-	LastSeen   time.Time   `json:"-"`               // set by router; not serialized
+	ID           string       `json:"id"`                  // unique worker identifier
+	Hostname     string       `json:"hostname"`            // machine hostname
+	IP           string       `json:"ip"`                  // resolved IPv4 address
+	Port         int          `json:"port"`                // HTTP API port
+	Capabilities Capabilities `json:"capabilities"`        // GPU, models, etc.
+	Status       WorkerStatus `json:"status"`              // availability
+	Version      string       `json:"version"`             // InferMesh protocol version
+	Transport    string       `json:"transport,omitempty"` // "ws" for outbound WebSocket workers; empty/"http" for dial-back
+	APIKey       string       `json:"api_key,omitempty"`   // optional API key for authentication
+	LastSeen     time.Time    `json:"-"`                   // set by router; not serialized
 }
 
 // DiscoveryEventType categorizes a discovery event.

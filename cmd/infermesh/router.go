@@ -36,6 +36,7 @@ type RouterFlags struct {
 	Backend            string
 	ModelPath          string
 	EnableHealthChecks bool
+	RelayURL           string
 }
 
 // parseRouterFlags parses args into RouterFlags. It uses ContinueOnError so
@@ -58,6 +59,7 @@ func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
 	fs.StringVar(&f.APIKey, "api-key", "", "API key for authentication (production mode)")
 	fs.StringVar(&f.Addr, "addr", ":8080", "listen address (host:port) for the router HTTP server")
 	fs.BoolVar(&f.Worker, "worker", false, "run an in-process worker registered against this router (dev mode only)")
+	fs.StringVar(&f.RelayURL, "relay-url", "", "relay URL for outbound-only WebSocket connectivity (dev mode only)")
 	// Worker passthrough flags (combined mode).
 	fs.IntVar(&f.Port, "port", 8081, "worker HTTP port (used with --worker)")
 	fs.StringVar(&f.Backend, "backend", "llama-cpp", "worker backend adapter (llama-cpp, ollama, vllm, lmstudio)")
@@ -198,11 +200,31 @@ func runRouter(args []string) int {
 
 	// Start router HTTP server
 	srv := router.NewServer(reg, log, f.Addr, secCfg)
+	if f.RelayURL != "" {
+		srv.SetRelayURL(f.RelayURL)
+		// Establish the relay connection in the background with retry. The
+		// HTTP server starts serving immediately; only the relay link
+		// retries (exponential backoff) if the initial dial fails or the
+		// connection later drops.
+		go srv.RunRelay(ctx, f.RelayURL)
+	}
 	go func() {
 		if err := srv.Start(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("router server error", "error", err)
 		}
 	}()
+
+	// Log mode
+	if f.RelayURL != "" {
+		log.Info("router listening",
+			"addr", f.Addr,
+			"mode", "relay-only",
+			"note", "/v1/connect not mounted (workers connect via relay)",
+			"relay_url", f.RelayURL,
+			"dev_mode", isDevMode)
+	} else {
+		log.Info("router listening", "addr", f.Addr, "dev_mode", isDevMode)
+	}
 
 	// Optional in-process worker (dev mode only; validated above).
 	var wh *worker.Handle

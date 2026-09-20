@@ -41,6 +41,10 @@ type RunConfig struct {
 	// RouterBase is the router base URL for dev-mode HTTP registration
 	// (e.g. http://127.0.0.1:8080). Empty means mDNS discovery.
 	RouterBase string
+	// RelayURL is the relay WebSocket URL for outbound-only connectivity.
+	// When set, the worker uses WebSocket registration via the relay instead
+	// of HTTP registration or mDNS. Only supported in dev mode.
+	RelayURL string
 	// EnableHealthChecks toggles periodic backend health checks.
 	EnableHealthChecks bool
 }
@@ -189,6 +193,32 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 		Capabilities: caps,
 		Status:       protocol.StatusAvailable,
 		Version:      "v1",
+	}
+
+	// Relay WebSocket registration (dev mode only) - takes precedence over RouterBase
+	if cfg.RelayURL != "" {
+		if !cfg.DevMode {
+			log.Warn("--relay-url is only supported in dev mode; ignoring", "relay", cfg.RelayURL)
+		} else {
+			log.Info("registering with relay via websocket", "relay", cfg.RelayURL)
+			info.Transport = protocol.TransportWS
+			baseInfo := info
+			go WSRegisterLoop(wctx, WSConfig{RouterURL: cfg.RelayURL}, func() protocol.WorkerInfo {
+				current := baseInfo
+				current.Capabilities = caps
+				models := srv.GetModels()
+				if cfg.DevMode {
+					for i := range models {
+						if models[i].Name != "" {
+							models[i].Loaded = true
+						}
+					}
+				}
+				current.Capabilities.Models = models
+				return current
+			}, srv, log)
+			return h, nil
+		}
 	}
 
 	// Dev-mode HTTP registration (bypasses mDNS)
