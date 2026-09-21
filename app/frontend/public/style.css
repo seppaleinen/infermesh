@@ -1,0 +1,55 @@
+:root {
+  /* InferMesh Desktop — dark console palette for the tray-utility shell. */
+  --bg: #0a0d12;
+  --surface: #11151c;
+  --surface-2: rgba(255, 255, 255, 0.04);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --text: #e9edf3;
+  --text-muted: #99a2b3;
+  --text-faint: #626b7d;
+  --accent: #3ecfae;
+  --accent-strong: #5fdcbe;
+  --accent-dim: rgba(62, 207, 174, 0.12);
+  --offline: #f2766b;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo,
+    Consolas, monospace;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+  /* App chrome is not a document — nothing is selectable. */
+  -webkit-user-select: none;
+  user-select: none;
+  /* The whole window background is a drag region for the desktop shell. */
+  --wails-draggable: drag;
+  overflow: hidden;
+}
+
+#app {
+  height: 100%;
+}
+
+::selection {
+  background: rgba(62, 207, 174, 0.28);
+}

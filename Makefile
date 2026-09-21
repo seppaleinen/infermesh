@@ -29,6 +29,11 @@ build-static:
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/infermesh-relay-darwin-arm64 ./cmd/relay
 	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o bin/infermesh-relay-windows-amd64.exe ./cmd/relay
 
+# Build the desktop app for the host OS (Wails v3; CGO required; NOT part of the static matrix)
+build-app:
+	@command -v wails3 >/dev/null 2>&1 || { echo "wails3 CLI not found. Install pinned v3.0.0-beta.24:"; echo "  go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.24"; exit 1; }
+	cd app && wails3 task build OUTPUT=../bin/app/infermesh-app
+
 # Unit tests (method-level, table-driven)
 test-unit:
 	go test ./pkg/...
@@ -89,4 +94,4 @@ coverage:
 	go tool funccover -mode=count -func=cover/coverage.out
 	@echo "Coverage report: cover/coverage.out"
 
-.PHONY: build build-router build-worker build-static relay test test-security test-integration test-e2e test-platform test-all-platforms lint install-hooks tidy clean app coverage
+.PHONY: build build-router build-worker build-static build-app relay test test-security test-integration test-e2e test-platform test-all-platforms lint install-hooks tidy clean app coverage
