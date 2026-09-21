@@ -112,6 +112,18 @@ The workflow performs the following:
 5. Generates `SHA256SUMS.txt` for verification.
 6. Creates a GitHub Release with the generated tarballs and checksum file.
 
+### New endpoint: `/meta/models/popular` (Issue #31)
+
+Returns a sorted list of models available across the pool with per-model
+worker count and call count over a rolling 10-minute window.
+
+- Endpoint: `GET /meta/models/popular`
+- Response: `PopularModelsResponse{Models: []PopularModelInfo{Model, WorkerCount, CallCount}}`
+- Sorted by `worker_count` descending
+- Worker count: number of workers advertising the model (regardless of `Loaded` state)
+- Call count: inferences dispatched in last 10 minutes
+- Counter implementation: `pkg/router/call_counter.go` (in-memory, stdlib only)
+
 ---
 
 *Last updated: 2026-09-21*

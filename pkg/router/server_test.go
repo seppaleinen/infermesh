@@ -1317,3 +1317,211 @@ func TestWorkerUnavailable(t *testing.T) {
 		t.Errorf("expected status %d, got %d, body: %s", http.StatusServiceUnavailable, w.Code, w.Body.String())
 	}
 }
+
+// TestCallCounter tests the rolling window call counter.
+func TestCallCounter(t *testing.T) {
+	counter := NewCallCounter(10 * time.Minute)
+
+	// Record some calls
+	counter.Record("model-a")
+	counter.Record("model-a")
+	counter.Record("model-b")
+
+	snapshot := counter.Snapshot()
+	if snapshot["model-a"] != 2 {
+		t.Errorf("expected model-a count 2, got %d", snapshot["model-a"])
+	}
+	if snapshot["model-b"] != 1 {
+		t.Errorf("expected model-b count 1, got %d", snapshot["model-b"])
+	}
+
+	// Snapshot should return a copy
+	snapshot["model-a"] = 999
+	snapshot2 := counter.Snapshot()
+	if snapshot2["model-a"] != 2 {
+		t.Errorf("expected model-a count 2 after copy mutation, got %d", snapshot2["model-a"])
+	}
+}
+
+// TestPopularModelsHandler tests the /meta/models/popular endpoint.
+func TestPopularModelsHandler(t *testing.T) {
+	worker := protocol.WorkerInfo{
+		ID:       "worker-1",
+		Hostname: "worker-1",
+		IP:       "127.0.0.1",
+		Port:     8081,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "llama-3-8b", Size: 4820000000, Quantization: "Q4_K_M", MaxTokens: 8192, Backend: "llama-cpp", Loaded: true},
+				{Name: "mistral-7b", Size: 4370000000, Quantization: "Q5_K_M", MaxTokens: 8192, Backend: "llama-cpp", Loaded: true},
+				{Name: "qwen-72b", Size: 45000000000, Quantization: "Q4_K_M", MaxTokens: 4096, Backend: "vllm", Loaded: false},
+			},
+			VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 20480},
+		},
+	}
+
+	tr := testRegistry(t, []protocol.WorkerInfo{worker})
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+	server := tr.Server()
+
+	// Start cache and directly populate it with worker capabilities (bypass HTTP fetch)
+	server.cache = NewCapabilityCache(tr.reg, testLogger())
+	server.cache.Start(tr.ctx)
+	// Directly insert into cache since there's no real HTTP server for /capabilities
+	server.cache.mu.Lock()
+	server.cache.cache[worker.ID] = worker
+	server.cache.mu.Unlock()
+
+	// Record some calls
+	server.counter.Record("llama-3-8b")
+	server.counter.Record("llama-3-8b")
+	server.counter.Record("mistral-7b")
+
+	tests := []struct {
+		name           string
+		method         string
+		expectedStatus int
+	}{
+		{
+			name:           "GET returns popular models sorted by worker_count desc",
+			method:         http.MethodGet,
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "POST returns method not allowed",
+			method:         http.MethodPost,
+			expectedStatus: http.StatusMethodNotAllowed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, "/meta/models/popular", nil)
+			w := httptest.NewRecorder()
+			server.handlePopularModels(w, req)
+
+			if w.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
+			}
+
+			if tt.method == http.MethodGet {
+				var resp PopularModelsResponse
+				if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+					t.Fatalf("failed to decode response: %v", err)
+				}
+
+				// Should have 3 models (all available regardless of Loaded)
+				if len(resp.Models) != 3 {
+					t.Errorf("expected 3 models, got %d", len(resp.Models))
+				}
+
+				// Verify sorted by worker_count desc (all have 1 worker)
+				// Verify call counts
+				for _, m := range resp.Models {
+					switch m.Model {
+					case "llama-3-8b":
+						if m.CallCount != 2 {
+							t.Errorf("llama-3-8b call count: expected 2, got %d", m.CallCount)
+						}
+						if m.WorkerCount != 1 {
+							t.Errorf("llama-3-8b worker count: expected 1, got %d", m.WorkerCount)
+						}
+					case "mistral-7b":
+						if m.CallCount != 1 {
+							t.Errorf("mistral-7b call count: expected 1, got %d", m.CallCount)
+						}
+						if m.WorkerCount != 1 {
+							t.Errorf("mistral-7b worker count: expected 1, got %d", m.WorkerCount)
+						}
+					case "qwen-72b":
+						if m.CallCount != 0 {
+							t.Errorf("qwen-72b call count: expected 0, got %d", m.CallCount)
+						}
+						if m.WorkerCount != 1 {
+							t.Errorf("qwen-72b worker count: expected 1, got %d", m.WorkerCount)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestPopularModelsMultipleWorkers tests worker_count aggregation across multiple workers.
+func TestPopularModelsMultipleWorkers(t *testing.T) {
+	worker1 := protocol.WorkerInfo{
+		ID:       "worker-1",
+		Hostname: "worker-1",
+		IP:       "127.0.0.1",
+		Port:     8081,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "llama-3-8b", Quantization: "Q4_K_M", Loaded: true},
+				{Name: "mistral-7b", Quantization: "Q5_K_M", Loaded: false},
+			},
+		},
+	}
+
+	worker2 := protocol.WorkerInfo{
+		ID:       "worker-2",
+		Hostname: "worker-2",
+		IP:       "127.0.0.1",
+		Port:     8082,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "llama-3-8b", Quantization: "Q4_K_M", Loaded: true},
+				{Name: "qwen-72b", Quantization: "Q4_K_M", Loaded: false},
+			},
+		},
+	}
+
+	tr := testRegistry(t, []protocol.WorkerInfo{worker1, worker2})
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+	server := tr.Server()
+
+	server.cache = NewCapabilityCache(tr.reg, testLogger())
+	server.cache.Start(tr.ctx)
+	server.cache.mu.Lock()
+	server.cache.cache[worker1.ID] = worker1
+	server.cache.cache[worker2.ID] = worker2
+	server.cache.mu.Unlock()
+
+	server.counter.Record("llama-3-8b")
+	server.counter.Record("qwen-72b")
+
+	req := httptest.NewRequest(http.MethodGet, "/meta/models/popular", nil)
+	w := httptest.NewRecorder()
+	server.handlePopularModels(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	var resp PopularModelsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// llama-3-8b has 2 workers, qwen-72b and mistral-7b have 1 each
+	// Should be sorted by worker_count desc
+	if len(resp.Models) != 3 {
+		t.Errorf("expected 3 models, got %d", len(resp.Models))
+	}
+	if resp.Models[0].Model != "llama-3-8b" || resp.Models[0].WorkerCount != 2 {
+		t.Errorf("expected llama-3-8b first with worker_count=2, got %s worker_count=%d", resp.Models[0].Model, resp.Models[0].WorkerCount)
+	}
+	if resp.Models[0].CallCount != 1 {
+		t.Errorf("llama-3-8b call count: expected 1, got %d", resp.Models[0].CallCount)
+	}
+}

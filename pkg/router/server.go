@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
@@ -19,6 +20,19 @@ import (
 	"github.com/seppaleinen/infermesh/pkg/security"
 	"log/slog"
 )
+
+// PopularModelInfo represents a model with popularity signals for the
+// /meta/models/popular endpoint.
+type PopularModelInfo struct {
+	Model       string `json:"model"`
+	WorkerCount int    `json:"worker_count"`
+	CallCount   int    `json:"call_count"`
+}
+
+// PopularModelsResponse is the response from the /meta/models/popular endpoint.
+type PopularModelsResponse struct {
+	Models []PopularModelInfo `json:"models"`
+}
 
 // ErrorResponse represents an OpenAI-compatible error response.
 type ErrorResponse struct {
@@ -78,14 +92,16 @@ func (e *ErrModelNotFound) Error() string {
 
 // Server is the HTTP server for the router.
 type Server struct {
-	log     *slog.Logger
-	reg     registry.Registry
-	addr    string
-	cache   *CapabilityCache
-	cfg     security.Config
-	hub     *WSHub
-	server  *http.Server
+	log    *slog.Logger
+	reg    registry.Registry
+	addr   string
+	cache  *CapabilityCache
+	cfg    security.Config
+	hub    *WSHub
+	server *http.Server
+	counter *CallCounter
 }
+
 
 // ChatMessage represents a single message in a chat conversation.
 type ChatMessage struct {
@@ -155,12 +171,13 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 	hub := NewWSHub(reg, log)
 	hub.SetAPIKey(cfg.APIKey)
 	return &Server{
-		log:   log,
-		reg:   reg,
-		addr:  addr,
-		cache: cache,
-		cfg:   cfg,
-		hub:   hub,
+		log:    log,
+		reg:    reg,
+		addr:   addr,
+		cache:  cache,
+		cfg:    cfg,
+		hub:    hub,
+		counter: NewCallCounter(10 * time.Minute),
 	}
 }
 
@@ -186,6 +203,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/models", s.handleModelsList)
 	mux.HandleFunc("/v1/workers", s.handleWorkersList)
 	mux.HandleFunc("/v1/dev/register", s.handleDevRegister)
+	mux.HandleFunc("/meta/models/popular", s.handlePopularModels)
 
 	// Outbound WebSocket worker connectivity: workers dial ws://router:8080/v1/connect
 	// Only mount when NOT in relay mode — in relay mode, Handler() returns nil
@@ -200,6 +218,12 @@ func (s *Server) Start(ctx context.Context) error {
 	// cache stays empty → empty workers list, null models, no_workers.
 	if s.cache != nil && s.reg != nil {
 		s.cache.Start(ctx)
+	}
+
+	// Start the call counter's periodic prune loop so the rolling 10m
+	// window stays bounded.
+	if s.counter != nil {
+		s.counter.Start(ctx)
 	}
 
 	var handler http.Handler = mux
@@ -291,6 +315,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Record this inference dispatch for the popularity counter.
+	if s.counter != nil {
+		s.counter.Record(req.Model)
+	}
+
 	// Proxy the request to the selected worker with SSE support
 	s.proxyChatStream(w, r, worker, req)
 }
@@ -328,6 +357,11 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("failed to select worker", "error", err)
 		writeErrorResponse(w, http.StatusServiceUnavailable, "no workers", "server_error", "no_workers")
 		return
+	}
+
+	// Record this inference dispatch for the popularity counter.
+	if s.counter != nil {
+		s.counter.Record(req.Model)
 	}
 
 	// Proxy the request to the selected worker with SSE support
@@ -421,6 +455,68 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		s.log.Error("failed to encode models", "error", err)
 		writeErrorResponse(w, http.StatusInternalServerError, "failed to encode models", "server_error", "encoding_error")
+	}
+}
+
+// handlePopularModels handles the /meta/models/popular endpoint.
+func (s *Server) handlePopularModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error", "method_not_allowed")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	// 1. Aggregate worker_count from capability cache (model appears in
+	//    Capabilities.Models regardless of Loaded).
+	// 2. Merge call_count from s.counter.Snapshot().
+	// 3. Sort by worker_count descending.
+	// 4. Encode PopularModelsResponse.
+
+	// Get capabilities from cache
+	s.cache.mu.RLock()
+	defer s.cache.mu.RUnlock()
+
+	counts := s.counter.Snapshot()
+
+	// Map to accumulate counts per model
+	// Key: model name, Value: struct with counts
+	type modelStats struct {
+		model       string
+		workerCount int
+		callCount   int64
+	}
+	statsMap := make(map[string]*modelStats)
+
+	// Iterate through all workers in cache to get model availability and counts
+	for _, worker := range s.cache.cache {
+		for _, m := range worker.Capabilities.Models {
+			if _, ok := statsMap[m.Name]; !ok {
+				statsMap[m.Name] = &modelStats{
+					model:     m.Name,
+					callCount: counts[m.Name],
+				}
+			}
+			statsMap[m.Name].workerCount++
+		}
+	}
+
+	// Convert map to slice
+	popularModels := make([]PopularModelInfo, 0, len(statsMap))
+	for _, stat := range statsMap {
+		popularModels = append(popularModels, PopularModelInfo{
+			Model:       stat.model,
+			WorkerCount: stat.workerCount,
+			CallCount:   int(stat.callCount),
+		})
+	}
+
+	// Sort by workerCount descending
+	sort.Slice(popularModels, func(i, j int) bool {
+		return popularModels[i].WorkerCount > popularModels[j].WorkerCount
+	})
+
+	if err := json.NewEncoder(w).Encode(PopularModelsResponse{Models: popularModels}); err != nil {
+		s.log.Error("failed to encode popular models", "error", err)
 	}
 }
 
