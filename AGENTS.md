@@ -13,7 +13,7 @@ Go 1.27+ mono-repo: a single unified **infermesh** binary (`router` and `worker`
 
 ```bash
 make build            # -> bin/infermesh-router + bin/infermesh-worker (from ./cmd/router, ./cmd/worker)
-make build-static     # cross-platform: 6 files (router 2, worker 2, relay 2), CGO_ENABLED=0
+make build-static     # cross-platform: 15 files (5 OS/arch x 3 binaries), CGO_ENABLED=0
 make lint             # golangci-lint run
 make tidy             # go mod tidy
 make clean            # removes bin/, cover/
@@ -100,6 +100,18 @@ Dependencies are intentionally minimal: stdlib + `hashicorp/mdns` + `yaml.v3`. K
 - `TEST_SUMMARY.md`, `DYNAMIC_MODEL_MANAGEMENT_PLAN.md` — work notes
 - [GitHub Issues](https://github.com/seppaleinen/infermesh/issues)
 
+## Release Workflow
+
+Releases are automated via GitHub Actions and triggered upon successful completion of the `ci.yml` workflow on the `main` branch.
+
+The workflow performs the following:
+1. Determines the next semantic version by incrementing the patch version of the latest git tag.
+2. Creates and pushes an annotated tag.
+3. Runs `make build-static` to generate static binaries for 5 platforms (Linux amd64/arm64, Darwin amd64/arm64, Windows amd64).
+4. Packages binaries into `.tar.gz` archives.
+5. Generates `SHA256SUMS.txt` for verification.
+6. Creates a GitHub Release with the generated tarballs and checksum file.
+
 ---
 
-*Last updated: 2026-09-10*
+*Last updated: 2026-09-21*
