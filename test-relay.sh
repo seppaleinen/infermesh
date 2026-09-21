@@ -154,7 +154,7 @@ sleep 2
 # Start worker (dials relay outbound)
 # Note: --relay-url overrides the router WS address; worker HTTP port is 8081 by default.
 echo "=== Starting worker (HTTP :8081) with relay $RELAY_URL ==="
-WORKER_ARGS=(--dev-mode --router "$RELAY_URL" --backend llama-cpp)
+WORKER_ARGS=(--dev-mode --relay-url "$RELAY_URL" --backend llama-cpp)
 if [ "$MOCK_AVAILABLE" = "1" ]; then
     WORKER_ARGS+=(--backend-url "http://$MOCK_ADDR:$MOCK_PORT")
 fi

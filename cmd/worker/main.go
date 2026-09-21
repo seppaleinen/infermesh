@@ -14,7 +14,7 @@ import (
 	"github.com/seppaleinen/infermesh/pkg/worker"
 )
 
-// WorkerFlags holds the parsed flags for the worker subcommand.
+// WorkerFlags holds the parsed flags for the worker binary.
 type WorkerFlags struct {
 	Capabilities       bool
 	DevMode            bool
@@ -25,6 +25,7 @@ type WorkerFlags struct {
 	CertDir            string
 	ModelPath          string
 	Backend            string
+	BackendURL         string
 	Router             string
 	RelayURL           string
 	EnableHealthChecks bool
@@ -33,14 +34,14 @@ type WorkerFlags struct {
 // parseWorkerFlags parses args into WorkerFlags. It uses ContinueOnError so
 // the result is unit-testable; callers must handle the returned error.
 func parseWorkerFlags(args []string) (WorkerFlags, error) {
-	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
+	fs := flag.NewFlagSet("infermesh-worker", flag.ContinueOnError)
 	var f WorkerFlags
 	registerWorkerFlags(fs, &f)
 	return f, fs.Parse(args)
 }
 
-// registerWorkerFlags registers the worker subcommand flags on fs, binding
-// values to f. Shared by parseWorkerFlags and workerFlagUsage.
+// registerWorkerFlags registers the worker flags on fs, binding values to f.
+// Shared by parseWorkerFlags and workerFlagUsage.
 func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	fs.BoolVar(&f.Capabilities, "capabilities", false, "print detected capabilities and exit")
 	fs.BoolVar(&f.DevMode, "dev-mode", false, "run in dev mode (no auth, loopback only)")
@@ -51,21 +52,26 @@ func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	fs.StringVar(&f.CertDir, "cert-dir", "", "path to certificate directory")
 	fs.StringVar(&f.ModelPath, "model-path", "", "path to the model file")
 	fs.StringVar(&f.Backend, "backend", "llama-cpp", "backend adapter (llama-cpp, ollama, lmstudio, vllm, custom)")
+	fs.StringVar(&f.BackendURL, "backend-url", "", "backend adapter base URL (overrides the adapter's default endpoint)")
 	fs.StringVar(&f.Router, "router", "", "router base URL for HTTP registration (e.g. http://127.0.0.1:8080, dev-mode only)")
 	fs.StringVar(&f.RelayURL, "relay-url", "", "relay URL for outbound-only WebSocket connectivity (dev mode only)")
 	fs.BoolVar(&f.EnableHealthChecks, "enable-health-checks", true, "enable periodic backend health checks")
 }
 
-// workerFlagUsage prints the worker subcommand's flag help to w.
+// workerFlagUsage prints the worker flag help to w.
 func workerFlagUsage(w io.Writer) {
-	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
+	fs := flag.NewFlagSet("infermesh-worker", flag.ContinueOnError)
 	var f WorkerFlags
 	registerWorkerFlags(fs, &f)
 	fs.SetOutput(w)
 	fs.Usage()
 }
 
-// runWorker runs the worker subcommand and returns the process exit code.
+func main() {
+	os.Exit(runWorker(os.Args[1:]))
+}
+
+// runWorker runs the worker process and returns the process exit code.
 // It is the thin CLI wrapper around pkg/worker.RunWorker; all runtime logic
 // lives in pkg/worker.
 func runWorker(args []string) int {
@@ -97,6 +103,7 @@ func runWorker(args []string) int {
 	h, err := worker.RunWorker(ctx, worker.RunConfig{
 		ModelPath:          f.ModelPath,
 		Backend:            f.Backend,
+		BackendURL:         f.BackendURL,
 		Port:               f.Port,
 		DevMode:            isDevMode,
 		MTLSCert:           f.MTLSCert,

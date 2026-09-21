@@ -54,19 +54,21 @@ func TestRouterBaseFromListenAddr(t *testing.T) {
 
 func TestNewBackendFromName(t *testing.T) {
 	tests := []struct {
-		name string
-		want string
+		name       string
+		backendURL string
+		want       string
 	}{
-		{"llama-cpp", "llama-cpp"},
-		{"ollama", "ollama"},
-		{"lmstudio", "lmstudio"},
-		{"vllm", "vllm"},
-		{"custom", "custom"},
-		{"unknown name falls back to llama-cpp", "llama-cpp"},
+		{"llama-cpp", "", "llama-cpp"},
+		{"ollama", "", "ollama"},
+		{"lmstudio", "", "lmstudio"},
+		{"vllm", "", "vllm"},
+		{"custom", "", "custom"},
+		{"unknown name falls back to llama-cpp", "", "llama-cpp"},
+		{"llama-cpp with mock URL", "http://127.0.0.1:18080", "llama-cpp"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			b, err := NewBackendFromName(tt.name, "")
+			b, err := NewBackendFromName(tt.name, "", tt.backendURL)
 			if err != nil {
 				t.Fatalf("NewBackendFromName(%q) unexpected error: %v", tt.name, err)
 			}

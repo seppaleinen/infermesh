@@ -149,8 +149,8 @@ team-lead → dev-architect (design) → backend-engineer (implementation) → t
 - **Future improvements**: Fix mDNS environment issues for CI/CD
 
 ## Combined CLI (issue #23) — Verification Status
-- Hermetic e2e tests (`tests/e2e/combined_test.go`) pass without a real backend: worker self-registration verified via `/v1/workers`, `/v1/models` + `/v1/workers` respond, SIGTERM yields exit 0, and both fail-fast negatives (worker/router port collision, `--prod-mode --worker`) exit non-zero with clear messages.
-- Manual smoke with a real backend (LM Studio: `./bin/infermesh router --dev-mode --worker` + `curl /v1/chat/completions`) is **PENDING** — LM Studio is not running in this environment, so the hermetic e2e + unit tests are the verification for the combined binary here.
+- Hermetic e2e tests (`tests/e2e/router_worker_test.go`) pass without a real backend: two-process router + worker self-registration verified via `/v1/workers`, `/v1/models` + `/v1/workers` respond, SIGTERM yields exit 0.
+- Manual smoke with a real backend (LM Studio: `./bin/infermesh-router --dev-mode` + `./bin/infermesh-worker --dev-mode --backend lmstudio` + `curl /v1/chat/completions`) is **PENDING** — LM Studio is not running in this environment, so the hermetic e2e + unit tests are the verification here.
 
 ## Recommendations
 1. **For CI/CD**: Use Linux-based runners for mDNS integration tests

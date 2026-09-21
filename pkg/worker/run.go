@@ -30,6 +30,9 @@ type RunConfig struct {
 	ModelPath string
 	// Backend selects the backend adapter (llama-cpp, ollama, vllm, lmstudio, custom).
 	Backend string
+	// BackendURL overrides the backend adapter's base URL (e.g. for an
+	// OpenAI-compatible mock or a non-default llama-cpp endpoint).
+	BackendURL string
 	// Port is the HTTP server port.
 	Port int
 	// DevMode enables dev mode (no auth, loopback registration).
@@ -141,7 +144,7 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 	srv := NewServer(log, addr, secCfg)
 
 	// Set up backend adapter based on --backend flag
-	backendImpl, err := NewBackendFromName(cfg.Backend, cfg.ModelPath)
+	backendImpl, err := NewBackendFromName(cfg.Backend, cfg.ModelPath, cfg.BackendURL)
 	if err != nil {
 		log.Warn("failed to create backend", "backend", cfg.Backend, "error", err)
 	} else {
@@ -271,21 +274,43 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 
 // NewBackendFromName creates the backend adapter for the given backend name.
 // Unknown names fall back to the llama-cpp backend (preserving the historical
-// CLI behavior of the old createBackend helper).
-func NewBackendFromName(backendName, modelPath string) (Backend, error) {
+// CLI behavior of the old createBackend helper). backendURL overrides the
+// adapter's base URL when non-empty (used for mocks and custom endpoints).
+func NewBackendFromName(backendName, modelPath, backendURL string) (Backend, error) {
+	// Resolve the default endpoint for each backend; --backend-url overrides
+	// it (the llama-cpp default http://localhost:8080 collides with the
+	// router port, so tests and custom setups pass an explicit URL).
+	defaultURL := ""
 	switch backendName {
 	case "llama-cpp":
-		return NewLlamaCppBackend("http://localhost:8080", 2048, 4, 1), nil
+		defaultURL = "http://localhost:8080"
 	case "ollama":
-		return NewOllamaBackend("http://localhost:11434", modelPath), nil
+		defaultURL = "http://localhost:11434"
 	case "lmstudio":
-		return NewLMStudioBackend("http://127.0.0.1:1234", modelPath), nil
+		defaultURL = "http://127.0.0.1:1234"
 	case "vllm":
-		return NewVLLMBackend("localhost:8000", modelPath), nil
+		defaultURL = "http://localhost:8000"
 	case "custom":
-		return NewCustomBackend("http://localhost:8000", "", "custom"), nil
+		defaultURL = "http://localhost:8000"
 	default:
-		return NewLlamaCppBackend("http://localhost:8080", 2048, 4, 1), nil
+		defaultURL = "http://localhost:8080"
+	}
+	if backendURL != "" {
+		defaultURL = backendURL
+	}
+	switch backendName {
+	case "llama-cpp":
+		return NewLlamaCppBackend(defaultURL, 2048, 4, 1), nil
+	case "ollama":
+		return NewOllamaBackend(defaultURL, modelPath), nil
+	case "lmstudio":
+		return NewLMStudioBackend(defaultURL, modelPath), nil
+	case "vllm":
+		return NewVLLMBackend(defaultURL, modelPath), nil
+	case "custom":
+		return NewCustomBackend(defaultURL, "", "custom"), nil
+	default:
+		return NewLlamaCppBackend(defaultURL, 2048, 4, 1), nil
 	}
 }
 
@@ -485,7 +510,9 @@ func writeCapabilities(w io.Writer, caps protocol.Capabilities) error {
 
 // ValidateCombinedFlags performs fail-fast validation for the combined
 // router+worker mode, returning an error (for exit 2 with a clear message)
-// when the flags cannot run in one process.
+// when the flags cannot run in one process. Kept for backward compatibility
+// with callers that still reference the old unified binary; the separate
+// router and worker binaries never invoke it.
 func ValidateCombinedFlags(prodMode, workerMode bool, routerPort, workerPort int, backend string) error {
 	if prodMode && workerMode {
 		return errors.New("--worker is only supported in dev mode; use 'router --dev-mode --worker'")
@@ -502,7 +529,7 @@ func ValidateCombinedFlags(prodMode, workerMode bool, routerPort, workerPort int
 	return nil
 }
 
-// backendPort returns the hardcoded port of the named backend's HTTP server.
+// backendPort returns the default port of the named backend's HTTP server.
 // Unknown backend names fall back to llama-cpp's port (matching
 // NewBackendFromName).
 func backendPort(backend string) int {

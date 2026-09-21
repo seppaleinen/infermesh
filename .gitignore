@@ -32,6 +32,7 @@ vendor/
 # Test artifacts
  coverage.out
  *.cover
+ cover/
 
 # Go specific
 *.exe

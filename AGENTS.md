@@ -12,8 +12,8 @@ Go 1.27+ mono-repo: a single unified **infermesh** binary (`router` and `worker`
 ## Build & run
 
 ```bash
-make build            # -> bin/infermesh (from ./cmd/infermesh)
-make build-static     # cross-platform: bin/infermesh-linux-amd64 + bin/infermesh-darwin-arm64, CGO_ENABLED=0
+make build            # -> bin/infermesh-router + bin/infermesh-worker (from ./cmd/router, ./cmd/worker)
+make build-static     # cross-platform: 6 files (router 2, worker 2, relay 2), CGO_ENABLED=0
 make lint             # golangci-lint run
 make tidy             # go mod tidy
 make clean            # removes bin/, cover/
@@ -22,17 +22,15 @@ make clean            # removes bin/, cover/
 Run (defaults to **dev mode** if neither `--dev-mode` nor `--prod-mode` is passed):
 
 ```bash
-./bin/infermesh router --dev-mode                    # listens on :8080 (default --addr, hardcoded in router)
-./bin/infermesh worker --dev-mode --router http://127.0.0.1:8080 \
+./bin/infermesh-router --dev-mode                    # listens on :8080 (default --addr, hardcoded in router)
+./bin/infermesh-worker --dev-mode --router http://127.0.0.1:8080 \
   --backend lmstudio --model-path /path/to/model     # default port 8081
-./bin/infermesh router --dev-mode --worker \
-  --backend lmstudio --model-path /path/to/model     # one process: router + in-process worker (dev mode only)
 ./test.sh                                             # tmux one-machine harness: router + LM Studio worker (gpt-oss-20b) + curl
 ```
 
-CLI flags (verified in `cmd/infermesh/`):
-- **Router subcommand**: `--dev-mode`, `--prod-mode`, `--mtls-cert`, `--mtls-key`, `--cert-dir`, `--api-key`, `--addr` (default `:8080`). With `--worker` (dev mode **only**): worker passthrough flags `--port` (default 8081), `--backend`, `--model-path`, `--enable-health-checks` (default on). `router --prod-mode --worker` and worker/router port collisions fail fast with exit 2.
-- **Worker subcommand**: `--port` (default 8081), `--backend` (llama-cpp | ollama | lmstudio | vllm | custom), `--model-path`, `--router` (HTTP registration, dev-mode only), `--capabilities` (print and exit), `--enable-health-checks` (default on), plus the mTLS flags. Prod mode **requires** `--model-path`.
+CLI flags (verified in `cmd/router/`, `cmd/worker/`):
+- **Router**: `--dev-mode`, `--prod-mode`, `--mtls-cert`, `--mtls-key`, `--cert-dir`, `--api-key`, `--addr` (default `:8080`), `--relay-url` (relay connectivity, dev mode only).
+- **Worker**: `--port` (default 8081), `--backend` (llama-cpp | ollama | lmstudio | vllm | custom), `--model-path`, `--router` (HTTP registration, dev-mode only), `--relay-url` (relay connectivity, dev mode only), `--capabilities` (print and exit), `--enable-health-checks` (default on), plus the mTLS flags. Prod mode **requires** `--model-path`.
 - Backend endpoints are hardcoded in `pkg/worker/backend_integration.go`: llama-cpp `localhost:8080` (**collides with the router port!**), ollama `localhost:11434`, lmstudio `127.0.0.1:1234`, vllm `localhost:8000`.
 
 ## Testing

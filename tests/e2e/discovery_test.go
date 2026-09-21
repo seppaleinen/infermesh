@@ -45,28 +45,37 @@ func waitForHTTP(t *testing.T, url string, timeout time.Duration) {
 }
 
 func TestMDNSDiscoveryE2E(t *testing.T) {
-	// Path to the built unified binary.
-	binPath := "../../bin/infermesh"
+	// Path to the built router and worker binaries.
+	routerBin := "../../bin/infermesh-router"
+	workerBin := "../../bin/infermesh-worker"
 
-	// Local dev loop: skip gracefully when the binary is absent instead of
+	// Local dev loop: skip gracefully when the binaries are absent instead of
 	// failing with fork/exec. CI always runs `make build` first so e2e
 	// actually executes there.
-	if _, err := os.Stat(binPath); err != nil {
-		t.Skipf("skipping e2e: binary %s not found (run `make build` first): %v", binPath, err)
+	if _, err := os.Stat(routerBin); err != nil {
+		t.Skipf("skipping e2e: binary %s not found (run `make build` first): %v", routerBin, err)
+	}
+	if _, err := os.Stat(workerBin); err != nil {
+		t.Skipf("skipping e2e: binary %s not found (run `make build` first): %v", workerBin, err)
 	}
 
 	// Start router in dev mode.
-	routerCmd := startCmd(t, binPath, "router", "--dev-mode")
+	routerCmd := startCmd(t, routerBin, "--dev-mode", "--addr", "127.0.0.1:8080")
 	defer func() {
 		_ = routerCmd.Process.Kill()
 		_ = routerCmd.Wait()
 	}()
 
 	// Ensure router HTTP server is up.
-	waitForHTTP(t, "http://localhost:8080/v1/workers", 5*time.Second)
+	waitForHTTP(t, "http://127.0.0.1:8080/v1/workers", 5*time.Second)
 
-	// Start worker in dev mode on a non‑default port.
-	workerCmd := startCmd(t, binPath, "worker", "--dev-mode", "-port", "8081")
+	// Start worker in dev mode on a non-default port, registering with the
+	// router over HTTP (the reliable dev-mode path; mDNS is skipped on the
+	// router side in dev mode).
+	workerCmd := startCmd(t, workerBin, "--dev-mode",
+		"--router", "http://127.0.0.1:8080",
+		"--port", "8081",
+	)
 	defer func() {
 		_ = workerCmd.Process.Kill()
 		_ = workerCmd.Wait()
@@ -75,7 +84,8 @@ func TestMDNSDiscoveryE2E(t *testing.T) {
 	// Verify worker health endpoint.
 	waitForHTTP(t, "http://localhost:8081/health", 5*time.Second)
 
-	// Give discovery a moment to propagate (mDNS may be a bit delayed).
+	// Give discovery a moment to propagate (HTTP registration is fast but
+	// poll for the registry to reflect the heartbeat).
 	time.Sleep(2 * time.Second)
 
 	// Query the router's worker list.
@@ -97,7 +107,7 @@ func TestMDNSDiscoveryE2E(t *testing.T) {
 		// If the body is empty the decoder returns EOF – that is acceptable for now.
 		t.Fatalf("failed to decode workers JSON: %v", err)
 	}
-	// Ensure workers is non‑nil for iteration.
+	// Ensure workers is non-nil for iteration.
 	if body.Workers == nil {
 		body.Workers = []map[string]interface{}{}
 	}

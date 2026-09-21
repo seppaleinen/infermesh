@@ -106,8 +106,12 @@ test_cross_platform() {
 
   log_info "Verifying cross-platform binaries..."
   local binaries=(
-    "bin/infermesh-linux-amd64"
-    "bin/infermesh-darwin-arm64"
+    "bin/infermesh-router-linux-amd64"
+    "bin/infermesh-router-darwin-arm64"
+    "bin/infermesh-worker-linux-amd64"
+    "bin/infermesh-worker-darwin-arm64"
+    "bin/infermesh-relay-linux-amd64"
+    "bin/infermesh-relay-darwin-arm64"
   )
 
   for bin in "${binaries[@]}"; do
@@ -125,10 +129,10 @@ test_cross_platform() {
 # Test current platform binary
 test_current_platform() {
   log_info "Testing current platform binary..."
-  if [[ -f "bin/infermesh" ]]; then
-    log_info "  ✓ bin/infermesh exists"
+  if [[ -f "bin/infermesh-router" ]] && [[ -f "bin/infermesh-worker" ]]; then
+    log_info "  ✓ bin/infermesh-router and bin/infermesh-worker exist"
   else
-    log_warn "  Binary not found, building first..."
+    log_warn "  Binaries not found, building first..."
     make build
   fi
 }

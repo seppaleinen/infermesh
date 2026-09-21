@@ -296,8 +296,8 @@ func TestRelayHappyPathE2E(t *testing.T) {
 	_, routerLog := startCmdLog(t, "router", routerPath,
 		"--dev-mode", "--addr", fmt.Sprintf(":%d", ports.router), "--relay-url", ports.relayURL())
 
-	// worker --dev-mode --router ws://127.0.0.1:18103 --backend llama-cpp --backend-url <mock> -port 18101
-	_, _ = startCmdLog(t, "worker", workerPath, workerArgs(ports, mock.URL(), "--router", ports.relayURL())...)
+	// worker --dev-mode --relay-url ws://127.0.0.1:18103 --backend llama-cpp --backend-url <mock> -port 18101
+	_, _ = startCmdLog(t, "worker", workerPath, workerArgs(ports, mock.URL(), "--relay-url", ports.relayURL())...)
 
 	// Router HTTP server is up.
 	waitForHTTP(t, ports.routerURL()+"/v1/workers", 10*time.Second)

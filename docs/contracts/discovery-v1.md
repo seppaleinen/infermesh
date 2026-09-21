@@ -1020,7 +1020,8 @@ require (
 .PHONY: build test test-integration test-e2e lint tidy
 
 build:
-  go build -o bin/infermesh ./cmd/infermesh
+  go build -o bin/infermesh-router ./cmd/router
+  go build -o bin/infermesh-worker ./cmd/worker
 
 test:
 	go test -v -race -cover ./pkg/...
@@ -1096,8 +1097,8 @@ Simulated worker join/leave with mDNS:
 
 Real network dynamic join/leave:
 
-1. Start `infermesh router` on machine A
-2. Start `infermesh worker` on machine B (same LAN)
+1. Start `infermesh-router` on machine A
+2. Start `infermesh-worker` on machine B (same LAN)
 3. Assert: router logs show worker registration
 4. Kill the worker process on machine B
 5. Assert: router logs show worker marked unavailable

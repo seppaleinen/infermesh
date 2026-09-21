@@ -9,19 +9,14 @@ Not: Kubernetes, LiteLLM, or distributed model inference.
 ## Quick Start
 
 ```bash
-# Build the unified infermesh binary
+# Build the router and worker binaries
 make build
 
 # Run router in dev mode (no auth, localhost)
-./bin/infermesh router --dev-mode
+./bin/infermesh-router --dev-mode
 
 # Run a worker (also dev mode, auto-discovers router via mDNS)
-./bin/infermesh worker --dev-mode \
-  --model-path /path/to/model.gguf \
-  --backend llama-cpp
-
-# Or run the router and an in-process worker in one command (dev mode only)
-./bin/infermesh router --dev-mode --worker \
+./bin/infermesh-worker --dev-mode \
   --model-path /path/to/model.gguf \
   --backend llama-cpp
 
@@ -49,7 +44,7 @@ make relay
 ./bin/infermesh-relay --listen :8090 --dev-mode
 
 # Terminal 2 — router (connects outbound to the relay)
-./bin/infermesh router --dev-mode --addr :8080 \
+./bin/infermesh-router --dev-mode --addr :8080 \
   --relay-url ws://192.168.1.216:8090
 ```
 
@@ -57,7 +52,7 @@ make relay
 
 ```bash
 # Terminal 3 — worker (connects outbound to the relay)
-./bin/infermesh worker --dev-mode \
+./bin/infermesh-worker --dev-mode \
   --relay-url ws://192.168.1.216:8090 \
   --backend lmstudio
 ```

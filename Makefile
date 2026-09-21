@@ -1,6 +1,11 @@
-# Build the unified infermesh binary (router + worker subcommands)
-build:
-	go build -o bin/infermesh ./cmd/infermesh
+# Build the router and worker binaries (separate from the relay broker)
+build-router:
+	go build -o bin/infermesh-router ./cmd/router
+
+build-worker:
+	go build -o bin/infermesh-worker ./cmd/worker
+
+build: build-router build-worker
 
 # Build the relay broker binary (outbound-only WebSocket relay)
 relay:
@@ -8,8 +13,10 @@ relay:
 
 # Build static binaries (CGO_ENABLED=0 for cross-platform compatibility)
 build-static:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/infermesh-linux-amd64 ./cmd/infermesh
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/infermesh-darwin-arm64 ./cmd/infermesh
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/infermesh-router-linux-amd64 ./cmd/router
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/infermesh-router-darwin-arm64 ./cmd/router
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/infermesh-worker-linux-amd64 ./cmd/worker
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/infermesh-worker-darwin-arm64 ./cmd/worker
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/infermesh-relay-linux-amd64 ./cmd/relay
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/infermesh-relay-darwin-arm64 ./cmd/relay
 
@@ -73,4 +80,4 @@ coverage:
 	go tool funccover -mode=count -func=cover/coverage.out
 	@echo "Coverage report: cover/coverage.out"
 
-.PHONY: build build-static test test-security test-integration test-e2e test-platform test-all-platforms lint install-hooks tidy clean app coverage
+.PHONY: build build-router build-worker build-static relay test test-security test-integration test-e2e test-platform test-all-platforms lint install-hooks tidy clean app coverage
