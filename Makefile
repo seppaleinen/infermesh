@@ -14,11 +14,20 @@ relay:
 # Build static binaries (CGO_ENABLED=0 for cross-platform compatibility)
 build-static:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/infermesh-router-linux-amd64 ./cmd/router
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/infermesh-router-linux-arm64 ./cmd/router
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o bin/infermesh-router-darwin-amd64 ./cmd/router
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/infermesh-router-darwin-arm64 ./cmd/router
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o bin/infermesh-router-windows-amd64.exe ./cmd/router
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/infermesh-worker-linux-amd64 ./cmd/worker
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/infermesh-worker-linux-arm64 ./cmd/worker
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o bin/infermesh-worker-darwin-amd64 ./cmd/worker
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/infermesh-worker-darwin-arm64 ./cmd/worker
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o bin/infermesh-worker-windows-amd64.exe ./cmd/worker
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/infermesh-relay-linux-amd64 ./cmd/relay
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/infermesh-relay-linux-arm64 ./cmd/relay
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o bin/infermesh-relay-darwin-amd64 ./cmd/relay
 	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/infermesh-relay-darwin-arm64 ./cmd/relay
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o bin/infermesh-relay-windows-amd64.exe ./cmd/relay
 
 # Unit tests (method-level, table-driven)
 test-unit:
