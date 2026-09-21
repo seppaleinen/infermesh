@@ -5,7 +5,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 // SystemMetrics holds system-level metrics for the current platform.
@@ -65,7 +64,7 @@ func collectDarwinSystemMetrics() (*SystemMetrics, error) {
 		memUsed, memFree = 0, 0
 	}
 
-	diskFree, err := readDarwinDiskFree("/")
+	diskFree, err := readDiskFree("/")
 	if err != nil {
 		diskFree = 0
 	}
@@ -133,15 +132,6 @@ func readMemoryInfo() (int64, int64, error) {
 	return total - free, free, nil
 }
 
-// readDiskFree reads free disk space using syscall.Statfs (Linux).
-func readDiskFree(path string) (float64, error) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0, err
-	}
-	return float64(stat.Bavail*uint64(stat.Bsize)) / (1024 * 1024 * 1024), nil
-}
-
 // readDarwinCPULoad reads CPU load on macOS using sysctl.
 func readDarwinCPULoad() (float64, error) {
 	out, err := execCommand("sysctl", "-n", "vm.loadavg")
@@ -197,11 +187,3 @@ func readDarwinMemoryInfo() (int64, int64, error) {
 	return totalMB - pageFree, pageFree, nil
 }
 
-// readDarwinDiskFree reads free disk space on macOS.
-func readDarwinDiskFree(path string) (float64, error) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0, err
-	}
-	return float64(stat.Bavail*uint64(stat.Bsize)) / (1024 * 1024 * 1024), nil
-}
