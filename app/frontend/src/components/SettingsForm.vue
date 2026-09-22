@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import {
+  AutoStartService,
   ConfigService,
   RouterClient,
   type Settings,
@@ -32,6 +33,7 @@ const workerMTLSKey = ref('')
 
 const saving = ref(false)
 const saveError = ref<string | null>(null)
+const autostartWarning = ref<string | null>(null)
 const keyringServiceName = ref('infermesh')
 
 // Show/hide password toggles
@@ -46,9 +48,22 @@ const snapshotSecrets = ref<Record<string, string>>({})
 
 async function loadSettings(): Promise<void> {
   saveError.value = null
+  autostartWarning.value = null
   try {
     const s = await load()
     if (s) {
+      // Seed the tri-state from the actual OS registration when the YAML
+      // has no opinion yet (null) — e.g. a login item that existed before
+      // this feature. Done BEFORE takeSnapshot so the seeded value counts
+      // as clean. Best-effort: on failure keep the persisted value and do
+      // NOT surface an error (the form must still render).
+      try {
+        if (settings.value && settings.value.auto_start_on_login === null) {
+          settings.value.auto_start_on_login = await AutoStartService.IsAutoStartEnabled()
+        }
+      } catch {
+        // keep persisted value
+      }
       takeSnapshot(s)
       // Fetch service name for the keyring banner
       try {
@@ -114,6 +129,7 @@ const dirty = computed(() => {
     'relay_url',
     'dev_mode',
     'worker_enable_health_checks',
+    'auto_start_on_login',
   ]
 
   for (const k of keys) {
@@ -131,6 +147,14 @@ const dirty = computed(() => {
 
 async function handleSave(): Promise<void> {
   if (!settings.value) return
+
+  // Capture BEFORE any snapshot update (takeSnapshot(snap) runs later in
+  // this function), so snapshot.value still holds the last-load baseline.
+  // This gates the OS login-item registration on the user actually changing
+  // the auto-start preference — an unrelated save (e.g. router_addr) must
+  // not trigger a spurious SetAutoStart/delete-login-item call.
+  const autostartChanged =
+    settings.value.auto_start_on_login !== snapshot.value?.auto_start_on_login
 
   saving.value = true
   saveError.value = null
@@ -200,6 +224,23 @@ async function handleSave(): Promise<void> {
       }
     }
 
+    // Apply the OS login-item registration AFTER the settings are persisted,
+    // but only when the auto-start preference actually changed in this save.
+    // Best-effort: SetAutoStart returns a warning string on OS failure
+    // (never throws for those); an internal error is caught here too. Either
+    // way this must not block emit('saved') — the save already succeeded.
+    // When skipped, leave autostartWarning untouched (cleared at load/cancel).
+    if (autostartChanged) {
+      try {
+        const warning = await AutoStartService.SetAutoStart(
+          Boolean(settings.value?.auto_start_on_login),
+        )
+        autostartWarning.value = warning || null
+      } catch {
+        autostartWarning.value = 'Auto-start preference could not be applied.'
+      }
+    }
+
     // Clear local secret refs after success
     routerApikey.value = ''
     workerCustomAuth.value = ''
@@ -225,6 +266,7 @@ function handleCancel(): void {
   workerCustomAuth.value = ''
   workerMTLSCert.value = ''
   workerMTLSKey.value = ''
+  autostartWarning.value = null
   emit('cancel')
 }
 
@@ -520,9 +562,33 @@ onMounted(() => {
         </div>
       </section>
 
+      <section class="form-section">
+        <h2>App</h2>
+        <div class="field checkbox-field">
+          <label for="auto_start_on_login">Start on login</label>
+          <input
+            id="auto_start_on_login"
+            type="checkbox"
+            v-model="settings.auto_start_on_login"
+            :true-value="true"
+            :false-value="false"
+            :disabled="saving"
+          />
+          <span class="field-help"
+            >Launches InferMesh automatically when you sign in to this
+            computer.</span
+          >
+        </div>
+      </section>
+
       <!-- Inline save error -->
       <div v-if="saveError" class="save-error" role="alert">
         {{ saveError }}
+      </div>
+
+      <!-- Auto-start warning (non-blocking; OS applied the setting or not) -->
+      <div v-if="autostartWarning" class="save-error" role="status">
+        {{ autostartWarning }}
       </div>
 
       <!-- Actions -->

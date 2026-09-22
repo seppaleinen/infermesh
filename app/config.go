@@ -15,38 +15,40 @@ import (
 // reference a secret managed by the Keyring.
 // nolint:tagalign
 type Settings struct {
-	RouterAddr              string            `json:"router_addr" yaml:"router_addr"`
-	RouterAPIkey            string            `json:"router_apikey" yaml:"router_apikey"`
-	RouterBinaryPath        string            `json:"router_binary_path" yaml:"router_binary_path"`
-	WorkerAddr              string            `json:"worker_addr" yaml:"worker_addr"`
-	WorkerAPIkey            string            `json:"worker_apikey" yaml:"worker_apikey"`
-	WorkerBackend           string            `json:"worker_backend" yaml:"worker_backend"`
-	WorkerModelPath         string            `json:"worker_model_path" yaml:"worker_model_path"`
-	WorkerPort              int               `json:"worker_port" yaml:"worker_port"`
-	WorkerBinaryPath        string            `json:"worker_binary_path" yaml:"worker_binary_path"`
-	WorkerCustomAuth        string            `json:"worker_custom_auth" yaml:"worker_custom_auth"`
+	RouterAddr               string            `json:"router_addr" yaml:"router_addr"`
+	RouterAPIkey             string            `json:"router_apikey" yaml:"router_apikey"`
+	RouterBinaryPath         string            `json:"router_binary_path" yaml:"router_binary_path"`
+	WorkerAddr               string            `json:"worker_addr" yaml:"worker_addr"`
+	WorkerAPIkey             string            `json:"worker_apikey" yaml:"worker_apikey"`
+	WorkerBackend            string            `json:"worker_backend" yaml:"worker_backend"`
+	WorkerModelPath          string            `json:"worker_model_path" yaml:"worker_model_path"`
+	WorkerPort               int               `json:"worker_port" yaml:"worker_port"`
+	WorkerBinaryPath         string            `json:"worker_binary_path" yaml:"worker_binary_path"`
+	WorkerCustomAuth         string            `json:"worker_custom_auth" yaml:"worker_custom_auth"`
 	WorkerEnableHealthChecks *bool             `json:"worker_enable_health_checks" yaml:"worker_enable_health_checks"`
-	WorkerMTLSCert          string            `json:"worker_mtls_cert" yaml:"worker_mtls_cert"`
-	WorkerMTLSKey           string            `json:"worker_mtls_key" yaml:"worker_mtls_key"`
-	RelayURL                string            `json:"relay_url" yaml:"relay_url"`
-	DevMode                 *bool             `json:"dev_mode" yaml:"dev_mode"`
-	Secrets                 map[string]string `json:"secrets" yaml:"-"`
-	SecretRefs              map[string]string `json:"secret_refs" yaml:"secret_refs"`
+	WorkerMTLSCert           string            `json:"worker_mtls_cert" yaml:"worker_mtls_cert"`
+	WorkerMTLSKey            string            `json:"worker_mtls_key" yaml:"worker_mtls_key"`
+	RelayURL                 string            `json:"relay_url" yaml:"relay_url"`
+	DevMode                  *bool             `json:"dev_mode" yaml:"dev_mode"`
+	AutoStartOnLogin         *bool             `json:"auto_start_on_login" yaml:"auto_start_on_login"`
+	Secrets                  map[string]string `json:"secrets" yaml:"-"`
+	SecretRefs               map[string]string `json:"secret_refs" yaml:"secret_refs"`
 }
 
 // DefaultSettings returns a Settings instance with sensible defaults per the
 // design contract: RouterAddr ":8080", WorkerBackend "llama-cpp", WorkerPort
-// 8081, DevMode true, WorkerEnableHealthChecks true. It also initialises empty
-// maps for Secrets and SecretRefs.
+// 8081, DevMode true, WorkerEnableHealthChecks true, AutoStartOnLogin false
+// (opt-in). It also initialises empty maps for Secrets and SecretRefs.
 func DefaultSettings() Settings {
 	return Settings{
-		RouterAddr:              ":8080",
-		WorkerBackend:           "llama-cpp",
-		WorkerPort:              8081,
+		RouterAddr:               ":8080",
+		WorkerBackend:            "llama-cpp",
+		WorkerPort:               8081,
 		WorkerEnableHealthChecks: boolPtr(true),
-		DevMode:                 boolPtr(true),
-		Secrets:                 make(map[string]string),
-		SecretRefs:              make(map[string]string),
+		DevMode:                  boolPtr(true),
+		AutoStartOnLogin:         boolPtr(false), // opt-in: no login item by default
+		Secrets:                  make(map[string]string),
+		SecretRefs:               make(map[string]string),
 	}
 }
 
@@ -226,6 +228,11 @@ func mergeDefaults(s Settings) Settings {
 	}
 	if s.DevMode == nil {
 		s.DevMode = def.DevMode
+	}
+	// *bool tri-state: nil means "old file / no opinion" → default (false);
+	// an explicit true or false on disk must survive the merge untouched.
+	if s.AutoStartOnLogin == nil {
+		s.AutoStartOnLogin = def.AutoStartOnLogin
 	}
 	// Ensure maps are initialised (LoadFrom already does this but we cannot
 	// rely on it after manual construction). This protects against nil map

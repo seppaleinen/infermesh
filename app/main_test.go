@@ -51,9 +51,9 @@ func TestTrayIconIsPNG(t *testing.T) {
 // path and respects a custom base URL, including trailing-slash trimming.
 func TestGetWorkersURL(t *testing.T) {
 	cases := []struct {
-		name   string
-		base   string
-		want   string
+		name string
+		base string
+		want string
 	}{
 		{"default empty", "", "http://127.0.0.1:8080/v1/workers"},
 		{"default explicit", "http://127.0.0.1:8080", "http://127.0.0.1:8080/v1/workers"},
@@ -189,17 +189,17 @@ func TestSettingsRoundTrip(t *testing.T) {
 
 	s := DefaultSettings()
 	s.RouterAddr = ":9000"
-s.WorkerBackend = "ollama"
-		s.WorkerModelPath = "/Users/👤/models/🤖-model.gguf"
-		s.WorkerPort = 9001
-		s.WorkerEnableHealthChecks = boolPtr(false)
-		s.RelayURL = "ws://relay.example:8080"
+	s.WorkerBackend = "ollama"
+	s.WorkerModelPath = "/Users/👤/models/🤖-model.gguf"
+	s.WorkerPort = 9001
+	s.WorkerEnableHealthChecks = boolPtr(false)
+	s.RelayURL = "ws://relay.example:8080"
 	s.Secrets = map[string]string{
-		"router/apikey":    "test-api-key",
+		"router/apikey":     "test-api-key",
 		"worker/customauth": "test-custom-auth",
 	}
 	s.SecretRefs = map[string]string{
-		"router/apikey":    "router/apikey",
+		"router/apikey":     "router/apikey",
 		"worker/customauth": "worker/customauth",
 	}
 
@@ -353,6 +353,9 @@ func TestDefaultsMatchCLI(t *testing.T) {
 	if s.DevMode == nil || !*s.DevMode {
 		t.Error("DevMode should be true")
 	}
+	if s.AutoStartOnLogin == nil || *s.AutoStartOnLogin {
+		t.Error("AutoStartOnLogin should be false by default (opt-in)")
+	}
 
 	cs := NewConfigService(newMemKeyring(), filepath.Join(t.TempDir(), "settings.yml"))
 	if cs.GetKeyringServiceName() != "infermesh" {
@@ -382,7 +385,7 @@ func TestSaveSettingsStripsSecretsFromYAML(t *testing.T) {
 	s := DefaultSettings()
 	s.Secrets = map[string]string{
 		"router/apikey": "secret-value",
-		"mtls/cert":    "cert-value",
+		"mtls/cert":     "cert-value",
 	}
 
 	ok, err := cs.SaveSettings(s)
@@ -457,5 +460,33 @@ func TestNewRouterClientNormalizesBareHostPort(t *testing.T) {
 	c := NewRouterClient(":8080")
 	if c.workersPath() != "http://:8080/v1/workers" {
 		t.Errorf("workersPath: got %q want %q", c.workersPath(), "http://:8080/v1/workers")
+	}
+}
+
+// TestSummarizePoolStatus verifies the tray status/tooltip summary for each
+// combination of router/worker process states (issue #45).
+func TestSummarizePoolStatus(t *testing.T) {
+	running := ProcessStatus{State: StateRunning, Running: true}
+	stopped := ProcessStatus{State: StateStopped}
+	cases := []struct {
+		name string
+		st   SupervisorStatus
+		want string
+	}{
+		{"both running", SupervisorStatus{Router: running, Worker: running}, "Router + worker running"},
+		{"router only", SupervisorStatus{Router: running, Worker: stopped}, "Router running"},
+		{"worker only", SupervisorStatus{Router: stopped, Worker: running}, "Worker running"},
+		{"both stopped", SupervisorStatus{Router: stopped, Worker: stopped}, "Stopped"},
+		{"router error state counts as not running", SupervisorStatus{
+			Router: ProcessStatus{State: StateError, Error: "boom"},
+			Worker: running,
+		}, "Worker running"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := summarizePoolStatus(tc.st); got != tc.want {
+				t.Errorf("summarizePoolStatus = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
