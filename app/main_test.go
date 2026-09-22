@@ -3,10 +3,16 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"image/png"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/pkg/router"
@@ -171,4 +177,285 @@ func TestRouterClientParse(t *testing.T) {
 			t.Fatalf("expected decode error, got: %v", err)
 		}
 	})
+}
+
+// TestSettingsRoundTrip verifies that saving and loading settings preserves
+// all fields, including unicode model paths. It also asserts that the YAML
+// output contains no "secrets" key because secrets must only exist in the
+// keyring.
+func TestSettingsRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "settings.yml")
+
+	s := DefaultSettings()
+	s.RouterAddr = ":9000"
+s.WorkerBackend = "ollama"
+		s.WorkerModelPath = "/Users/👤/models/🤖-model.gguf"
+		s.WorkerPort = 9001
+		s.WorkerEnableHealthChecks = boolPtr(false)
+		s.RelayURL = "ws://relay.example:8080"
+	s.Secrets = map[string]string{
+		"router/apikey":    "test-api-key",
+		"worker/customauth": "test-custom-auth",
+	}
+	s.SecretRefs = map[string]string{
+		"router/apikey":    "router/apikey",
+		"worker/customauth": "worker/customauth",
+	}
+
+	if err := SaveTo(s, path); err != nil {
+		t.Fatalf("SaveTo failed: %v", err)
+	}
+
+	// Verify YAML contains no "secrets" key
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	var rawMap map[string]any
+	if err := yaml.Unmarshal(raw, &rawMap); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	if _, ok := rawMap["secrets"]; ok {
+		t.Fatal("YAML must not contain 'secrets' key")
+	}
+	if _, ok := rawMap["secret_refs"]; !ok {
+		t.Fatal("YAML must contain 'secret_refs' key")
+	}
+
+	// Load and verify fields
+	loaded, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom failed: %v", err)
+	}
+	loaded = mergeDefaults(loaded)
+
+	if loaded.RouterAddr != s.RouterAddr {
+		t.Errorf("RouterAddr: got %q want %q", loaded.RouterAddr, s.RouterAddr)
+	}
+	if loaded.WorkerBackend != s.WorkerBackend {
+		t.Errorf("WorkerBackend: got %q want %q", loaded.WorkerBackend, s.WorkerBackend)
+	}
+	if loaded.WorkerModelPath != s.WorkerModelPath {
+		t.Errorf("WorkerModelPath: got %q want %q", loaded.WorkerModelPath, s.WorkerModelPath)
+	}
+	if loaded.WorkerPort != s.WorkerPort {
+		t.Errorf("WorkerPort: got %d want %d", loaded.WorkerPort, s.WorkerPort)
+	}
+	if loaded.WorkerEnableHealthChecks == nil || s.WorkerEnableHealthChecks == nil || *loaded.WorkerEnableHealthChecks != *s.WorkerEnableHealthChecks {
+		t.Errorf("WorkerEnableHealthChecks: got %v want %v", loaded.WorkerEnableHealthChecks, s.WorkerEnableHealthChecks)
+	}
+	if loaded.RelayURL != s.RelayURL {
+		t.Errorf("RelayURL: got %q want %q", loaded.RelayURL, s.RelayURL)
+	}
+	if len(loaded.Secrets) != 0 {
+		t.Errorf("Secrets should be empty after load, got %v", loaded.Secrets)
+	}
+	if loaded.SecretRefs["router/apikey"] != "router/apikey" {
+		t.Errorf("SecretRefs router/apikey missing")
+	}
+	if loaded.SecretRefs["worker/customauth"] != "worker/customauth" {
+		t.Errorf("SecretRefs worker/customauth missing")
+	}
+}
+
+// TestSettingsMissingFile verifies that loading a non-existent file returns
+// a zero Settings and nil error.
+func TestSettingsMissingFile(t *testing.T) {
+	s, err := LoadFrom("/nonexistent/path/settings.yml")
+	if err != nil {
+		t.Fatalf("LoadFrom should not error on missing file: %v", err)
+	}
+	if s.RouterAddr != "" || s.WorkerBackend != "" || s.WorkerPort != 0 {
+		t.Errorf("expected zero Settings, got: %+v", s)
+	}
+}
+
+// TestKeyringUnavailableHardFails verifies the hard-fail contract: when the
+// keyring is unavailable and secrets are present, SaveSettings must return
+// errKeyringUnavailable before touching the filesystem.
+func TestKeyringUnavailableHardFails(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "settings.yml")
+
+	cs := NewConfigService(failKeyring{}, path)
+	s := DefaultSettings()
+	s.Secrets = map[string]string{
+		"router/apikey": "should-never-be-written",
+	}
+
+	ok, err := cs.SaveSettings(s)
+	if ok {
+		t.Fatal("SaveSettings should return false when keyring unavailable")
+	}
+	if !errors.Is(err, errKeyringUnavailable) {
+		t.Fatalf("expected errKeyringUnavailable, got: %v", err)
+	}
+
+	// Verify no plaintext secret was written to disk
+	raw, err := os.ReadFile(path)
+	if err == nil {
+		var rawMap map[string]any
+		if yaml.Unmarshal(raw, &rawMap) == nil {
+			if _, ok := rawMap["secrets"]; ok {
+				t.Fatal("YAML must not contain 'secrets' key when keyring down")
+			}
+		}
+	}
+}
+
+// TestKeyringRoundTrip exercises the full secret lifecycle with the in-memory
+// keyring: SetSecret → GetSecret → DeleteSecret → GetSecret returns not-found.
+func TestKeyringRoundTrip(t *testing.T) {
+	cs := NewConfigService(newMemKeyring(), filepath.Join(t.TempDir(), "settings.yml"))
+
+	if err := cs.SetSecret("router/apikey", "my-secret-key"); err != nil {
+		t.Fatalf("SetSecret failed: %v", err)
+	}
+
+	got, err := cs.GetSecret("router/apikey")
+	if err != nil {
+		t.Fatalf("GetSecret failed: %v", err)
+	}
+	if got != "my-secret-key" {
+		t.Errorf("GetSecret: got %q want %q", got, "my-secret-key")
+	}
+
+	if err := cs.DeleteSecret("router/apikey"); err != nil {
+		t.Fatalf("DeleteSecret failed: %v", err)
+	}
+
+	_, err = cs.GetSecret("router/apikey")
+	if err == nil {
+		t.Fatal("GetSecret after DeleteSecret should return not-found")
+	}
+	if !errors.Is(err, errNotFound) {
+		t.Errorf("expected errNotFound, got: %v", err)
+	}
+}
+
+// TestDefaultsMatchCLI verifies that DefaultSettings() matches the documented
+// CLI defaults and that the keyring service name is correct.
+func TestDefaultsMatchCLI(t *testing.T) {
+	s := DefaultSettings()
+	if s.RouterAddr != ":8080" {
+		t.Errorf("RouterAddr: got %q want %q", s.RouterAddr, ":8080")
+	}
+	if s.WorkerBackend != "llama-cpp" {
+		t.Errorf("WorkerBackend: got %q want %q", s.WorkerBackend, "llama-cpp")
+	}
+	if s.WorkerPort != 8081 {
+		t.Errorf("WorkerPort: got %d want %d", s.WorkerPort, 8081)
+	}
+	if s.WorkerEnableHealthChecks == nil || !*s.WorkerEnableHealthChecks {
+		t.Error("WorkerEnableHealthChecks should be true")
+	}
+	if s.DevMode == nil || !*s.DevMode {
+		t.Error("DevMode should be true")
+	}
+
+	cs := NewConfigService(newMemKeyring(), filepath.Join(t.TempDir(), "settings.yml"))
+	if cs.GetKeyringServiceName() != "infermesh" {
+		t.Errorf("GetKeyringServiceName: got %q want %q", cs.GetKeyringServiceName(), "infermesh")
+	}
+}
+
+// TestKeyringAvailableOnHost verifies that the production keyring reports
+// available on macOS. On other platforms the test is skipped.
+func TestKeyringAvailableOnHost(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("keychain availability probe only runs on macOS")
+	}
+	if !newProdKeyring().Available() {
+		t.Fatal("prod keyring should be available on macOS")
+	}
+}
+
+// TestSaveSettingsStripsSecretsFromYAML verifies that when the keyring is
+// available, SaveSettings writes YAML without secret values but with
+// SecretRefs populated, and returns (true, nil).
+func TestSaveSettingsStripsSecretsFromYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "settings.yml")
+
+	cs := NewConfigService(newMemKeyring(), path)
+	s := DefaultSettings()
+	s.Secrets = map[string]string{
+		"router/apikey": "secret-value",
+		"mtls/cert":    "cert-value",
+	}
+
+	ok, err := cs.SaveSettings(s)
+	if !ok {
+		t.Fatal("SaveSettings should return true when keyring available")
+	}
+	if err != nil {
+		t.Fatalf("SaveSettings returned error: %v", err)
+	}
+
+	// Verify YAML has no secret values
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	var rawMap map[string]any
+	if err := yaml.Unmarshal(raw, &rawMap); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	if _, ok := rawMap["secrets"]; ok {
+		t.Fatal("YAML must not contain 'secrets' key")
+	}
+	secretRefs, ok := rawMap["secret_refs"].(map[string]any)
+	if !ok {
+		t.Fatal("YAML must contain 'secret_refs' map")
+	}
+	if secretRefs["router/apikey"] != "router/apikey" {
+		t.Errorf("secret_refs[router/apikey] missing")
+	}
+	if secretRefs["mtls/cert"] != "mtls/cert" {
+		t.Errorf("secret_refs[mtls/cert] missing")
+	}
+}
+
+// TestSaveSettingsNoSecretsKeyringDown verifies that when the keyring is
+// unavailable but the Settings contain no secrets, SaveSettings succeeds
+// and writes YAML normally.
+func TestSaveSettingsNoSecretsKeyringDown(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "settings.yml")
+
+	cs := NewConfigService(failKeyring{}, path)
+	s := DefaultSettings()
+	s.RouterAddr = ":9999"
+	// No secrets
+
+	ok, err := cs.SaveSettings(s)
+	if ok {
+		t.Fatal("SaveSettings should return false when keyring down (even without secrets, per contract)")
+	}
+	if err != nil {
+		t.Fatalf("expected nil error when no secrets, got: %v", err)
+	}
+
+	// Verify YAML was written normally
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	var rawMap map[string]any
+	if err := yaml.Unmarshal(raw, &rawMap); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	if rawMap["router_addr"] != ":9999" {
+		t.Errorf("router_addr not written: got %v", rawMap["router_addr"])
+	}
+}
+
+// TestNewRouterClientNormalizesBareHostPort verifies that NewRouterClient
+// normalises a bare ":8080" to "http://:8080" (the workersPath will include it).
+func TestNewRouterClientNormalizesBareHostPort(t *testing.T) {
+	c := NewRouterClient(":8080")
+	if c.workersPath() != "http://:8080/v1/workers" {
+		t.Errorf("workersPath: got %q want %q", c.workersPath(), "http://:8080/v1/workers")
+	}
 }

@@ -15,6 +15,16 @@ var assets embed.FS
 var trayIcon []byte
 
 func main() {
+	settings, err := startupSettings()
+	if err != nil {
+		log.Fatalf("failed to load startup settings: %v", err)
+	}
+
+	settingsPath, err := settingsPath()
+	if err != nil {
+		log.Fatalf("failed to resolve settings path: %v", err)
+	}
+
 	app := application.New(application.Options{
 		Name:        "InferMesh",
 		Description: "Visual manager for InferMesh pool",
@@ -24,8 +34,10 @@ func main() {
 		// RouterClient exposes the /v1/workers HTTP projection to the Vue UI.
 		// Bound via application.NewService; methods are auto-discovered by
 		// reflect in pkg/application/bindings.go:getMethods.
+		// ConfigService provides access to persistent secrets via the OS keyring.
 		Services: []application.Service{
-			application.NewService(NewRouterClient(defaultRouterURL)),
+			application.NewService(NewRouterClient(settings.RouterAddr)),
+			application.NewService(NewConfigService(newProdKeyring(), settingsPath)),
 		},
 	})
 
@@ -68,7 +80,7 @@ func main() {
 		}
 	}()
 
-	err := app.Run()
+	err = app.Run()
 	if err != nil {
 		log.Fatal(err)
 	}

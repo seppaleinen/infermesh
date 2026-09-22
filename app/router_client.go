@@ -54,11 +54,15 @@ func (*RouterClient) ServiceName() string {
 }
 
 // NewRouterClient builds a client pointed at baseURL. An empty baseURL falls
-// back to defaultRouterURL.
+// back to defaultRouterURL. A bare host:port (e.g. ":8080") is normalised to
+// "http://host:port" so callers can pass either form.
 func NewRouterClient(baseURL string) *RouterClient {
 	baseURL = strings.TrimRight(baseURL, "/")
 	if baseURL == "" {
 		baseURL = defaultRouterURL
+	}
+	if !strings.Contains(baseURL, "://") {
+		baseURL = "http://" + baseURL
 	}
 	return &RouterClient{baseURL: baseURL}
 }
