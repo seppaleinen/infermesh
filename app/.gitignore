@@ -1,5 +1,8 @@
 .task
 bin
+# `go build .` inside the app module produces a binary named `app` at the
+# module root. Not a real build artifact — the real target is bin/app.
+/app
 frontend/dist/*
 !frontend/dist/.gitkeep
 frontend/node_modules

@@ -73,6 +73,21 @@ func (c *RouterClient) GetRouterURL() string {
 	return c.baseURL
 }
 
+// SetRouterURL re-points the client to a new router base URL. It is safe to
+// call at any time; subsequent GetWorkers() calls use the new URL. An empty
+// or malformed url falls back to defaultRouterURL (same normalisation as the
+// constructor). Does NOT persist to disk — that is the ConfigService's job.
+func (c *RouterClient) SetRouterURL(url string) {
+	url = strings.TrimRight(url, "/")
+	if url == "" {
+		url = defaultRouterURL
+	}
+	if !strings.Contains(url, "://") {
+		url = "http://" + url
+	}
+	c.baseURL = url
+}
+
 // workersPath builds the full /v1/workers URL for the configured base.
 func (c *RouterClient) workersPath() string {
 	return c.baseURL + "/v1/workers"

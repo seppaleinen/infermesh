@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Events } from '@wailsio/runtime'
 import WorkerCard from './components/WorkerCard.vue'
+import SettingsForm from './components/SettingsForm.vue'
 import { useWorkers, relativeLastSeen, formatAbsolute } from './composables/useWorkers'
 
 const version = 'v0.1.0'
@@ -30,6 +31,14 @@ function scheduleStale() {
 
 // Connected-workers view (issue #41). Bound Go service: RouterClient.
 const workers = useWorkers()
+
+// Active view: 'dashboard' (workers) or 'settings'.
+const activeView = ref<'dashboard' | 'settings'>('dashboard')
+
+function onSettingsSaved(): void {
+  activeView.value = 'dashboard'
+  workers.retry() // re-fetch from new router URL immediately
+}
 
 onMounted(() => {
   unsubscribe = Events.On('time', (ev: { data: string }) => {
@@ -65,12 +74,37 @@ const workerCount = computed(() => {
         <span class="brand-divider" aria-hidden="true"></span>
         <span class="brand-sub">Desktop</span>
       </div>
+      <nav class="nav" role="tablist" aria-label="Main navigation">
+        <button
+          role="tab"
+          :aria-selected="activeView === 'dashboard'"
+          @click="activeView = 'dashboard'"
+          :class="{ active: activeView === 'dashboard' }"
+        >
+          Dashboard
+        </button>
+        <span class="nav-divider" aria-hidden="true">|</span>
+        <button
+          role="tab"
+          :aria-selected="activeView === 'settings'"
+          @click="activeView = 'settings'"
+          :class="{ active: activeView === 'settings' }"
+        >
+          Settings
+        </button>
+      </nav>
       <span class="badge">{{ version }}</span>
     </header>
 
     <main class="main">
-      <!-- Loading: first GetWorkers() in flight -->
-      <section v-if="workers.state.value.kind === 'loading'" class="status-card" aria-live="polite">
+      <SettingsForm
+        v-if="activeView === 'settings'"
+        @saved="onSettingsSaved"
+        @cancel="activeView = 'dashboard'"
+      />
+      <template v-else>
+        <!-- Loading: first GetWorkers() in flight -->
+        <section v-if="workers.state.value.kind === 'loading'" class="status-card" aria-live="polite">
         <div class="status-glyph" aria-hidden="true">
           <svg class="spin" viewBox="0 0 24 24" fill="none">
             <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" opacity="0.25" />
@@ -152,6 +186,7 @@ const workerCount = computed(() => {
           </li>
         </ul>
       </template>
+      </template>
     </main>
 
     <footer class="footer">
@@ -221,8 +256,43 @@ const workerCount = computed(() => {
   letter-spacing: 0.04em;
   color: var(--text-muted);
   border: 1px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: 990px;
   background: var(--surface-2);
+}
+
+/* ----- Nav ------------------------------------------------------------------ */
+.nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.nav button {
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.nav button:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.nav button.active {
+  color: var(--accent-strong);
+  background: var(--accent-dim);
+}
+
+.nav-divider {
+  color: var(--text-faint);
+  font-size: 11px;
+  margin: 0 2px;
 }
 
 /* ----- Main / states ------------------------------------------------------- */
