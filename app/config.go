@@ -17,11 +17,13 @@ import (
 type Settings struct {
 	RouterAddr              string            `json:"router_addr" yaml:"router_addr"`
 	RouterAPIkey            string            `json:"router_apikey" yaml:"router_apikey"`
+	RouterBinaryPath        string            `json:"router_binary_path" yaml:"router_binary_path"`
 	WorkerAddr              string            `json:"worker_addr" yaml:"worker_addr"`
 	WorkerAPIkey            string            `json:"worker_apikey" yaml:"worker_apikey"`
 	WorkerBackend           string            `json:"worker_backend" yaml:"worker_backend"`
 	WorkerModelPath         string            `json:"worker_model_path" yaml:"worker_model_path"`
 	WorkerPort              int               `json:"worker_port" yaml:"worker_port"`
+	WorkerBinaryPath        string            `json:"worker_binary_path" yaml:"worker_binary_path"`
 	WorkerCustomAuth        string            `json:"worker_custom_auth" yaml:"worker_custom_auth"`
 	WorkerEnableHealthChecks *bool             `json:"worker_enable_health_checks" yaml:"worker_enable_health_checks"`
 	WorkerMTLSCert          string            `json:"worker_mtls_cert" yaml:"worker_mtls_cert"`

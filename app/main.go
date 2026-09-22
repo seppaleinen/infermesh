@@ -35,9 +35,11 @@ func main() {
 		// Bound via application.NewService; methods are auto-discovered by
 		// reflect in pkg/application/bindings.go:getMethods.
 		// ConfigService provides access to persistent secrets via the OS keyring.
+		// Supervisor launches and manages the headless router/worker binaries.
 		Services: []application.Service{
 			application.NewService(NewRouterClient(settings.RouterAddr)),
 			application.NewService(NewConfigService(newProdKeyring(), settingsPath)),
+			application.NewService(NewSupervisor(newProdKeyring(), settingsPath, "", "")),
 		},
 	})
 
@@ -48,6 +50,13 @@ func main() {
 		Height: 618,
 		BackgroundColour: application.NewRGB(6, 7, 15),
 		URL:             "/",
+	})
+
+// On shutdown, tear down any supervised children so the user's machine is
+	// left in the same state the app found it in.
+	supervisor := NewSupervisor(newProdKeyring(), settingsPath, "", "")
+	app.OnShutdown(func() {
+		supervisor.StopAll()
 	})
 
 	// System Tray setup
