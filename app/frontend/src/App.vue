@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Events } from '@wailsio/runtime'
+import WorkerCard from './components/WorkerCard.vue'
+import { useWorkers, relativeLastSeen, formatAbsolute } from './composables/useWorkers'
 
-// Static placeholder — replaced by a real version query when the pool
-// dashboard lands in #41. No Go binding involved.
 const version = 'v0.1.0'
 
 // Live heartbeat: the Go side emits `time` every 5s with an RFC1123 stamp
@@ -28,17 +28,27 @@ function scheduleStale() {
   }, 15_000)
 }
 
+// Connected-workers view (issue #41). Bound Go service: RouterClient.
+const workers = useWorkers()
+
 onMounted(() => {
   unsubscribe = Events.On('time', (ev: { data: string }) => {
     heartbeatText.value = ev.data
     heartbeatAlive.value = true
     scheduleStale()
   })
+  workers.start()
 })
 
 onBeforeUnmount(() => {
   unsubscribe?.()
   if (staleTimer !== undefined) clearTimeout(staleTimer)
+  workers.stop()
+})
+
+const workerCount = computed(() => {
+  if (workers.state.value.kind === 'ready') return workers.state.value.workers.length
+  return 0
 })
 </script>
 
@@ -59,7 +69,24 @@ onBeforeUnmount(() => {
     </header>
 
     <main class="main">
-      <section class="status-card" aria-labelledby="status-title">
+      <!-- Loading: first GetWorkers() in flight -->
+      <section v-if="workers.state.value.kind === 'loading'" class="status-card" aria-live="polite">
+        <div class="status-glyph" aria-hidden="true">
+          <svg class="spin" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" opacity="0.25" />
+            <path d="M12 3a9 9 0 0 1 9 9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" />
+          </svg>
+        </div>
+        <h1 id="status-title" class="status-title">Connecting to router…</h1>
+        <p class="status-copy">Querying <span class="mono">{{ workers.routerURL.value || 'http://127.0.0.1:8080' }}</span> for connected workers.</p>
+        <div class="status-flag" role="status">
+          <span class="dot flag-dot"></span>
+          <span>polling</span>
+        </div>
+      </section>
+
+      <!-- Router reachable, 0 workers -->
+      <section v-else-if="workers.state.value.kind === 'empty'" class="status-card" aria-live="polite">
         <div class="status-glyph" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none">
             <circle cx="5" cy="12" r="2.2" stroke="currentColor" stroke-width="1.5" />
@@ -68,14 +95,63 @@ onBeforeUnmount(() => {
             <path d="M7 11l9.5-3.5M7 13l9.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.6" />
           </svg>
         </div>
-        <h1 id="status-title" class="status-title">No router connected</h1>
-        <p class="status-copy">Workers stay idle until a router announces on the local network.</p>
+        <h1 id="status-title" class="status-title">No workers connected</h1>
+        <p class="status-copy">Router is reachable at <span class="mono">{{ workers.state.value.routerURL }}</span>, but no worker has registered yet. Start a worker to join the pool.</p>
         <span class="status-tag">pool dashboard — issue #41</span>
         <div class="status-flag" role="status">
-          <span class="dot flag-dot"></span>
-          <span>router offline</span>
+          <span class="dot flag-dot flag-live"></span>
+          <span>router online · 0 workers</span>
         </div>
       </section>
+
+      <!-- Router unreachable -->
+      <section v-else-if="workers.state.value.kind === 'error'" class="status-card" aria-live="assertive">
+        <div class="status-glyph error-glyph" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5" />
+            <path d="M12 8v5M12 16h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          </svg>
+        </div>
+        <h1 id="status-title" class="status-title">Router unreachable</h1>
+        <p class="status-copy">{{ workers.state.value.message }}</p>
+        <span class="status-tag error-tag">router offline</span>
+        <button class="retry-btn" @click="workers.retry()">
+          <svg viewBox="0 0 24 24" fill="none" width="14" height="14">
+            <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.4 2.6M3 5v4h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.4-2.6M21 19v-4h-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          Retry
+        </button>
+        <div class="status-flag" role="status">
+          <span class="dot flag-dot flag-offline"></span>
+          <span>{{ workers.state.value.routerURL }}</span>
+        </div>
+      </section>
+
+      <!-- Workers present -->
+      <template v-else>
+        <div class="workers-head">
+          <div class="workers-title">
+            <h1 class="workers-count">{{ workerCount }} worker<span v-if="workerCount !== 1">s</span></h1>
+            <p class="workers-sub">connected to <span class="mono">{{ workers.state.value.routerURL }}</span></p>
+          </div>
+          <span class="workers-live"><span class="dot flag-dot flag-live"></span> live</span>
+        </div>
+        <ul class="worker-list">
+          <li v-for="w in workers.state.value.workers" :key="w.id" class="worker-item">
+            <WorkerCard
+              :id="w.id"
+              :address="w.address"
+              :hostname="w.hostname"
+              :status="w.status"
+              :version="w.version"
+              :loaded-models="w.loaded_models"
+              :last-seen-rel="relativeLastSeen(w.last_seen)"
+              :last-seen-absolute="formatAbsolute(w.last_seen)"
+            />
+          </li>
+        </ul>
+      </template>
     </main>
 
     <footer class="footer">
@@ -149,7 +225,7 @@ onBeforeUnmount(() => {
   background: var(--surface-2);
 }
 
-/* ----- Main / status placeholder ------------------------------------------- */
+/* ----- Main / states ------------------------------------------------------- */
 .main {
   flex: 1;
   display: flex;
@@ -188,6 +264,20 @@ onBeforeUnmount(() => {
   height: 28px;
 }
 
+.error-glyph {
+  color: var(--offline);
+  border-color: rgba(242, 118, 107, 0.28);
+  background: rgba(242, 118, 107, 0.10);
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .status-title {
   margin: 0 0 8px;
   font-size: 18px;
@@ -203,6 +293,11 @@ onBeforeUnmount(() => {
   color: var(--text-muted);
 }
 
+.mono {
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+
 .status-tag {
   margin-top: 18px;
   padding: 3px 11px;
@@ -213,6 +308,32 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(62, 207, 174, 0.28);
   border-radius: 999px;
   background: var(--accent-dim);
+}
+
+.error-tag {
+  color: var(--offline);
+  border-color: rgba(242, 118, 107, 0.28);
+  background: rgba(242, 118, 107, 0.12);
+}
+
+.retry-btn {
+  margin-top: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--surface);
+  background: var(--accent-strong);
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+
+.retry-btn:hover {
+  filter: brightness(1.1);
 }
 
 .status-flag {
@@ -232,6 +353,67 @@ onBeforeUnmount(() => {
 .flag-dot {
   background: var(--offline);
   box-shadow: 0 0 8px rgba(242, 118, 107, 0.35);
+}
+
+.flag-live {
+  background: var(--accent-strong);
+  box-shadow: 0 0 8px rgba(93, 252, 190, 0.45);
+}
+
+.flag-offline {
+  background: var(--offline);
+}
+
+/* ----- Workers list -------------------------------------------------------- */
+.workers-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.workers-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.workers-count {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.workers-sub {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.workers-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent-strong);
+}
+
+.worker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: none;
+}
+
+.worker-item {
+  margin: 0;
 }
 
 /* ----- Footer / heartbeat -------------------------------------------------- */

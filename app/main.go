@@ -21,6 +21,12 @@ func main() {
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
 		},
+		// RouterClient exposes the /v1/workers HTTP projection to the Vue UI.
+		// Bound via application.NewService; methods are auto-discovered by
+		// reflect in pkg/application/bindings.go:getMethods.
+		Services: []application.Service{
+			application.NewService(NewRouterClient(defaultRouterURL)),
+		},
 	})
 
 	// Window setup
