@@ -10,6 +10,8 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      next_tag: ${{ steps.versioning.outputs.next_tag }}
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     steps:
       - name: Checkout
@@ -72,3 +74,91 @@ jobs:
           tag_name: ${{ steps.versioning.outputs.next_tag }}
           files: dist/*.tar.gz dist/SHA256SUMS.txt
           generate_release_notes: true
+
+  release-app:
+    needs: release
+    if: needs.release.result == 'success'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            artifact-glob: "app/bin/*.dmg"
+          - os: ubuntu-latest
+            artifact-glob: "app/bin/*.AppImage"
+          - os: windows-latest
+            artifact-glob: "app/bin/*-installer.exe"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.next_tag }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.27'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install wails3 CLI
+        shell: bash
+        run: |
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.24
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            file
+
+      - name: Add NSIS to PATH
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          echo "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Build Desktop App
+        shell: bash
+        working-directory: app
+        run: wails3 task build APP_NAME=infermesh-app OUTPUT=bin/infermesh-app
+
+      - name: Package Desktop App
+        shell: bash
+        working-directory: app
+        run: |
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            wails3 task package APP_NAME=infermesh-app
+            wails3 task darwin:package:dmg APP_NAME=infermesh-app
+          elif [[ "${{ runner.os }}" == "Linux" ]]; then
+            wails3 task linux:create:appimage APP_NAME=infermesh-app
+          else
+            wails3 task package APP_NAME=infermesh-app
+          fi
+
+      - name: Restore frontend/dist placeholder
+        shell: bash
+        run: git checkout -- app/frontend/dist/.gitkeep
+
+      - name: List Build Artifacts
+        shell: bash
+        run: ls -la app/bin
+
+      - name: Attach Desktop App to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release.outputs.next_tag }}
+          files: ${{ matrix.artifact-glob }}
+          fail_on_unmatched_files: true

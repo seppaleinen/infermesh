@@ -263,6 +263,68 @@ The bundles can be copied to `~/Applications` or `/Applications` and run from th
 
 **Rebuild caveat**: the ad-hoc signature changes on every `make app` build, so the firewall prompt may re-fire after a rebuild. A self-signed Keychain certificate with `codesign --sign "<cert-name>"` is the stable alternative (documented only — see `packaging/macos/` for the scripts and plist template).
 
+## Desktop App (Wails v3)
+
+A native manager window + system tray for the InferMesh pool: Dashboard (pool status), Settings (router/worker configuration, secrets to the OS keyring), process supervisor (start/stop the router and worker), autostart (login item), and tray controls (Open/Hide/Quit, live status). It lives in its own Go module (`app/`) on **Wails v3.0.0-beta.24** — issues #40–#45 merged (Dashboard, Settings, supervisor, autostart, tray).
+
+### Prerequisites
+
+- Go 1.27+
+- Node + npm (the first build installs frontend deps)
+- CGO toolchain (native GUI libs; macOS = Xcode CLT)
+- `wails3` pinned to `v3.0.0-beta.24`:
+
+```bash
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.24
+```
+
+The `make` targets below prepend `$(go env GOPATH)/bin` to `PATH` automatically, so a `go install`-ed `wails3` resolves even when it is not on your shell `PATH`.
+
+### Commands
+
+| Command | Result |
+|---|---|
+| `make build-app` | Raw host-OS binary → `bin/app/infermesh-app` |
+| `make package-app` | macOS `.app` bundle (ad-hoc signed) → `bin/app/InferMesh.app/` |
+| `make package-app-dmg` | macOS `.dmg` → `bin/app/InferMesh.dmg` (darwin-only; builds package first) |
+| `make package-app-linux` | AppImage + deb → `bin/app/` (Linux host or wails-cross Docker only; prints guidance and exits non-zero elsewhere) |
+| `make package-app-windows` | Compile-check (real cross-compile) — **currently fails** until Windows desktop support lands (deferred); see per-platform status below |
+| `make test-app-smoke` | Build, launch, probe briefly (liveness is the pass criterion) |
+
+### Artifacts
+
+Everything lands in `bin/app/` (root-level, gitignored):
+
+| Artifact | Produced by |
+|---|---|
+| `bin/app/infermesh-app` | `make build-app` |
+| `bin/app/InferMesh.app/` | `make package-app` (byproduct raw binary stays at `app/bin/InferMesh`) |
+| `bin/app/InferMesh.dmg` | `make package-app-dmg` |
+| `bin/app/InferMesh-*.AppImage`, `bin/app/*.deb` | `make package-app-linux` |
+| `bin/app/InferMesh.exe` (+ `*-installer.exe`) | `make package-app-windows` (once Windows desktop support lands; currently fails — see per-platform status) |
+
+**Naming note**: the smoke-test binary is `infermesh-app`; the packaged product is `InferMesh` (bundle dir, exe, `.desktop` Exec) — intentional. `APP_NAME` drives the OS-facing product identity.
+
+### Smoke test
+
+`make test-app-smoke` builds the app, launches the binary, and asserts it stays alive through a 15s boot window. GUI probes (pgrep / lsappinfo on macOS, xdotool on Linux) are advisory — probe failures never fail the test; **process liveness is the pass criterion**.
+
+- `SKIP=1` or `INFERMESH_SMOKE_SKIP=1` skips the run (exit 0).
+- `INFERMESH_APP_BIN` overrides the binary path (default `../bin/app/infermesh-app`).
+- Headless Linux (`DISPLAY`/`WAYLAND_DISPLAY` empty) skips (exit 0).
+
+Manual run:
+
+```bash
+cd app && go test -tags smoke -run '^TestAppSmoke$$' -count=1 -v .
+```
+
+### Per-platform status
+
+- **macOS** — working (host-arch build, `.app` bundle, ad-hoc signing, dmg).
+- **Linux** — docs-only on this repo: requires webkit2gtk build deps or the wails-cross Docker image; package with `make package-app-linux` on a Linux runner.
+- **Windows** — `make package-app-windows` performs a true cross-compile check (frontend + syso + production flags, `GOOS=windows ARCH=amd64`) and **currently fails**. The app's process supervisor uses Unix-only syscalls — `syscall.Setpgid` / `syscall.Kill` in `app/supervisor_process.go` — which do not exist for `GOOS=windows`, and Windows desktop support is deferred (see AGENTS.md). The target itself is wired correctly (wails3 Windows Taskfile + NSIS/MSIX config with the InferMesh identity), so it will produce `bin/app/InferMesh.exe` and the NSIS installer automatically once Windows support lands. The NSIS installer additionally requires `makensis`.
+
 ## Contributing
 
 1. Fork the repository

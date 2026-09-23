@@ -5,11 +5,11 @@
 	"info": {
 		"0000": {
 			"ProductVersion": "0.1.0",
-			"CompanyName": "My Company",
-			"FileDescription": "A app application",
-			"LegalCopyright": "© 2026, My Company",
-			"ProductName": "My Product",
-			"Comments": "This is a comment"
+			"CompanyName": "InferMesh",
+			"FileDescription": "Visual manager for the InferMesh inference pool",
+			"LegalCopyright": "© 2026, InferMesh",
+			"ProductName": "InferMesh",
+			"Comments": "InferMesh desktop app"
 		}
 	}
 }

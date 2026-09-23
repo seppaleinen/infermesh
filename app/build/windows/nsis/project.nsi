@@ -33,6 +33,11 @@ Unicode true
 ####
 ## Include the wails tools
 ####
+!define INFO_PROJECTNAME "InferMesh"
+!define INFO_COMPANYNAME "InferMesh"
+!define INFO_PRODUCTNAME "InferMesh"
+!define INFO_PRODUCTVERSION "0.1.0"
+!define INFO_COPYRIGHT "© 2026, InferMesh"
 !include "wails_tools.nsh"
 
 # The version information for this two must consist of 4 parts
@@ -73,6 +78,8 @@ ManifestDPIAware true
 
 Name "${INFO_PRODUCTNAME}"
 OutFile "..\..\..\bin\${INFO_PROJECTNAME}-${ARCH}-installer.exe" # Name of the installer's file.
+# ${ARCH} is defined by wails_tools.nsh (above) from the ARG_WAILS_*_BINARY
+# defines passed on the makensis command line (amd64 / arm64 / amd64_arm64).
 !if "${WAILS_INSTALL_SCOPE}" == "user"
     InstallDir "$LOCALAPPDATA\Programs\${INFO_PRODUCTNAME}"
 !else

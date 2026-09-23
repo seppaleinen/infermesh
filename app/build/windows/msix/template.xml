@@ -8,27 +8,27 @@
         AllowPromptForPassword="false">
     </Settings>
     <Installer
-        Path="app"
+        Path="InferMesh.exe"
         Arguments=""
-        InstallLocation="C:\Program Files\My Company\My Product">
+        InstallLocation="C:\Program Files\InferMesh\InferMesh">
     </Installer>
     <PackageInformation
-        PackageName="My Product"
-        PackageDisplayName="My Product"
-        PublisherName="CN=My Company"
-        PublisherDisplayName="My Company"
+        PackageName="InferMesh"
+        PackageDisplayName="InferMesh"
+        PublisherName="CN=InferMesh"
+        PublisherDisplayName="InferMesh"
         Version="0.1.0.0"
-        PackageDescription="A app application">
+        PackageDescription="Visual manager for the InferMesh inference pool">
         <Capabilities>
             <Capability Name="runFullTrust" />
             
         </Capabilities>
         <Applications>
             <Application
-                Id="com.example.app"
-                Description="A app application"
-                DisplayName="My Product"
-                ExecutableName="app"
+                Id="io.infermesh.desktop"
+                Description="Visual manager for the InferMesh inference pool"
+                DisplayName="InferMesh"
+                ExecutableName="InferMesh.exe"
                 EntryPoint="Windows.FullTrustApplication">
                 
             </Application>
@@ -41,9 +41,9 @@
         </Dependencies>
         <Properties>
             <Framework>false</Framework>
-            <DisplayName>My Product</DisplayName>
-            <PublisherDisplayName>My Company</PublisherDisplayName>
-            <Description>A app application</Description>
+            <DisplayName>InferMesh</DisplayName>
+            <PublisherDisplayName>InferMesh</PublisherDisplayName>
+            <Description>Visual manager for the InferMesh inference pool</Description>
             <Logo>Assets\AppIcon.png</Logo>
         </Properties>
     </PackageInformation>
