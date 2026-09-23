@@ -554,6 +554,13 @@ func TestEscapeDesktopExecArg(t *testing.T) {
 			`"/tmp/a\$b\;c\(d\)e\?f\#g\~h\|i\&j\<k\>l\` + "`" + `\'m"`,
 		},
 		{"empty argument", "", `""`},
+		{"percent in path escaped to %%", "/opt/100%cache/app", `"/opt/100%%cache/app"`},
+		{"lone percent", "%", `"%%"`},
+		{"field-code lookalike", "/tmp/%f/app", `"/tmp/%%f/app"`},
+		{"double percent doubled again", "/a%%b", `"/a%%%%b"`},
+		// Both escapes apply independently: reserved space backslash-escaped,
+		// percent doubled to %%.
+		{"percent with reserved space", "/a b%c", `"/a\ b%%c"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

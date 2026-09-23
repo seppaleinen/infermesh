@@ -365,11 +365,20 @@ const desktopExecReserved = ` "'\><~|&;$*?#()` + "`"
 // reserved character inside is backslash-escaped. This is valid inside or
 // outside quotes and is understood by GLib's desktop-entry Exec tokenizer,
 // so both "always quoted" and "escaped reserved chars" hold for all inputs.
+//
+// '%' is special: it is the field-code introducer in Exec (e.g. %f, %u) and
+// must be doubled to '%%', NOT backslash-escaped — backslash is not a
+// sanctioned escape for '%' under the Desktop Entry Spec. This is therefore
+// handled independently of the desktopExecReserved set.
 func escapeDesktopExecArg(arg string) string {
 	var b strings.Builder
 	b.Grow(len(arg) + 2)
 	b.WriteByte('"')
 	for _, r := range arg {
+		if r == '%' {
+			b.WriteString("%%")
+			continue
+		}
 		if strings.ContainsRune(desktopExecReserved, r) {
 			b.WriteByte('\\')
 		}
