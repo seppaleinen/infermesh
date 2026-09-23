@@ -83,14 +83,21 @@ jobs:
     if: needs.release.result == 'success'
     runs-on: ${{ matrix.os }}
     strategy:
+      # Don't let one platform's failure cancel the other legs: each matrix
+      # entry is an independent deliverable and we want full failure output.
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
             artifact-glob: "app/bin/*.dmg"
           - os: ubuntu-latest
             artifact-glob: "app/bin/*.AppImage"
-          - os: windows-latest
-            artifact-glob: "app/bin/*-installer.exe"
+          # Windows is intentionally absent: the desktop app does not compile
+          # for GOOS=windows yet (Unix-only syscalls syscall.Flock/Setpgid/Kill
+          # in app/instance_lock.go and app/supervisor_process.go), and Windows
+          # desktop support is deferred — see AGENTS.md. Re-add the
+          # windows-latest leg (artifact-glob "app/bin/*-installer.exe") once
+          # Windows support lands.
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -108,47 +115,48 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install wails3 CLI
-        shell: bash
-        run: |
-          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.24
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-
+      # Must run BEFORE installing the wails3 CLI: the pinned wails3
+      # v3.0.0-beta.24 CLI itself compiles cgo bindings against the GTK4
+      # stack on Linux (gtk4 + webkitgtk-6.0), so `go install` fails without
+      # these headers. The legacy webkit2gtk-4.1/GTK3 packages are only
+      # needed for `-tags gtk3` builds and are intentionally not installed.
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
+            libgtk-4-dev \
+            libwebkitgtk-6.0-dev \
+            libx11-dev \
             librsvg2-dev \
             patchelf \
             file
 
-      - name: Add NSIS to PATH
-        if: runner.os == 'Windows'
-        shell: powershell
+      - name: Install wails3 CLI
+        shell: bash
         run: |
-          echo "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.24
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
+      # APP_NAME=InferMesh matches the tracked product identity
+      # (app/build/darwin/Info.plist: CFBundleExecutable=InferMesh and the
+      # Makefile's APP_NAME ?= InferMesh). Building as `infermesh-app` would
+      # produce an .app bundle whose binary name does not match the plist.
       - name: Build Desktop App
         shell: bash
         working-directory: app
-        run: wails3 task build APP_NAME=infermesh-app OUTPUT=bin/infermesh-app
+        run: wails3 task build APP_NAME=InferMesh
 
       - name: Package Desktop App
         shell: bash
         working-directory: app
         run: |
           if [[ "${{ runner.os }}" == "macOS" ]]; then
-            wails3 task package APP_NAME=infermesh-app
-            wails3 task darwin:package:dmg APP_NAME=infermesh-app
+            wails3 task package APP_NAME=InferMesh
+            wails3 task darwin:package:dmg APP_NAME=InferMesh
           elif [[ "${{ runner.os }}" == "Linux" ]]; then
-            wails3 task linux:create:appimage APP_NAME=infermesh-app
-          else
-            wails3 task package APP_NAME=infermesh-app
+            wails3 task linux:create:appimage APP_NAME=InferMesh
           fi
 
       - name: Restore frontend/dist placeholder
