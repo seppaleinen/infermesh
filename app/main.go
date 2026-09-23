@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"errors"
 	"log"
 	"os"
 	"time"
@@ -33,6 +34,20 @@ func summarizePoolStatus(st SupervisorStatus) string {
 }
 
 func main() {
+	// Single-instance guard: flock on a per-user lock file. Held for the
+	// process lifetime; the kernel drops it on any exit path (including
+	// kill -9), so no cleanup is needed beyond this defer.
+	lock, err := acquireInstanceLock(lockFilePath())
+	if errors.Is(err, ErrAlreadyRunning) {
+		log.Print("another InferMesh instance is already running; exiting")
+		return // exit(0): benign for LaunchAgent-triggered relaunch
+	}
+	if err != nil {
+		// Fail open: the guard is UX, not a security control.
+		log.Printf("single-instance lock unavailable, continuing without guard: %v", err)
+	}
+	defer lock.release() //nolint:errcheck // keeps *os.File referenced + unlocks on main() return
+
 	settings, err := startupSettings()
 	if err != nil {
 		log.Fatalf("failed to load startup settings: %v", err)
