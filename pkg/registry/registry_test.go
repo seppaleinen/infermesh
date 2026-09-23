@@ -1,12 +1,14 @@
 package registry
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"testing"
 	"time"
-	"context"
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
 )
@@ -432,6 +434,65 @@ func TestRegistryStop(t *testing.T) {
 	if err := reg.Stop(); err != nil {
 		t.Errorf("Stop returned error: %v", err)
 	}
+}
+
+// TestRegistryStopWithConcurrentEvents reproduces the race/panic where Stop()
+// closed the internal events channel while HandleEvent producers were still
+// running (send on closed channel + data race). Producers keep hammering
+// HandleEvent through Stop, then stop via the stop channel.
+func TestRegistryStopWithConcurrentEvents(t *testing.T) {
+	log := testLogger()
+	reg, err := New(Defaults(), log)
+	if err != nil {
+		t.Fatalf("expected no error: %v", err)
+	}
+
+	ctx := testContext()
+	if err := reg.Start(ctx); err != nil {
+		t.Fatalf("expected no error starting: %v", err)
+	}
+
+	const (
+		producers  = 8
+		iterations = 200
+	)
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	for i := 0; i < producers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				event := protocol.DiscoveryEvent{
+					Type:   protocol.EventAdded,
+					Worker: protocol.WorkerInfo{ID: fmt.Sprintf("worker-%d", id)},
+				}
+				if err := reg.HandleEvent(event); err != nil {
+					t.Errorf("HandleEvent failed: %v", err)
+					return
+				}
+			}
+		}(i)
+	}
+
+	// Let producers ramp up so several are mid-flight when Stop runs.
+	time.Sleep(10 * time.Millisecond)
+
+	// Stop the registry while producers may still be emitting.
+	if err := reg.Stop(); err != nil {
+		t.Errorf("Stop returned error: %v", err)
+	}
+
+	// Stop producers and wait for every goroutine to finish.
+	close(stop)
+	wg.Wait()
 }
 
 func TestRegistrySweepMarksUnavailable(t *testing.T) {

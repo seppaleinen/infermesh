@@ -29,7 +29,8 @@ type Registry interface {
 	// Start begins the heartbeat sweep goroutine.
 	Start(ctx context.Context) error
 
-	// Stop halts the heartbeat sweep and closes all event channels.
+	// Stop halts the heartbeat sweep. Subscriber channels returned by
+	// Subscribe are NOT closed by Stop; callers own their subscription lifetime.
 	Stop() error
 
 	// HandleEvent processes a discovery event and updates internal state.

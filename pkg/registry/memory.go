@@ -20,16 +20,15 @@ type workerState struct {
 // memoryRegistry is the default in-memory Registry implementation.
 // It is thread-safe via sync.RWMutex.
 type memoryRegistry struct {
-	cfg        Config
-	log        *slog.Logger
-	mu         sync.RWMutex
-	workers    map[string]*workerState
-	events     chan Event
-	subMu      sync.Mutex
-	subs       []chan Event
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
+	cfg     Config
+	log     *slog.Logger
+	mu      sync.RWMutex
+	workers map[string]*workerState
+	subMu   sync.Mutex
+	subs    []chan Event
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
 }
 
 // New creates a new in-memory Registry.
@@ -41,7 +40,6 @@ func New(cfg Config, log *slog.Logger) (Registry, error) {
 		cfg:     cfg,
 		log:     log,
 		workers: make(map[string]*workerState),
-		events:  make(chan Event, 128),
 	}, nil
 }
 
@@ -79,14 +77,12 @@ func (r *memoryRegistry) checkStale() {
 		since := now.Sub(state.lastSeen)
 
 		if since >= r.cfg.RemoveTTL {
-			r.emit(Event{Type: RegistryRemoved, Worker: state.info})
 			r.broadcast(Event{Type: RegistryRemoved, Worker: state.info})
 			delete(r.workers, id)
 			r.log.Info("worker removed from registry", "id", id, "stale_for", since)
 		} else if since >= r.cfg.UnavailableTTL && state.available {
 			state.available = false
 			state.info.Status = protocol.StatusUnavailable
-			r.emit(Event{Type: RegistryUnavailable, Worker: state.info})
 			r.broadcast(Event{Type: RegistryUnavailable, Worker: state.info})
 			r.log.Info("worker marked unavailable", "id", id, "stale_for", since)
 		}
@@ -112,7 +108,6 @@ func (r *memoryRegistry) HandleEvent(event protocol.DiscoveryEvent) error {
 				lastSeen:  now,
 				available: true,
 			}
-			r.emit(Event{Type: RegisterAdded, Worker: worker})
 			r.broadcast(Event{Type: RegisterAdded, Worker: worker})
 			r.log.Info("worker registered", "id", worker.ID, "ip", worker.IP, "port", worker.Port)
 		} else {
@@ -123,11 +118,9 @@ func (r *memoryRegistry) HandleEvent(event protocol.DiscoveryEvent) error {
 			state.available = true
 
 			if oldStatus != protocol.StatusAvailable {
-				r.emit(Event{Type: RegisterAdded, Worker: worker})
 				r.broadcast(Event{Type: RegisterAdded, Worker: worker})
 				r.log.Info("worker re-registered", "id", worker.ID)
 			} else {
-				r.emit(Event{Type: RegistryUpdated, Worker: worker})
 				r.broadcast(Event{Type: RegistryUpdated, Worker: worker})
 			}
 		}
@@ -135,7 +128,6 @@ func (r *memoryRegistry) HandleEvent(event protocol.DiscoveryEvent) error {
 	case protocol.EventRemoved:
 		if exists {
 			delete(r.workers, worker.ID)
-			r.emit(Event{Type: RegistryRemoved, Worker: worker})
 			r.broadcast(Event{Type: RegistryRemoved, Worker: worker})
 			r.log.Info("worker deregistered", "id", worker.ID)
 		}
@@ -145,7 +137,6 @@ func (r *memoryRegistry) HandleEvent(event protocol.DiscoveryEvent) error {
 			if state.available {
 				state.available = false
 				state.info.Status = protocol.StatusUnavailable
-				r.emit(Event{Type: RegistryUnavailable, Worker: state.info})
 				r.broadcast(Event{Type: RegistryUnavailable, Worker: state.info})
 				r.log.Info("worker marked unavailable", "id", worker.ID)
 			}
@@ -199,15 +190,6 @@ func (r *memoryRegistry) Subscribe() <-chan Event {
 	return ch
 }
 
-// emit sends an event to the buffered internal channel.
-func (r *memoryRegistry) emit(event Event) {
-	select {
-	case r.events <- event:
-	default:
-		// Buffer full — drop to avoid blocking.
-	}
-}
-
 // broadcast sends an event to all subscribers.
 func (r *memoryRegistry) broadcast(event Event) {
 	r.subMu.Lock()
@@ -222,11 +204,12 @@ func (r *memoryRegistry) broadcast(event Event) {
 }
 
 // Stop shuts down the registry.
+// Subscriber channels obtained via Subscribe are NOT closed; they remain
+// usable by the caller and will simply stop receiving events.
 func (r *memoryRegistry) Stop() error {
 	if r.cancel != nil {
 		r.cancel()
 	}
 	r.wg.Wait()
-	close(r.events)
 	return nil
 }
