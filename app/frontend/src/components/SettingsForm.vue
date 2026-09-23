@@ -158,6 +158,7 @@ async function handleSave(): Promise<void> {
 
   saving.value = true
   saveError.value = null
+  autostartWarning.value = null
   await refreshKeyring()
 
   // Assemble secrets object from local refs
@@ -229,7 +230,8 @@ async function handleSave(): Promise<void> {
     // Best-effort: SetAutoStart returns a warning string on OS failure
     // (never throws for those); an internal error is caught here too. Either
     // way this must not block emit('saved') — the save already succeeded.
-    // When skipped, leave autostartWarning untouched (cleared at load/cancel).
+    // autostartWarning was already cleared at save start; when the gate
+    // skips, it stays null until a future save actually runs SetAutoStart.
     if (autostartChanged) {
       try {
         const warning = await AutoStartService.SetAutoStart(
