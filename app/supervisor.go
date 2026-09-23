@@ -452,6 +452,12 @@ func (s *Supervisor) StartRouter() error {
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
+	mp := s.router
+	s.mu.Unlock()
+	if mp != nil && mp.isAlive() {
+		return errRouterAlreadyRunning
+	}
 	binaryPath := s.binaryPath(settings.RouterBinaryPath, defaultRouterBinaryPath)
 	if _, err := os.Stat(binaryPath); err != nil {
 		return fmt.Errorf("%w: %s", errBinaryNotFound, binaryPath)
@@ -470,7 +476,7 @@ func (s *Supervisor) StartRouter() error {
 		return err
 	}
 
-	mp := newManagedProcess(logPath, s.cmdBuilder)
+	mp = newManagedProcess(logPath, s.cmdBuilder)
 	if err := mp.start(binaryPath, args, env); err != nil {
 		s.mu.Lock()
 		s.router = mp
@@ -509,6 +515,12 @@ func (s *Supervisor) StartWorker() error {
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
+	mp := s.worker
+	s.mu.Unlock()
+	if mp != nil && mp.isAlive() {
+		return errWorkerAlreadyRunning
+	}
 	binaryPath := s.binaryPath(settings.WorkerBinaryPath, defaultWorkerBinaryPath)
 	if _, err := os.Stat(binaryPath); err != nil {
 		return fmt.Errorf("%w: %s", errBinaryNotFound, binaryPath)
@@ -527,7 +539,7 @@ func (s *Supervisor) StartWorker() error {
 		return err
 	}
 
-	mp := newManagedProcess(logPath, s.cmdBuilder)
+	mp = newManagedProcess(logPath, s.cmdBuilder)
 	if err := mp.start(binaryPath, args, env); err != nil {
 		s.mu.Lock()
 		s.worker = mp

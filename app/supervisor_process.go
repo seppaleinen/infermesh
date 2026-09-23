@@ -141,6 +141,7 @@ func (m *managedProcess) start(binaryPath string, args, env []string) error {
 	}
 
 	if err := cmd.Start(); err != nil {
+		m.exitCode = -1
 		_ = logFile.Close()
 		return fmt.Errorf("start %s: %w", binaryPath, err)
 	}
@@ -177,14 +178,17 @@ func (m *managedProcess) waitExit() {
 }
 
 // isAlive reports whether the child is still running. A finished or never
-// started process reports false.
+// started process reports false. Signal(syscall.Signal(0)) is the null-signal
+// existence probe: it returns nil while the process runs and an error once it
+// has exited. (Signal(nil) would return "os: unsupported signal type" for both
+// states on POSIX, so it can never be used as a liveness probe here.)
 func (m *managedProcess) isAlive() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.cmd == nil {
 		return false
 	}
-	return m.cmd.Signal(nil) == nil
+	return m.cmd.Signal(syscall.Signal(0)) == nil
 }
 
 // stop sends SIGTERM to the process group, waits up to stopTimeout, then
@@ -233,7 +237,7 @@ func (m *managedProcess) status() processInfo {
 	if m.stopped || m.exitErr != nil {
 		info.Running = false
 	} else {
-		info.Running = m.cmd.Signal(nil) == nil
+		info.Running = m.cmd.Signal(syscall.Signal(0)) == nil
 	}
 	return info
 }
