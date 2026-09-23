@@ -35,12 +35,25 @@ const workers = useWorkers()
 // Active view: 'dashboard' (workers) or 'settings'.
 const activeView = ref<'dashboard' | 'settings'>('dashboard')
 
+// Forward-only guard for future modals: while a modal is open, Escape must
+// not navigate away from the settings view. No modals exist today.
+const modalOpen = ref(false)
+
+function onKeydown(e: KeyboardEvent): void {
+  if (e.key !== 'Escape' || modalOpen.value) return
+  if (activeView.value === 'settings') {
+    e.preventDefault()
+    activeView.value = 'dashboard' // equals Cancel: silent discard; v-if unmount clears form state
+  }
+}
+
 function onSettingsSaved(): void {
   activeView.value = 'dashboard'
   workers.retry() // re-fetch from new router URL immediately
 }
 
 onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
   unsubscribe = Events.On('time', (ev: { data: string }) => {
     heartbeatText.value = ev.data
     heartbeatAlive.value = true
@@ -50,6 +63,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
   unsubscribe?.()
   if (staleTimer !== undefined) clearTimeout(staleTimer)
   workers.stop()
@@ -96,7 +110,7 @@ const workerCount = computed(() => {
       <span class="badge">{{ version }}</span>
     </header>
 
-    <main class="main">
+    <main class="main" :class="{ 'main--scroll': activeView === 'settings' }">
       <SettingsForm
         v-if="activeView === 'settings'"
         @saved="onSettingsSaved"
@@ -303,6 +317,14 @@ const workerCount = computed(() => {
   justify-content: center;
   padding: 28px;
   min-height: 0;
+}
+
+.main--scroll {
+  align-items: flex-start;
+  justify-content: flex-start;
+  overflow-y: auto;
+  --wails-draggable: no-drag; /* interactive form must not start window drags */
+  overscroll-behavior: contain;
 }
 
 .status-card {

@@ -7,6 +7,7 @@ import {
   type Settings,
 } from '../../bindings/github.com/seppaleinen/infermesh/app'
 import { useSettings } from '../composables/useSettings'
+import { isMTLSVisible } from '../composables/settingsGroups'
 
 const {
   settings,
@@ -41,6 +42,18 @@ const showRouterApikey = ref(false)
 const showWorkerCustomAuth = ref(false)
 const showWorkerMTLSCert = ref(false)
 const showWorkerMTLSKey = ref(false)
+
+// mTLS fields are only relevant when dev mode is explicitly off (see
+// settingsGroups.ts). dev_mode === null counts as dev-mode ON → hidden.
+const showMTLS = computed(() => isMTLSVisible(settings.value?.dev_mode ?? null))
+
+// Collapsible section open state — session-local, resets on remount.
+const openSections = ref({
+  connection: true,
+  worker: true,
+  security: true,
+  app: true,
+})
 
 // Snapshot for dirty tracking — taken at last load() / successful save()
 const snapshot = ref<Settings | null>(null)
@@ -307,294 +320,16 @@ onMounted(() => {
 
     <!-- Form -->
     <form v-else-if="settings" @submit.prevent="handleSave">
-      <section class="form-section">
-        <h2>Router</h2>
-
-        <div class="field">
-          <label for="router_addr">Router address</label>
-          <input
-            id="router_addr"
-            type="text"
-            v-model="settings.router_addr"
-            :disabled="saving"
-          />
-        </div>
-
-        <div class="field checkbox-field">
-          <label for="dev_mode">Dev mode</label>
-          <input
-            id="dev_mode"
-            type="checkbox"
-            v-model="settings.dev_mode"
-            :true-value="true"
-            :false-value="false"
-            :disabled="saving"
-          />
-          <span class="field-help"
-            >Bypasses mDNS discovery; uses static router URL.</span
-          >
-        </div>
-
-        <div class="field">
-          <label for="router_apikey">Router API key</label>
-          <div class="input-group">
-            <input
-              id="router_apikey"
-              :type="showRouterApikey ? 'text' : 'password'"
-              v-model="routerApikey"
-              :disabled="!isKeyringAvailable || saving"
-              autocomplete="off"
-            />
-            <button
-              type="button"
-              class="toggle-eye"
-              :aria-label="showRouterApikey ? 'Hide' : 'Show'"
-              @click="showRouterApikey = !showRouterApikey"
-              :disabled="!isKeyringAvailable || saving"
-              tabindex="-1"
-            >
-              <template v-if="showRouterApikey">
-                <!-- Eye off -->
-                <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
-                  <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
-                  <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
-                  <path d="M3 3l18 18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-                </svg>
-              </template>
-              <template v-else>
-                <!-- Eye on -->
-                <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
-                  <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
-                  <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
-                </svg>
-              </template>
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <section class="form-section">
-        <h2>Worker</h2>
-
-        <div class="field">
-          <label for="worker_backend">Backend</label>
-          <select
-            id="worker_backend"
-            v-model="settings.worker_backend"
-            :disabled="saving"
-          >
-            <option value="llama-cpp">llama-cpp</option>
-            <option value="ollama">ollama</option>
-            <option value="lmstudio">lmstudio</option>
-            <option value="vllm">vllm</option>
-            <option value="custom">custom</option>
-          </select>
-        </div>
-
-        <div class="field">
-          <label for="worker_model_path">Model path</label>
-          <input
-            id="worker_model_path"
-            type="text"
-            v-model="settings.worker_model_path"
-            :disabled="saving"
-          />
-        </div>
-
-        <div class="field">
-          <label for="worker_port">Port</label>
-          <input
-            id="worker_port"
-            type="number"
-            min="1"
-            max="65535"
-            v-model.number="settings.worker_port"
-            :disabled="saving"
-          />
-        </div>
-
-        <div class="field">
-          <label for="worker_addr">Worker address</label>
-          <input
-            id="worker_addr"
-            type="text"
-            v-model="settings.worker_addr"
-            :disabled="saving"
-          />
-        </div>
-
-        <div class="field">
-          <label for="worker_apikey">Worker API key</label>
-          <input
-            id="worker_apikey"
-            type="text"
-            v-model="settings.worker_apikey"
-            :disabled="saving"
-          />
-        </div>
-
-        <div
-          v-if="settings.worker_backend === 'custom'"
-          class="field"
+      <!-- Sticky actions: Back always visible; Save submits the form -->
+      <div class="sticky-actions">
+        <button
+          type="button"
+          class="btn-secondary"
+          @click="handleCancel"
+          :disabled="saving"
         >
-          <label for="worker_custom_auth">Custom auth header</label>
-          <div class="input-group">
-            <input
-              id="worker_custom_auth"
-              :type="showWorkerCustomAuth ? 'text' : 'password'"
-              v-model="workerCustomAuth"
-              :disabled="!isKeyringAvailable || saving"
-              autocomplete="off"
-            />
-            <button
-              type="button"
-              class="toggle-eye"
-              :aria-label="showWorkerCustomAuth ? 'Hide' : 'Show'"
-              @click="showWorkerCustomAuth = !showWorkerCustomAuth"
-              :disabled="!isKeyringAvailable || saving"
-              tabindex="-1"
-            >
-              <template v-if="showWorkerCustomAuth">
-                <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
-                  <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
-                  <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
-                  <path d="M3 3l18 18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-                </svg>
-              </template>
-              <template v-else>
-                <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
-                  <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
-                  <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
-                </svg>
-              </template>
-            </button>
-          </div>
-        </div>
-
-        <div class="field">
-          <label for="worker_mtls_cert">mTLS certificate</label>
-          <div class="input-group">
-            <input
-              id="worker_mtls_cert"
-              :type="showWorkerMTLSCert ? 'text' : 'password'"
-              v-model="workerMTLSCert"
-              :disabled="!isKeyringAvailable || saving"
-              autocomplete="off"
-            />
-            <button
-              type="button"
-              class="toggle-eye"
-              :aria-label="showWorkerMTLSCert ? 'Hide' : 'Show'"
-              @click="showWorkerMTLSCert = !showWorkerMTLSCert"
-              :disabled="!isKeyringAvailable || saving"
-              tabindex="-1"
-            >
-              <template v-if="showWorkerMTLSCert">
-                <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
-                  <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
-                  <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
-                  <path d="M3 3l18 18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-                </svg>
-              </template>
-              <template v-else>
-                <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
-                  <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
-                  <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
-                </svg>
-              </template>
-            </button>
-          </div>
-        </div>
-
-        <div class="field">
-          <label for="worker_mtls_key">mTLS key</label>
-          <div class="input-group">
-            <input
-              id="worker_mtls_key"
-              :type="showWorkerMTLSKey ? 'text' : 'password'"
-              v-model="workerMTLSKey"
-              :disabled="!isKeyringAvailable || saving"
-              autocomplete="off"
-            />
-            <button
-              type="button"
-              class="toggle-eye"
-              :aria-label="showWorkerMTLSKey ? 'Hide' : 'Show'"
-              @click="showWorkerMTLSKey = !showWorkerMTLSKey"
-              :disabled="!isKeyringAvailable || saving"
-              tabindex="-1"
-            >
-              <template v-if="showWorkerMTLSKey">
-                <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
-                  <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
-                  <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
-                  <path d="M3 3l18 18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-                </svg>
-              </template>
-              <template v-else>
-                <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
-                  <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
-                  <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
-                </svg>
-              </template>
-            </button>
-          </div>
-        </div>
-
-        <div class="field">
-          <label for="relay_url">Relay URL</label>
-          <input
-            id="relay_url"
-            type="text"
-            v-model="settings.relay_url"
-            :disabled="saving"
-          />
-        </div>
-
-        <div class="field checkbox-field">
-          <label for="worker_enable_health_checks">Enable health checks</label>
-          <input
-            id="worker_enable_health_checks"
-            type="checkbox"
-            v-model="settings.worker_enable_health_checks"
-            :true-value="true"
-            :false-value="false"
-            :disabled="saving"
-          />
-        </div>
-      </section>
-
-      <section class="form-section">
-        <h2>App</h2>
-        <div class="field checkbox-field">
-          <label for="auto_start_on_login">Start on login</label>
-          <input
-            id="auto_start_on_login"
-            type="checkbox"
-            v-model="settings.auto_start_on_login"
-            :true-value="true"
-            :false-value="false"
-            :disabled="saving"
-          />
-          <span class="field-help"
-            >Launches InferMesh automatically when you sign in to this
-            computer.</span
-          >
-        </div>
-      </section>
-
-      <!-- Inline save error -->
-      <div v-if="saveError" class="save-error" role="alert">
-        {{ saveError }}
-      </div>
-
-      <!-- Auto-start warning (non-blocking; OS applied the setting or not) -->
-      <div v-if="autostartWarning" class="save-error" role="status">
-        {{ autostartWarning }}
-      </div>
-
-      <!-- Actions -->
-      <div class="form-actions">
+          Back
+        </button>
         <button
           type="submit"
           class="btn-primary"
@@ -607,14 +342,346 @@ onMounted(() => {
           </svg>
           <span>{{ saving ? 'Saving…' : 'Save' }}</span>
         </button>
-        <button
-          type="button"
-          class="btn-secondary"
-          @click="handleCancel"
-          :disabled="saving"
-        >
-          Cancel
-        </button>
+      </div>
+
+      <section class="form-section">
+        <h2>
+          <button
+            type="button"
+            class="section-toggle"
+            :aria-expanded="openSections.connection"
+            @click="openSections.connection = !openSections.connection"
+          >
+            <span class="chevron" aria-hidden="true">{{ openSections.connection ? '▾' : '▸' }}</span>
+            Connection
+          </button>
+        </h2>
+
+        <div class="section-body" v-show="openSections.connection">
+          <div class="field">
+            <label for="router_addr">Router address</label>
+            <input
+              id="router_addr"
+              type="text"
+              v-model="settings.router_addr"
+              :disabled="saving"
+            />
+          </div>
+
+          <div class="field checkbox-field">
+            <label for="dev_mode">Dev mode</label>
+            <input
+              id="dev_mode"
+              type="checkbox"
+              v-model="settings.dev_mode"
+              :true-value="true"
+              :false-value="false"
+              :disabled="saving"
+            />
+            <span class="field-help"
+              >Bypasses mDNS discovery; uses static router URL.</span
+            >
+          </div>
+
+          <p class="section-hint">mTLS options are hidden while dev mode is on.</p>
+
+          <div class="field">
+            <label for="router_apikey">Router API key</label>
+            <div class="input-group">
+              <input
+                id="router_apikey"
+                :type="showRouterApikey ? 'text' : 'password'"
+                v-model="routerApikey"
+                :disabled="!isKeyringAvailable || saving"
+                autocomplete="off"
+              />
+              <button
+                type="button"
+                class="toggle-eye"
+                :aria-label="showRouterApikey ? 'Hide' : 'Show'"
+                @click="showRouterApikey = !showRouterApikey"
+                :disabled="!isKeyringAvailable || saving"
+                tabindex="-1"
+              >
+                <template v-if="showRouterApikey">
+                  <!-- Eye off -->
+                  <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
+                    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
+                    <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
+                    <path d="M3 3l18 18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  </svg>
+                </template>
+                <template v-else>
+                  <!-- Eye on -->
+                  <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
+                    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
+                    <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
+                  </svg>
+                </template>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="form-section">
+        <h2>
+          <button
+            type="button"
+            class="section-toggle"
+            :aria-expanded="openSections.worker"
+            @click="openSections.worker = !openSections.worker"
+          >
+            <span class="chevron" aria-hidden="true">{{ openSections.worker ? '▾' : '▸' }}</span>
+            Worker
+          </button>
+        </h2>
+
+        <div class="section-body" v-show="openSections.worker">
+          <div class="field">
+            <label for="worker_backend">Backend</label>
+            <select
+              id="worker_backend"
+              v-model="settings.worker_backend"
+              :disabled="saving"
+            >
+              <option value="llama-cpp">llama-cpp</option>
+              <option value="ollama">ollama</option>
+              <option value="lmstudio">lmstudio</option>
+              <option value="vllm">vllm</option>
+              <option value="custom">custom</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label for="worker_model_path">Model path</label>
+            <input
+              id="worker_model_path"
+              type="text"
+              v-model="settings.worker_model_path"
+              :disabled="saving"
+            />
+          </div>
+
+          <div class="field">
+            <label for="worker_port">Port</label>
+            <input
+              id="worker_port"
+              type="number"
+              min="1"
+              max="65535"
+              v-model.number="settings.worker_port"
+              :disabled="saving"
+            />
+          </div>
+
+          <div class="field">
+            <label for="worker_addr">Worker address</label>
+            <input
+              id="worker_addr"
+              type="text"
+              v-model="settings.worker_addr"
+              :disabled="saving"
+            />
+          </div>
+
+          <div class="field">
+            <label for="worker_apikey">Worker API key</label>
+            <input
+              id="worker_apikey"
+              type="text"
+              v-model="settings.worker_apikey"
+              :disabled="saving"
+            />
+          </div>
+
+          <div
+            v-if="settings.worker_backend === 'custom'"
+            class="field"
+          >
+            <label for="worker_custom_auth">Custom auth header</label>
+            <div class="input-group">
+              <input
+                id="worker_custom_auth"
+                :type="showWorkerCustomAuth ? 'text' : 'password'"
+                v-model="workerCustomAuth"
+                :disabled="!isKeyringAvailable || saving"
+                autocomplete="off"
+              />
+              <button
+                type="button"
+                class="toggle-eye"
+                :aria-label="showWorkerCustomAuth ? 'Hide' : 'Show'"
+                @click="showWorkerCustomAuth = !showWorkerCustomAuth"
+                :disabled="!isKeyringAvailable || saving"
+                tabindex="-1"
+              >
+                <template v-if="showWorkerCustomAuth">
+                  <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
+                    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
+                    <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
+                    <path d="M3 3l18 18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  </svg>
+                </template>
+                <template v-else>
+                  <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
+                    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
+                    <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
+                  </svg>
+                </template>
+              </button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="relay_url">Relay URL</label>
+            <input
+              id="relay_url"
+              type="text"
+              v-model="settings.relay_url"
+              :disabled="saving"
+            />
+          </div>
+
+          <div class="field checkbox-field">
+            <label for="worker_enable_health_checks">Enable health checks</label>
+            <input
+              id="worker_enable_health_checks"
+              type="checkbox"
+              v-model="settings.worker_enable_health_checks"
+              :true-value="true"
+              :false-value="false"
+              :disabled="saving"
+            />
+          </div>
+        </div>
+      </section>
+
+      <section v-if="showMTLS" class="form-section">
+        <h2>
+          <button
+            type="button"
+            class="section-toggle"
+            :aria-expanded="openSections.security"
+            @click="openSections.security = !openSections.security"
+          >
+            <span class="chevron" aria-hidden="true">{{ openSections.security ? '▾' : '▸' }}</span>
+            Security (mTLS)
+          </button>
+        </h2>
+
+        <div class="section-body" v-show="openSections.security">
+          <div class="field">
+            <label for="worker_mtls_cert">mTLS certificate</label>
+            <div class="input-group">
+              <input
+                id="worker_mtls_cert"
+                :type="showWorkerMTLSCert ? 'text' : 'password'"
+                v-model="workerMTLSCert"
+                :disabled="!isKeyringAvailable || saving"
+                autocomplete="off"
+              />
+              <button
+                type="button"
+                class="toggle-eye"
+                :aria-label="showWorkerMTLSCert ? 'Hide' : 'Show'"
+                @click="showWorkerMTLSCert = !showWorkerMTLSCert"
+                :disabled="!isKeyringAvailable || saving"
+                tabindex="-1"
+              >
+                <template v-if="showWorkerMTLSCert">
+                  <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
+                    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
+                    <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
+                    <path d="M3 3l18 18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  </svg>
+                </template>
+                <template v-else>
+                  <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
+                    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
+                    <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
+                  </svg>
+                </template>
+              </button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="worker_mtls_key">mTLS key</label>
+            <div class="input-group">
+              <input
+                id="worker_mtls_key"
+                :type="showWorkerMTLSKey ? 'text' : 'password'"
+                v-model="workerMTLSKey"
+                :disabled="!isKeyringAvailable || saving"
+                autocomplete="off"
+              />
+              <button
+                type="button"
+                class="toggle-eye"
+                :aria-label="showWorkerMTLSKey ? 'Hide' : 'Show'"
+                @click="showWorkerMTLSKey = !showWorkerMTLSKey"
+                :disabled="!isKeyringAvailable || saving"
+                tabindex="-1"
+              >
+                <template v-if="showWorkerMTLSKey">
+                  <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
+                    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
+                    <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
+                    <path d="M3 3l18 18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  </svg>
+                </template>
+                <template v-else>
+                  <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
+                    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
+                    <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
+                  </svg>
+                </template>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="form-section">
+        <h2>
+          <button
+            type="button"
+            class="section-toggle"
+            :aria-expanded="openSections.app"
+            @click="openSections.app = !openSections.app"
+          >
+            <span class="chevron" aria-hidden="true">{{ openSections.app ? '▾' : '▸' }}</span>
+            App
+          </button>
+        </h2>
+        <div class="section-body" v-show="openSections.app">
+          <div class="field checkbox-field">
+            <label for="auto_start_on_login">Start on login</label>
+            <input
+              id="auto_start_on_login"
+              type="checkbox"
+              v-model="settings.auto_start_on_login"
+              :true-value="true"
+              :false-value="false"
+              :disabled="saving"
+            />
+            <span class="field-help"
+              >Launches InferMesh automatically when you sign in to this
+              computer.</span
+            >
+          </div>
+        </div>
+      </section>
+
+      <!-- Inline save error -->
+      <div v-if="saveError" class="save-error" role="alert">
+        {{ saveError }}
+      </div>
+
+      <!-- Auto-start warning (non-blocking; OS applied the setting or not) -->
+      <div v-if="autostartWarning" class="save-error" role="status">
+        {{ autostartWarning }}
       </div>
     </form>
   </div>
@@ -643,11 +710,46 @@ onMounted(() => {
 }
 
 .form-section h2 {
-  margin: 0 0 16px;
+  margin: 0;
   font-size: 15px;
   font-weight: 650;
   letter-spacing: -0.01em;
   color: var(--text);
+}
+
+.section-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.section-toggle:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 4px;
+  border-radius: 6px;
+}
+
+.chevron {
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.section-body {
+  margin-top: 16px;
+}
+
+.section-hint {
+  margin: -8px 0 14px;
+  font-size: 11.5px;
+  color: var(--text-faint);
 }
 
 .field {
@@ -847,10 +949,19 @@ onMounted(() => {
 }
 
 /* ----- Buttons -------------------------------------------------------------- */
-.form-actions {
+/* Sticky action bar: stays pinned to the top of the scroll container while
+   the form scrolls, so Back/Save never leave the viewport. Opaque --bg lets
+   section content scroll under it cleanly. */
+.sticky-actions {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+  padding: 12px 0;
+  background: var(--bg);              /* opaque: content scrolls under cleanly */
+  border-bottom: 1px solid var(--border);
 }
 
 .btn-primary {

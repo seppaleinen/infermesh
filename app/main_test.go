@@ -16,6 +16,8 @@ import (
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/pkg/router"
+	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 // pngMagic is the PNG file signature, per https://www.w3.org/TR/PNG/#5PNG-file-signature.
@@ -488,5 +490,71 @@ func TestSummarizePoolStatus(t *testing.T) {
 				t.Errorf("summarizePoolStatus = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// stubCloseToTrayWindow is a GUI-free stand-in for *application.WebviewWindow
+// implementing the closeToTrayWindow interface (issue #49). It records how
+// many times Hide was called and captures the registered hook + its event type
+// so tests can drive it without a live window.
+type stubCloseToTrayWindow struct {
+	hideCalls int
+	hookType  events.WindowEventType
+	hook      func(*application.WindowEvent)
+}
+
+func (s *stubCloseToTrayWindow) Hide() application.Window {
+	s.hideCalls++
+	return nil
+}
+
+func (s *stubCloseToTrayWindow) RegisterHook(eventType events.WindowEventType, callback func(*application.WindowEvent)) func() {
+	s.hookType = eventType
+	s.hook = callback
+	return func() {}
+}
+
+// TestRegisterCloseToTrayHidesAndCancels verifies the WindowClosing hook hides
+// the window and cancels the event on every invocation, so wails' default
+// close listeners (which destroy the window and make Show() a no-op) never
+// run. The multi-invocation cases assert idempotence: repeated red-X just
+// re-hides.
+func TestRegisterCloseToTrayHidesAndCancels(t *testing.T) {
+	cases := []struct {
+		name     string
+		invokes  int
+		wantHits int
+	}{
+		{"single red-X", 1, 1},
+		{"idempotent: repeated red-X just re-hides", 3, 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &stubCloseToTrayWindow{}
+			registerCloseToTray(stub)
+
+			for i := 0; i < tc.invokes; i++ {
+				evt := application.NewWindowEvent()
+				stub.hook(evt)
+				if !evt.IsCancelled() {
+					t.Fatalf("invocation %d: event not cancelled", i+1)
+				}
+			}
+			if stub.hideCalls != tc.wantHits {
+				t.Errorf("Hide calls: got %d want %d", stub.hideCalls, tc.wantHits)
+			}
+		})
+	}
+}
+
+// TestRegisterCloseToTrayHookEventType verifies the hook is registered for the
+// Common.WindowClosing event, which is the event macOS red-X, Windows WM_CLOSE
+// and Linux delete-event all funnel through (issue #49).
+func TestRegisterCloseToTrayHookEventType(t *testing.T) {
+	stub := &stubCloseToTrayWindow{}
+	registerCloseToTray(stub)
+
+	if stub.hookType != events.Common.WindowClosing {
+		t.Fatalf("hook event type: got %d want %d", stub.hookType, events.Common.WindowClosing)
 	}
 }

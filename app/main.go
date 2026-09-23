@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 //go:embed all:frontend/dist
@@ -31,6 +32,35 @@ func summarizePoolStatus(st SupervisorStatus) string {
 	default:
 		return "Stopped"
 	}
+}
+
+// closeToTrayWindow is the slice of *application.WebviewWindow that
+// registerCloseToTray needs. It exists so the hook wiring can be unit-tested
+// with a stub, without a live window (issue #49). It is NOT a Wails service
+// and must never be added to application.Options.Services.
+type closeToTrayWindow interface {
+	Hide() application.Window
+	RegisterHook(events.WindowEventType, func(*application.WindowEvent)) func()
+}
+
+// registerCloseToTray makes the red-X / OS close hide the window to the tray
+// instead of destroying it (issue #49).
+//
+// RegisterHook runs synchronously BEFORE the default WindowClosing listeners
+// (wails v3.0.0-beta.24 webview_window.go:366 marks the window destroyed +
+// closes it; after that Show() is a no-op and the tray can never re-show the
+// window). Calling e.Cancel() prevents those listeners from running, so the
+// window survives hidden and tray Open / click-to-toggle keep working.
+//
+// NOTE: any future "close really quits" path must call app.Quit(), never
+// win.Close() — a programmatic Close() also fires this hook. Quit and Cmd+Q
+// go through App.Quit(), not the WindowClosing event path, so OnShutdown
+// supervisor cleanup is unaffected.
+func registerCloseToTray(win closeToTrayWindow) {
+	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		win.Hide()
+		e.Cancel()
+	})
 }
 
 func main() {
@@ -104,6 +134,12 @@ func main() {
 		BackgroundColour: application.NewRGB(6, 7, 15),
 		URL:              "/",
 	})
+
+	// Red-X / OS close hides to tray instead of destroying the window
+	// (issue #49); see registerCloseToTray for the wails hook ordering
+	// details. Must be registered before app.Run so it precedes the default
+	// WindowClosing listeners.
+	registerCloseToTray(win)
 
 	// On shutdown, tear down any supervised children so the user's machine is
 	// left in the same state the app found it in. Uses the SAME supervisor

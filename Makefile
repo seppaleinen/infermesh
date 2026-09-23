@@ -38,9 +38,18 @@ export PATH := $(shell go env GOPATH)/bin:$(PATH)
 APP_NAME    ?= InferMesh
 APP_BIN_DIR ?= bin/app
 
-# Fail fast with an install hint when wails3 is missing.
+# Pinned by app/go.mod and AGENTS.md — keep in sync.
+WAILS3_VERSION ?= v3.0.0-beta.24
+
+# Ensure wails3 is on PATH; auto-install the pinned version when missing.
+# Fails ONLY when the install itself fails (no network, go install error).
 define require-wails3
-	@command -v wails3 >/dev/null 2>&1 || { echo "wails3 CLI not found (checked PATH, incl. $$(go env GOPATH)/bin)."; echo "Install pinned v3.0.0-beta.24:"; echo "  go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.24"; exit 1; }
+	@if ! command -v wails3 >/dev/null 2>&1; then \
+		echo "wails3 CLI not found (checked PATH, incl. $$(go env GOPATH)/bin)."; \
+		echo "Installing pinned $(WAILS3_VERSION)…"; \
+		go install github.com/wailsapp/wails/v3/cmd/wails3@$(WAILS3_VERSION) || { echo "wails3 auto-install FAILED"; exit 1; }; \
+	fi
+	@command -v wails3 >/dev/null 2>&1 || { echo "wails3 still not on PATH after install — is $$(go env GOPATH)/bin in PATH?"; exit 1; }
 endef
 
 build-app:
