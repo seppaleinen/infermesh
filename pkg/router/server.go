@@ -121,6 +121,11 @@ type Server struct {
 	hub     *WSHub
 	server  *http.Server
 	counter *CallCounter
+
+	// proxyTimeout bounds how long proxyStream waits for a worker response
+	// before emitting a 504. Defaults to 30s; tests override it to drive the
+	// 504 path without sleeping. See SetProxyTimeout.
+	proxyTimeout time.Duration
 }
 
 // ChatMessage represents a single message in a chat conversation.
@@ -191,13 +196,14 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 	hub := NewWSHub(reg, log)
 	hub.SetAPIKey(cfg.APIKey)
 	return &Server{
-		log:     log,
-		reg:     reg,
-		addr:    addr,
-		cache:   cache,
-		cfg:     cfg,
-		hub:     hub,
-		counter: NewCallCounter(10 * time.Minute),
+		log:          log,
+		reg:          reg,
+		addr:         addr,
+		cache:        cache,
+		cfg:          cfg,
+		hub:          hub,
+		counter:      NewCallCounter(10 * time.Minute),
+		proxyTimeout: 30 * time.Second,
 	}
 }
 
@@ -210,6 +216,22 @@ func (s *Server) SetRelayURL(url string) {
 // falls back to defaultMaxInFlight.
 func (s *Server) SetMaxInFlight(n int) {
 	s.hub.SetMaxInFlight(n)
+}
+
+// SetMaxConnections overrides the total worker WebSocket connection cap. A
+// value <= 0 falls back to defaultMaxConnections.
+func (s *Server) SetMaxConnections(n int) {
+	s.hub.SetMaxConnections(n)
+}
+
+// SetProxyTimeout overrides the per-dispatch timeout applied by proxyStream.
+// A value <= 0 falls back to 30s. Used by tests to drive the 504 path
+// without sleeping.
+func (s *Server) SetProxyTimeout(d time.Duration) {
+	if d <= 0 {
+		d = 30 * time.Second
+	}
+	s.proxyTimeout = d
 }
 
 // RunRelay maintains the outbound relay connection, dialing immediately and
@@ -811,9 +833,23 @@ func (s *Server) proxyCompletionStream(w http.ResponseWriter, r *http.Request, w
 
 // proxyStream relays an inference request to the worker via the transport
 // appropriate for it and streams the response back to the client as SSE.
+//
+// The dispatch is bounded by the per-request context plus proxyTimeout. Real
+// worker clients surface errTimeout on the errCh channel when the dispatch
+// context expires, so the 504 branch below handles the timeout and bumps the
+// per-worker 504 counter (issue #54). Matching on the sentinel rather than on
+// ctx.Err() is deliberate: a client may surface the timeout before the
+// server-side context has actually expired, in which case ctx.Err() would
+// still be nil and the 504 branch would be skipped. The ctx.Done() case is
+// intentionally absent for the same reason. Clients that never surface a
+// timeout error must close chunkCh themselves to terminate the stream.
 func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client WorkerClient, worker protocol.WorkerInfo, kind string, body []byte) {
-	// Apply context-based timeout (default 30s).
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	// Apply context-based timeout (default 30s, overridable via SetProxyTimeout).
+	timeout := s.proxyTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
 	chunks, errs := client.Stream(ctx, worker, kind, body)
@@ -860,8 +896,9 @@ func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client Work
 				if errors.As(err, &herr) {
 					s.log.Error("worker returned error", "worker", worker.ID, "status", herr.StatusCode, "body", herr.Body)
 					writeErrorResponse(w, herr.StatusCode, "worker error", "server_error", "worker_error")
-				} else if ctx.Err() == context.DeadlineExceeded {
-					s.log.Error("request timed out after retries", "worker", worker.ID, "timeout", "30s")
+				} else if errors.Is(err, errTimeout) {
+					s.log.Error("request timed out after retries", "worker", worker.ID, "timeout", timeout)
+					client.RecordTimeout(worker.ID)
 					writeErrorResponse(w, http.StatusGatewayTimeout, "request timeout", "server_error", "timeout_error")
 				} else {
 					s.log.Error("failed to connect to worker after retries", "error", err)
@@ -876,8 +913,6 @@ func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client Work
 					flusher.Flush()
 				}
 			}
-			return
-		case <-ctx.Done():
 			return
 		}
 	}

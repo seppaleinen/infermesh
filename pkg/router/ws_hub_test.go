@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http/httptest"
 	"os"
@@ -500,4 +501,164 @@ func TestWSHubQueueStats(t *testing.T) {
 // wsHubTestLogger returns a default test logger.
 func wsHubTestLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stdout, nil))
+}
+
+// TestWSHubConnectionCapEnforcesCap tests that the global WebSocket
+// connection cap is enforced: the (cap+1)th distinct worker is rejected
+// with a protocol error frame and its connection closed, while the first
+// `cap` workers are welcomed normally.
+func TestWSHubConnectionCapEnforcesCap(t *testing.T) {
+	hub, server := testWSHub(t)
+	hub.SetMaxConnections(2)
+
+	// First two distinct workers should be accepted.
+	for i := 0; i < 2; i++ {
+		w := dialFakeWorker(t, server.URL+"/v1/connect")
+		info := protocol.WorkerInfo{
+			ID: fmt.Sprintf("cap-worker-%d", i), Hostname: "h", IP: "127.0.0.1", Port: 8081,
+			Status: protocol.StatusAvailable, Version: "v1", Transport: protocol.TransportWS,
+		}
+		w.send(t, rawMsg(t, protocol.MsgRegister, protocol.RegisterPayload{Worker: info}))
+		welcome := w.recv(t, 3*time.Second)
+		if welcome.Type != protocol.MsgWelcome {
+			t.Fatalf("worker %d: expected welcome, got %s", i, welcome.Type)
+		}
+	}
+
+	// Third distinct worker must be rejected.
+	w := dialFakeWorker(t, server.URL+"/v1/connect")
+	info := protocol.WorkerInfo{
+		ID: "cap-worker-overflow", Hostname: "h", IP: "127.0.0.1", Port: 8081,
+		Status: protocol.StatusAvailable, Version: "v1", Transport: protocol.TransportWS,
+	}
+	w.send(t, rawMsg(t, protocol.MsgRegister, protocol.RegisterPayload{Worker: info}))
+
+	// Expect either a MsgError frame or a closed connection (read error).
+	_ = wsutil.SetReadDeadline(w.conn, time.Now().Add(3*time.Second))
+	var msg protocol.Message
+	err := wsutil.ReceiveJSON(w.conn, &msg)
+	if err == nil {
+		if msg.Type != protocol.MsgError {
+			t.Errorf("expected MsgError rejection frame, got %s", msg.Type)
+		}
+	} else {
+		// Connection closed without a frame is also an acceptable rejection.
+		t.Logf("rejected worker connection closed: %v", err)
+	}
+
+	// The hub must hold exactly `cap` connections.
+	hub.mu.RLock()
+	n := len(hub.conns)
+	hub.mu.RUnlock()
+	if n != 2 {
+		t.Errorf("expected 2 registered connections, got %d", n)
+	}
+}
+
+// TestWSHubConnectionCapAllowsSupersede tests that re-registering an
+// existing worker ID (same peer) is allowed even when the pool is at
+// capacity, because supersede is a 1:1 replacement, not a new connection.
+func TestWSHubConnectionCapAllowsSupersede(t *testing.T) {
+	hub, server := testWSHub(t)
+	hub.SetMaxConnections(1)
+
+	info := protocol.WorkerInfo{
+		ID: "sup-worker", Hostname: "h", IP: "127.0.0.1", Port: 8081,
+		Status: protocol.StatusAvailable, Version: "v1", Transport: protocol.TransportWS,
+	}
+
+	// First registration succeeds.
+	w1 := dialFakeWorker(t, server.URL+"/v1/connect")
+	w1.send(t, rawMsg(t, protocol.MsgRegister, protocol.RegisterPayload{Worker: info}))
+	if w1.recv(t, 3*time.Second).Type != protocol.MsgWelcome {
+		t.Fatal("first registration should be welcomed")
+	}
+
+	// Re-register the same ID from the same peer: supersede, must be allowed.
+	w2 := dialFakeWorker(t, server.URL+"/v1/connect")
+	w2.send(t, rawMsg(t, protocol.MsgRegister, protocol.RegisterPayload{Worker: info}))
+	if w2.recv(t, 3*time.Second).Type != protocol.MsgWelcome {
+		t.Fatal("supersede re-registration should be welcomed")
+	}
+
+	// A distinct worker ID must be rejected (pool at cap, supersede is 1:1).
+	w3 := dialFakeWorker(t, server.URL+"/v1/connect")
+	info2 := info
+	info2.ID = "other-worker"
+	w3.send(t, rawMsg(t, protocol.MsgRegister, protocol.RegisterPayload{Worker: info2}))
+	_ = wsutil.SetReadDeadline(w3.conn, time.Now().Add(3*time.Second))
+	var msg protocol.Message
+	if err := wsutil.ReceiveJSON(w3.conn, &msg); err == nil && msg.Type != protocol.MsgError {
+		t.Errorf("expected MsgError rejection for distinct worker at cap, got %s", msg.Type)
+	}
+}
+
+// TestWSHubDefaultConnectionCap verifies the default connection cap is seeded
+// at construction so the pool is bounded even without an explicit
+// --max-connections flag.
+func TestWSHubDefaultConnectionCap(t *testing.T) {
+	hub, _ := testWSHub(t)
+	if hub.maxConnections != defaultMaxConnections {
+		t.Errorf("expected default cap %d, got %d", defaultMaxConnections, hub.maxConnections)
+	}
+}
+
+// TestWSHubRecordTimeoutBumps504Counter verifies that recordTimeout (direct)
+// and recordRelayTimeout (relay) increment the per-worker 504 counters that
+// /v1/queue/stats surfaces. The counters are declared and read back by the
+// stats endpoint but were never incremented by any code path (issue #54).
+func TestWSHubRecordTimeoutBumps504Counter(t *testing.T) {
+	hub, server := testWSHub(t)
+	w := dialFakeWorker(t, server.URL+"/v1/connect")
+
+	info := protocol.WorkerInfo{
+		ID: "to-worker", Hostname: "h", IP: "127.0.0.1", Port: 8081,
+		Status: protocol.StatusAvailable, Version: "v1", Transport: protocol.TransportWS,
+	}
+	w.send(t, rawMsg(t, protocol.MsgRegister, protocol.RegisterPayload{Worker: info}))
+	_ = w.recv(t, 3*time.Second) // welcome
+
+	// Direct-connection 504 path.
+	hub.recordTimeout("to-worker")
+	// Relay-mode 504 path (worker has no direct connection in the map).
+	hub.recordRelayTimeout("relay-to-worker")
+
+	snap := hub.QueueStats()
+	if len(snap.Workers) != 1 {
+		t.Fatalf("expected 1 worker in stats, got %d", len(snap.Workers))
+	}
+	if snap.Workers[0].Rejected504Total != 1 {
+		t.Errorf("expected direct rejected_504=1, got %d", snap.Workers[0].Rejected504Total)
+	}
+	if snap.Pool.TotalRejected504 != 2 {
+		t.Errorf("expected pool rejected_504=2 (1 direct + 1 relay), got %d", snap.Pool.TotalRejected504)
+	}
+}
+
+// TestWorkerClientRecordTimeout verifies that both WS client flavors forward
+// RecordTimeout to the hub's per-worker 504 counter.
+func TestWorkerClientRecordTimeout(t *testing.T) {
+	hub, server := testWSHub(t)
+	w := dialFakeWorker(t, server.URL+"/v1/connect")
+
+	info := protocol.WorkerInfo{
+		ID: "rt-worker", Hostname: "h", IP: "127.0.0.1", Port: 8081,
+		Status: protocol.StatusAvailable, Version: "v1", Transport: protocol.TransportWS,
+	}
+	w.send(t, rawMsg(t, protocol.MsgRegister, protocol.RegisterPayload{Worker: info}))
+	_ = w.recv(t, 3*time.Second) // welcome
+
+	direct := hub.Client("rt-worker")
+	if direct == nil {
+		t.Fatal("hub.Client returned nil")
+	}
+	direct.RecordTimeout("rt-worker")
+
+	relay := newRelayWorkerClient(hub, wsHubTestLogger())
+	relay.RecordTimeout("relay-rt-worker")
+
+	snap := hub.QueueStats()
+	if snap.Pool.TotalRejected504 != 2 {
+		t.Errorf("expected pool rejected_504=2, got %d", snap.Pool.TotalRejected504)
+	}
 }

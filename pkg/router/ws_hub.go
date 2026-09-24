@@ -56,8 +56,12 @@ type WSHub struct {
 	// relayInFlight tracks per-worker in-flight call counts across relay
 	// shares (the relay connection is shared, so counts live on the hub).
 	// relayRejected429 tracks per-worker 429 rejections in relay mode.
-	relayInFlight    map[string]int64
-	relayRejected429 map[string]int64
+	// relayRejected504 tracks per-worker 504 (gateway timeout) rejections
+	// in relay mode; surfaced by /v1/queue/stats alongside the direct-
+	// connection wsConnection.rejected504 counter.
+	relayInFlight     map[string]int64
+	relayRejected429  map[string]int64
+	relayRejected504  map[string]int64
 
 	// qm holds pool-level queue-wait observability (reservoir percentiles).
 	qm *queueMetrics
@@ -69,6 +73,18 @@ type WSHub struct {
 	// maxInFlight caps concurrent in-flight calls per worker (streaming +
 	// non-streaming + model-load). 0 means defaultMaxInFlight.
 	maxInFlight int
+
+	// maxConnections caps the total number of concurrent worker WebSocket
+	// connections (semaphore). 0 means defaultMaxConnections. Excess
+	// handshakes are rejected with a 503 before any per-connection state is
+	// allocated, so a connection flood cannot exhaust memory or file
+	// descriptors (issue #54).
+	maxConnections int
+
+	// connSem is the buffered channel acting as the connection semaphore.
+	// nil until SetMaxConnections is called (or until the first handshake,
+	// which lazily initialises it from the default).
+	connSem chan struct{}
 }
 
 // defaultMaxInFlight is the per-worker concurrent-call cap applied when the
@@ -77,9 +93,56 @@ type WSHub struct {
 // in-flight streams stall) without this cap.
 const defaultMaxInFlight = 4
 
+// defaultMaxConnections is the total worker WebSocket connection cap applied
+// when the router is started without --max-connections. It bounds the number
+// of concurrently accepted handshakes so a connection flood cannot exhaust
+// memory, file descriptors or goroutines (issue #54).
+const defaultMaxConnections = 256
+
+// connAcquireTimeout bounds how long handleConn waits for a connection slot
+// before rejecting the handshake. Kept short so a slow accept queue does not
+// hold the HTTP server's goroutine pool hostage.
+const connAcquireTimeout = 2 * time.Second
+
 // errRateLimited is returned when a worker is at its MaxInFlight cap. It is
 // surfaced to HTTP clients as an OpenAI-shaped 429 with Retry-After.
 var errRateLimited = errors.New("rate limited: max in-flight calls reached for this worker")
+
+// errConnLimit is returned when the router's global connection cap is reached.
+// It is surfaced to the dialing worker as a protocol-level error frame so the
+// worker can back off and retry (issue #54).
+var errConnLimit = errors.New("router at max connections; try again later")
+
+// acquireConn acquires a connection slot, returning the slot handle that
+// identifies it for release. It returns nil when the cap is disabled (no
+// semaphore was ever created) — callers that want to release must treat
+// nil as a no-op.
+func (h *WSHub) acquireConn(ctx context.Context) (chan struct{}, error) {
+	sem := h.connSemFor()
+	select {
+	case sem <- struct{}{}:
+		return sem, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		return nil, errConnLimit
+	}
+}
+
+// releaseSlot releases this connection's semaphore slot exactly once. It is
+// a no-op when the cap is disabled (slot is nil).
+func (c *wsConnection) releaseSlot() {
+	c.slotReleased.Do(func() {
+		if c.slot == nil {
+			return
+		}
+		select {
+		case <-c.slot:
+		default:
+		}
+		c.slot = nil
+	})
+}
 
 // NewWSHub creates a hub bridging WebSocket worker connections into the
 // registry. reg may be nil (events are then dropped).
@@ -93,10 +156,12 @@ func NewWSHub(reg registry.Registry, log *slog.Logger) *WSHub {
 		relayPending:     make(map[string]*pendingCall),
 		relayInFlight:    make(map[string]int64),
 		relayRejected429: make(map[string]int64),
+		relayRejected504: make(map[string]int64),
 		qm:               newQueueMetrics(),
 		writeTimeout:     wsutil.WriteTimeout,
 		sendQueueSize:    wsutil.SendQueueSize,
 		maxInFlight:      defaultMaxInFlight,
+		maxConnections:   defaultMaxConnections,
 	}
 }
 
@@ -116,6 +181,31 @@ func (h *WSHub) maxInFlightFor() int {
 		return defaultMaxInFlight
 	}
 	return h.maxInFlight
+}
+
+// SetMaxConnections overrides the total worker WebSocket connection cap. A
+// value <= 0 falls back to defaultMaxConnections. The semaphore is created
+// lazily on first use so NewWSHub stays allocation-free when the cap is never
+// overridden.
+func (h *WSHub) SetMaxConnections(n int) {
+	if n <= 0 {
+		n = defaultMaxConnections
+	}
+	h.maxConnections = n
+	h.connSem = make(chan struct{}, n)
+}
+
+// connSemFor returns the connection semaphore, creating it from the default
+// cap on first use so callers never observe a nil channel. Safe to call
+// concurrently.
+func (h *WSHub) connSemFor() chan struct{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.connSem == nil {
+		h.maxConnections = defaultMaxConnections
+		h.connSem = make(chan struct{}, defaultMaxConnections)
+	}
+	return h.connSem
 }
 
 // workerInFlight returns the current in-flight count for worker id. The
@@ -362,11 +452,33 @@ func (h *WSHub) recordRejection(workerID string, code int) {
 }
 
 // recordRejectionLocked bumps the per-worker 429 counter for a direct-
-// connection worker. The caller MUST hold c.pendingMu (used by addPending
-// to avoid a re-entrant lock deadlock).
-func (h *WSHub) recordRejectionLocked(c *wsConnection) {
-	c.rejected429++
-}
+	// connection worker. The caller MUST hold c.pendingMu (used by addPending
+	// to avoid a re-entrant lock deadlock).
+	func (h *WSHub) recordRejectionLocked(c *wsConnection) {
+		c.rejected429++
+	}
+
+	// recordTimeout bumps the per-worker 504 counter for a direct-connection
+	// worker. Safe to call from outside any pendingMu lock.
+	func (h *WSHub) recordTimeout(workerID string) {
+		h.mu.RLock()
+		c, ok := h.conns[workerID]
+		h.mu.RUnlock()
+		if !ok {
+			return
+		}
+		c.pendingMu.Lock()
+		c.rejected504++
+		c.pendingMu.Unlock()
+	}
+
+	// recordRelayTimeout bumps the per-worker 504 counter for a relay-mode
+	// worker. Safe to call concurrently.
+	func (h *WSHub) recordRelayTimeout(workerID string) {
+		h.relayPendingMu.Lock()
+		defer h.relayPendingMu.Unlock()
+		h.relayRejected504[workerID]++
+	}
 
 // recordWait records a queue-wait sample into the pool reservoir for the
 // worker whose call just completed. Called from pendingCall.finish.
@@ -407,6 +519,18 @@ func (h *WSHub) relayRejected429Total() int64 {
 	defer h.relayPendingMu.Unlock()
 	var total int64
 	for _, v := range h.relayRejected429 {
+		total += v
+	}
+	return total
+}
+
+// relayRejected504Total returns the sum of per-worker 504 (gateway timeout)
+// counts across all relay-mode workers.
+func (h *WSHub) relayRejected504Total() int64 {
+	h.relayPendingMu.Lock()
+	defer h.relayPendingMu.Unlock()
+	var total int64
+	for _, v := range h.relayRejected504 {
 		total += v
 	}
 	return total
@@ -472,6 +596,7 @@ func (h *WSHub) QueueStats() QueueStatsResponse {
 		totalInFlight += inflight
 	}
 	totalRejected429 += h.relayRejected429Total()
+	totalRejected504 += h.relayRejected504Total()
 
 	p50, p95, p99 := h.queuePercentiles()
 	return QueueStatsResponse{
@@ -556,27 +681,48 @@ func (h *WSHub) Client(id string) WorkerClient {
 // handleConn is invoked once per upgraded connection. The first frame must be
 // a register message; afterwards the worker's heartbeats, capabilities pushes
 // and inference responses are dispatched until the connection dies.
+//
+// The global connection semaphore bounds the number of *registered* worker
+// connections so a connection flood cannot exhaust memory, file descriptors
+// or goroutines (issue #54). Validation (register read, API key, peer IP,
+// collision check) happens before the slot is acquired, because a supersede
+// (same worker ID, same peer) must release the incumbent's slot before it can
+// acquire its own — otherwise a 1:1 replacement would deadlock at capacity.
+//
+// The acquired slot is stored on the connection (conn.slot) and released
+// exactly once: eagerly by a superseding connection (so a 1:1 replacement
+// never holds the pool at capacity) or by this connection's own shutdown.
 func (h *WSHub) handleConn(ws *websocket.Conn) {
+	// --- Validation (no slot held) -------------------------------------
+	// Cheap, bounded work: one register read + auth checks. A flood of
+	// malformed registrations is bounded by the HTTP server's own goroutine
+	// pool and the 64 MiB frame cap; it never spawns reader/writer loops or
+	// grows the connection map.
+
 	var msg protocol.Message
 	if err := wsutil.ReceiveJSON(ws, &msg); err != nil {
 		h.log.Warn("websocket register read failed", "error", err)
+		_ = ws.Close()
 		return
 	}
 	if msg.Type != protocol.MsgRegister {
 		h.log.Warn("first websocket message is not a register", "type", msg.Type)
 		_ = sendErrorRaw(ws, "first message must be register")
+		_ = ws.Close()
 		return
 	}
 	var reg protocol.RegisterPayload
 	if err := msg.DecodePayload(&reg); err != nil {
 		h.log.Warn("bad register payload", "error", err)
 		_ = sendErrorRaw(ws, "bad register payload")
+		_ = ws.Close()
 		return
 	}
 	worker := reg.Worker
 	if worker.ID == "" {
 		h.log.Warn("register without worker id")
 		_ = sendErrorRaw(ws, "register requires worker id")
+		_ = ws.Close()
 		return
 	}
 
@@ -584,6 +730,7 @@ func (h *WSHub) handleConn(ws *websocket.Conn) {
 	if h.apiKey != "" && worker.APIKey != h.apiKey {
 		h.log.Warn("invalid API key for websocket registration", "worker", worker.ID)
 		_ = sendErrorRaw(ws, "invalid or missing API key")
+		_ = ws.Close()
 		return
 	}
 
@@ -611,6 +758,7 @@ func (h *WSHub) handleConn(ws *websocket.Conn) {
 	if ip == nil || ip.To4() == nil {
 		h.log.Warn("unable to determine routable worker IPv4 from websocket peer", "peer", req.RemoteAddr)
 		_ = sendErrorRaw(ws, "unable to determine routable worker IPv4 from peer address")
+		_ = ws.Close()
 		return
 	}
 	peerIP := ip.String()
@@ -622,6 +770,7 @@ func (h *WSHub) handleConn(ws *websocket.Conn) {
 			h.log.Warn("rejected websocket registration: worker ID already claimed by different peer",
 				"id", worker.ID, "existing_ip", existing.IP, "peer_ip", peerIP)
 			_ = sendErrorRaw(ws, "worker ID already registered by another peer")
+			_ = ws.Close()
 			return
 		}
 		// Same peer IP: allow re-registration (legitimate reconnect/restart).
@@ -635,6 +784,32 @@ func (h *WSHub) handleConn(ws *websocket.Conn) {
 		worker.Status = protocol.StatusAvailable
 	}
 
+	// --- Slot acquisition ----------------------------------------------
+	// One active connection per worker ID: supersede existing connection
+	// (only reachable for same peer since different peers are rejected above).
+	h.mu.Lock()
+	if old, ok := h.conns[worker.ID]; ok {
+		h.log.Info("superseding existing websocket connection (same peer)", "worker", worker.ID)
+		// Release the incumbent's slot BEFORE acquiring a new one so a 1:1
+		// replacement never holds the pool at capacity.
+		old.releaseSlot()
+		old.enqueueClose("superseded")
+	}
+	h.mu.Unlock()
+
+	// Acquire a slot. The upgrade has already happened, so the socket is
+	// ours; if we cannot get a slot we close it cleanly rather than leaking
+	// the accepted socket.
+	ctx, cancel := context.WithTimeout(context.Background(), connAcquireTimeout)
+	slot, err := h.acquireConn(ctx)
+	cancel()
+	if err != nil {
+		h.log.Warn("rejected websocket connection: at max connections", "error", err)
+		_ = sendErrorRaw(ws, errConnLimit.Error())
+		_ = ws.Close()
+		return
+	}
+
 	conn := &wsConnection{
 		hub:     h,
 		id:      worker.ID,
@@ -643,15 +818,10 @@ func (h *WSHub) handleConn(ws *websocket.Conn) {
 		sendCh:  make(chan []byte, h.sendQueueSize),
 		doneCh:  make(chan struct{}),
 		pending: make(map[string]*pendingCall),
+		slot:    slot,
 	}
 
-	// One active connection per worker ID: supersede existing connection
-	// (only reachable for same peer since different peers are rejected above).
 	h.mu.Lock()
-	if old, ok := h.conns[worker.ID]; ok {
-		h.log.Info("superseding existing websocket connection (same peer)", "worker", worker.ID)
-		old.enqueueClose("superseded")
-	}
 	h.conns[worker.ID] = conn
 	h.mu.Unlock()
 
@@ -664,6 +834,11 @@ func (h *WSHub) handleConn(ws *websocket.Conn) {
 	})
 	conn.enqueue(welcome)
 	h.log.Info("websocket worker registered", "worker", worker.ID, "ip", worker.IP, "port", worker.Port)
+
+	// Release the slot when this connection dies. readerLoop blocks until the
+	// connection ends, so the deferred release runs after shutdown() has
+	// already removed the connection from the map.
+	defer conn.releaseSlot()
 
 	// Block until the connection ends; the HTTP server goroutine stays
 	// parked here for the life of the connection.
@@ -832,6 +1007,14 @@ type wsConnection struct {
 	rejected504 int64
 
 	closeOnce sync.Once
+
+	// slot is this connection's semaphore slot, acquired by handleConn
+	// before any per-connection state is allocated. It is released exactly
+	// once: eagerly by the superseding connection (so a 1:1 replacement
+	// never holds the pool at capacity) or by this connection's own shutdown.
+	// Nil when the cap is disabled (no semaphore was ever created).
+	slot         chan struct{}
+	slotReleased sync.Once
 }
 
 // queueDepthSnapshot returns the current queue depth.
@@ -1387,6 +1570,12 @@ func (c *wsWorkerClient) Close() error {
 	return nil
 }
 
+// RecordTimeout bumps the per-worker 504 counter for this direct-connection
+// worker, surfaced by /v1/queue/stats.
+func (c *wsWorkerClient) RecordTimeout(workerID string) {
+	c.conn.hub.recordTimeout(workerID)
+}
+
 // awaitResponse reads the single correlated response of a call.
 func awaitResponse(ctx context.Context, respCh chan protocol.Message, errCh chan error) ([]byte, error) {
 	for {
@@ -1845,3 +2034,9 @@ func (c *relayWorkerClient) Capabilities(ctx context.Context, worker protocol.Wo
 // Close is a no-op for relay workers; the shared relay connection
 // stays open.
 func (c *relayWorkerClient) Close() error { return nil }
+
+// RecordTimeout bumps the per-worker 504 counter for this relay-mode
+// worker, surfaced by /v1/queue/stats.
+func (c *relayWorkerClient) RecordTimeout(workerID string) {
+	c.hub.recordRelayTimeout(workerID)
+}

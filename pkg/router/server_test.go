@@ -1719,3 +1719,114 @@ func TestPopularModelsMultipleWorkers(t *testing.T) {
 		t.Errorf("llama-3-8b call count: expected 1, got %d", resp.Models[0].CallCount)
 	}
 }
+
+// TestChatCompletionsTimeoutRecords504 verifies that when proxyStream's
+// per-dispatch timeout expires it emits a 504 and forwards it to the worker's
+// RecordTimeout hook so /v1/queue/stats surfaces a non-zero
+// rejected_504_total. The 504 counter was declared and read back by the stats
+// endpoint but never incremented by any code path (issue #54).
+func TestChatCompletionsTimeoutRecords504(t *testing.T) {
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+
+	hub := NewWSHub(tr.reg, testLogger())
+	hub.SetMaxInFlight(10)
+	hub.Start(context.Background())
+	wsServer := httptest.NewServer(hub.Handler())
+	defer wsServer.Close()
+
+	srv := tr.Server()
+	srv.hub = hub
+	srv.SetProxyTimeout(200 * time.Millisecond)
+
+	info := protocol.WorkerInfo{
+		ID: "to-worker", Hostname: "to-worker", IP: "127.0.0.1", Port: 8081,
+		Status: protocol.StatusAvailable, Version: "v1", Transport: protocol.TransportWS,
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "to-model", Quantization: "Q4_K_M", Loaded: true},
+			},
+		},
+	}
+	// Register the worker in the hub so recordTimeout has a connection to
+	// bump the 504 counter against.
+	w := dialFakeWorker(t, wsServer.URL+"/v1/connect")
+	w.send(t, rawMsg(t, protocol.MsgRegister, protocol.RegisterPayload{Worker: info}))
+	_ = w.recv(t, 3*time.Second) // welcome
+
+	// A fake client that never produces a chunk and surfaces a timeout error
+	// once the context is cancelled — this is exactly the path a stalled
+	// worker takes to reach the 504 branch in proxyStream. Its RecordTimeout
+	// forwards to the hub's per-worker 504 counter.
+	fc := &timeoutClient{workerID: info.ID, hub: hub}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	wrec := httptest.NewRecorder()
+	srv.proxyStream(wrec, req, fc, info, "chat", []byte(`{"model":"to-model","messages":[]}`))
+
+	if wrec.Code != http.StatusGatewayTimeout {
+		t.Errorf("expected status %d, got %d, body: %s", http.StatusGatewayTimeout, wrec.Code, wrec.Body.String())
+	}
+
+	snap := hub.QueueStats()
+	if len(snap.Workers) != 1 {
+		t.Fatalf("expected 1 worker in stats, got %d", len(snap.Workers))
+	}
+	if snap.Workers[0].Rejected504Total != 1 {
+		t.Errorf("expected rejected_504_total=1, got %d", snap.Workers[0].Rejected504Total)
+	}
+	if snap.Pool.TotalRejected504 != 1 {
+		t.Errorf("expected pool rejected_504=1, got %d", snap.Pool.TotalRejected504)
+	}
+}
+
+// timeoutClient implements WorkerClient: it never streams a chunk and reports
+// a deadline-exceeded error as soon as its context is cancelled, mimicking a
+// worker whose backend stalls past the dispatch timeout. Its RecordTimeout
+// forwards to the hub's per-worker 504 counter so the stats endpoint
+// reflects the timeout.
+type timeoutClient struct {
+	workerID string
+	hub      *WSHub
+}
+
+func (c *timeoutClient) Transport() string { return "http" }
+
+func (c *timeoutClient) Stream(ctx context.Context, worker protocol.WorkerInfo, kind string, body []byte) (<-chan StreamEvent, <-chan error) {
+	chunkCh := make(chan StreamEvent)
+	errCh := make(chan error, 1)
+	go func() {
+		// Never produces a chunk; fires errTimeout on a short timer so
+		// proxyStream's errCh case fires with errors.Is(err, errTimeout)
+		// true (the 504 path), before the dispatch context expires.
+		select {
+		case <-ctx.Done():
+			errCh <- fmt.Errorf("%w: %w", errTimeout, ctx.Err())
+		case <-time.After(50 * time.Millisecond):
+			errCh <- errTimeout
+		}
+	}()
+	return chunkCh, errCh
+}
+
+func (c *timeoutClient) Complete(ctx context.Context, worker protocol.WorkerInfo, kind string, body []byte) ([]byte, error) {
+	return nil, context.DeadlineExceeded
+}
+
+func (c *timeoutClient) LoadModel(ctx context.Context, worker protocol.WorkerInfo, model string) (bool, error) {
+	return false, nil
+}
+
+func (c *timeoutClient) Capabilities(ctx context.Context, worker protocol.WorkerInfo) (protocol.Capabilities, error) {
+	return protocol.Capabilities{}, nil
+}
+
+func (c *timeoutClient) Close() error { return nil }
+
+func (c *timeoutClient) RecordTimeout(workerID string) {
+	if c.hub != nil {
+		c.hub.recordTimeout(workerID)
+	}
+}

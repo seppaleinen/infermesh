@@ -18,15 +18,16 @@ import (
 
 // RouterFlags holds the parsed flags for the router binary.
 type RouterFlags struct {
-	DevMode     bool
-	ProdMode    bool
-	MTLSCert    string
-	MTLSKey     string
-	CertDir     string
-	APIKey      string
-	Addr        string
-	RelayURL    string
-	MaxInFlight int
+	DevMode        bool
+	ProdMode       bool
+	MTLSCert       string
+	MTLSKey        string
+	CertDir        string
+	APIKey         string
+	Addr           string
+	RelayURL       string
+	MaxInFlight    int
+	MaxConnections int
 }
 
 // parseRouterFlags parses args into RouterFlags. It uses ContinueOnError so
@@ -50,6 +51,7 @@ func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
 	fs.StringVar(&f.Addr, "addr", ":8080", "listen address (host:port) for the router HTTP server")
 	fs.StringVar(&f.RelayURL, "relay-url", "", "relay URL for outbound-only WebSocket connectivity (dev mode only)")
 	fs.IntVar(&f.MaxInFlight, "max-in-flight", 0, "max concurrent in-flight calls per worker (0 = default of 4); rejects excess with HTTP 429")
+	fs.IntVar(&f.MaxConnections, "max-connections", 0, "max concurrent worker WebSocket connections (0 = default of 256); rejects excess with a protocol error frame")
 }
 
 func main() {
@@ -149,6 +151,9 @@ func runRouter(args []string) int {
 	srv := router.NewServer(reg, log, f.Addr, secCfg)
 	if f.MaxInFlight > 0 {
 		srv.SetMaxInFlight(f.MaxInFlight)
+	}
+	if f.MaxConnections > 0 {
+		srv.SetMaxConnections(f.MaxConnections)
 	}
 	if f.RelayURL != "" {
 		srv.SetRelayURL(f.RelayURL)

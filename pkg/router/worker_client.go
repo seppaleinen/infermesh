@@ -23,6 +23,14 @@ type StreamEvent struct {
 	Done bool
 }
 
+// errTimeout is the sentinel error surfaced by worker clients when the
+// dispatch context expires. proxyStream matches it to emit a 504 and bump
+// the per-worker 504 counter (issue #54). Matching on the sentinel rather
+// than on ctx.Err() is deliberate: a client may surface the timeout before
+// the server-side context has actually expired, in which case ctx.Err()
+// would still be nil and the 504 branch would be skipped.
+var errTimeout = errors.New("request timed out after retries")
+
 // WorkerClient is the transport-agnostic way the router talks to a worker
 // for inference, model loading and capability fetching.
 //
@@ -43,6 +51,12 @@ type WorkerClient interface {
 	Capabilities(ctx context.Context, worker protocol.WorkerInfo) (protocol.Capabilities, error)
 	// Close releases the client (no-op for HTTP clients).
 	Close() error
+
+	// RecordTimeout records a 504 (gateway timeout) emitted for a dispatch on
+	// this transport. HTTP workers have no hub-side pending map, so the
+	// default implementation is a no-op; WS and relay workers forward to the
+	// hub's per-worker 504 counter surfaced by /v1/queue/stats.
+	RecordTimeout(workerID string)
 }
 
 // WorkerHTTPError carries a non-200 response from a worker HTTP endpoint so
@@ -132,7 +146,7 @@ func (c *httpWorkerClient) Stream(ctx context.Context, worker protocol.WorkerInf
 		resp, err := postWithRetry(ctx, client, endpoint(worker, kind), body)
 		if err != nil {
 			if ctx.Err() == context.DeadlineExceeded {
-				errCh <- fmt.Errorf("request timed out after retries: %w", ctx.Err())
+				errCh <- fmt.Errorf("%w: %w", errTimeout, ctx.Err())
 			} else {
 				errCh <- fmt.Errorf("failed to connect to worker after retries: %w", err)
 			}
@@ -229,3 +243,8 @@ func (c *httpWorkerClient) Capabilities(ctx context.Context, worker protocol.Wor
 }
 
 func (c *httpWorkerClient) Close() error { return nil }
+
+// RecordTimeout is a no-op for HTTP workers: the dial-back path has no
+// hub-side pending map to record against, and the 504 is already surfaced
+// directly from proxyStream.
+func (c *httpWorkerClient) RecordTimeout(workerID string) {}
