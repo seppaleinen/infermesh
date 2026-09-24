@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -586,6 +587,49 @@ func (h *WSHub) handleConn(ws *websocket.Conn) {
 		return
 	}
 
+	// Derive trusted peer IP from the WebSocket connection (authoritative).
+	// This replaces any client-provided IP to prevent spoofing.
+	//
+	// NOTE: ws.RemoteAddr() returns the WebSocket Origin URL on server-side
+	// connections (see x/net/websocket), NOT the TCP peer address. Using it
+	// here would dereference a nil Origin and panic. The underlying HTTP
+	// request's RemoteAddr is the real TCP peer — ws.Request() is non-nil
+	// for server-side connections.
+	req := ws.Request()
+	host, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil {
+		host = req.RemoteAddr
+	}
+	if host == "localhost" {
+		host = "127.0.0.1"
+	}
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsLoopback() {
+		// Normalize any loopback peer to canonical routable IPv4 loopback.
+		ip = net.IPv4(127, 0, 0, 1)
+	}
+	if ip == nil || ip.To4() == nil {
+		h.log.Warn("unable to determine routable worker IPv4 from websocket peer", "peer", req.RemoteAddr)
+		_ = sendErrorRaw(ws, "unable to determine routable worker IPv4 from peer address")
+		return
+	}
+	peerIP := ip.String()
+
+	// Collision check: reject if this ID is already registered by a different
+	// peer. This prevents worker ID spoofing / registry poisoning.
+	if existing, ok := h.reg.Get(worker.ID); ok {
+		if existing.IP != peerIP {
+			h.log.Warn("rejected websocket registration: worker ID already claimed by different peer",
+				"id", worker.ID, "existing_ip", existing.IP, "peer_ip", peerIP)
+			_ = sendErrorRaw(ws, "worker ID already registered by another peer")
+			return
+		}
+		// Same peer IP: allow re-registration (legitimate reconnect/restart).
+		h.log.Info("websocket worker re-registered from same peer", "id", worker.ID, "peer_ip", peerIP)
+	}
+
+	// Override worker IP with the trusted peer identity.
+	worker.IP = peerIP
 	worker.Transport = protocol.TransportWS
 	if worker.Status == "" {
 		worker.Status = protocol.StatusAvailable
@@ -601,11 +645,11 @@ func (h *WSHub) handleConn(ws *websocket.Conn) {
 		pending: make(map[string]*pendingCall),
 	}
 
-	// One active connection per worker ID: a newer connection supersedes the
-	// old one, which is politely asked to close.
+	// One active connection per worker ID: supersede existing connection
+	// (only reachable for same peer since different peers are rejected above).
 	h.mu.Lock()
 	if old, ok := h.conns[worker.ID]; ok {
-		h.log.Info("superseding existing websocket connection", "worker", worker.ID)
+		h.log.Info("superseding existing websocket connection (same peer)", "worker", worker.ID)
 		old.enqueueClose("superseded")
 	}
 	h.conns[worker.ID] = conn

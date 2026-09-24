@@ -611,6 +611,7 @@ func (s *Server) handleDevRegister(w http.ResponseWriter, r *http.Request) {
 
 	// Dev mode: derive the routable IP from the peer address (authoritative),
 	// ignoring any client-provided value.
+	var peerIP string
 	if security.IsDevMode(s.cfg) {
 		host, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil {
@@ -632,6 +633,7 @@ func (s *Server) handleDevRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		providedIP := worker.IP
 		worker.IP = ip.String()
+		peerIP = worker.IP // trusted peer identity for collision check
 		if providedIP != "" && providedIP != worker.IP {
 			s.log.Info("dev worker registered", "id", worker.ID, "ip", worker.IP, "port", worker.Port, "provided_ip", providedIP)
 		} else {
@@ -643,6 +645,23 @@ func (s *Server) handleDevRegister(w http.ResponseWriter, r *http.Request) {
 			writeErrorResponse(w, http.StatusForbidden, "non-loopback IP not allowed", "authentication_error", "ip_validation_error")
 			return
 		}
+		peerIP = worker.IP // in prod mode the body-provided IP is authoritative (loopback only)
+	}
+
+	// Collision check: reject registration if this ID is already claimed
+	// by a worker from a different peer IP. This prevents worker ID spoofing
+	// / registry poisoning: a malicious worker cannot overwrite another
+	// worker's registry entry by registering with the victim's ID.
+	if existing, ok := s.reg.Get(worker.ID); ok {
+		if existing.IP != peerIP {
+			s.log.Warn("rejected duplicate worker ID from different peer",
+				"id", worker.ID, "existing_ip", existing.IP, "peer_ip", peerIP)
+			writeErrorResponse(w, http.StatusConflict, "worker ID already registered by another peer",
+				"authentication_error", "duplicate_id")
+			return
+		}
+		// Same peer IP: allow re-registration (legitimate reconnect/restart)
+		s.log.Info("worker re-registered from same peer", "id", worker.ID, "peer_ip", peerIP)
 	}
 
 	// Force status to available for dev mode
