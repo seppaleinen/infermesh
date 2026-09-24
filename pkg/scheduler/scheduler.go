@@ -74,33 +74,47 @@ type WeightedScorer struct {
 	LatencyWeight    float64 // weight for latency (inverted)
 	// unavailableTTL is how long since last heartbeat before worker is unavailable
 	unavailableTTL time.Duration
+
+	// maxQueueDepth normalizes the queue-depth term. A worker with
+	// QueueDepth >= maxQueueDepth scores 0.0 for the queue component.
+	// Default 10. Configurable via --scorer-max-queue-depth.
+	maxQueueDepth int
 }
 
 // NewWeightedScorer creates a new WeightedScorer with default weights.
-// Default weights: QuantMatch=0.40, VRAMFree=0.25, GPUUtil=0.15, QueueDepth=0.10, Latency=0.10
-func NewWeightedScorer() *WeightedScorer {
-	return &WeightedScorer{
-		QuantMatchWeight: 0.40,
-		VRAMFreeWeight:   0.25,
-		GPUUtilWeight:    0.15,
-		QueueDepthWeight: 0.10,
-		LatencyWeight:    0.10,
-		unavailableTTL:   defaultUnavailableTTL,
+	// Default weights: QuantMatch=0.40, VRAMFree=0.25, GPUUtil=0.15, QueueDepth=0.10, Latency=0.10
+	// Default maxQueueDepth: 10.
+	func NewWeightedScorer() *WeightedScorer {
+		return &WeightedScorer{
+			QuantMatchWeight: 0.40,
+			VRAMFreeWeight:   0.25,
+			GPUUtilWeight:    0.15,
+			QueueDepthWeight: 0.10,
+			LatencyWeight:    0.10,
+			unavailableTTL:   defaultUnavailableTTL,
+			maxQueueDepth:    10,
+		}
 	}
-}
 
-// NewWeightedScorerWithConfig creates a new WeightedScorer with custom weights.
-// Weights should sum to 1.0 for predictable scoring, but this is not enforced.
-func NewWeightedScorerWithConfig(quantMatch, vramFree, gpuUtil, queueDepth, latency float64, unavailableTTL time.Duration) *WeightedScorer {
-	return &WeightedScorer{
-		QuantMatchWeight: quantMatch,
-		VRAMFreeWeight:   vramFree,
-		GPUUtilWeight:    gpuUtil,
-		QueueDepthWeight: queueDepth,
-		LatencyWeight:    latency,
-		unavailableTTL:   unavailableTTL,
+	// NewWeightedScorerWithConfig creates a new WeightedScorer with custom weights.
+	// Weights should sum to 1.0 for predictable scoring, but this is not enforced.
+	// maxQueueDepth normalizes the queue-depth term: a worker with
+	// QueueDepth >= maxQueueDepth scores 0.0 for the queue component.
+	// A value <= 0 falls back to the default of 10.
+	func NewWeightedScorerWithConfig(quantMatch, vramFree, gpuUtil, queueDepth, latency float64, unavailableTTL time.Duration, maxQueueDepth int) *WeightedScorer {
+		if maxQueueDepth <= 0 {
+			maxQueueDepth = 10
+		}
+		return &WeightedScorer{
+			QuantMatchWeight: quantMatch,
+			VRAMFreeWeight:   vramFree,
+			GPUUtilWeight:    gpuUtil,
+			QueueDepthWeight: queueDepth,
+			LatencyWeight:    latency,
+			unavailableTTL:   unavailableTTL,
+			maxQueueDepth:    maxQueueDepth,
+		}
 	}
-}
 
 // Name returns the name of the algorithm.
 func (s *WeightedScorer) Name() string {
@@ -110,6 +124,14 @@ func (s *WeightedScorer) Name() string {
 // GetUnavailableTTL returns the unavailable TTL.
 func (s *WeightedScorer) GetUnavailableTTL() time.Duration {
 	return s.unavailableTTL
+}
+
+// MaxQueueDepth returns the queue-depth normalization threshold.
+func (s *WeightedScorer) MaxQueueDepth() int {
+	if s.maxQueueDepth <= 0 {
+		return 10
+	}
+	return s.maxQueueDepth
 }
 
 // Score implements the weighted scoring algorithm.
@@ -192,11 +214,15 @@ func (s *WeightedScorer) Score(ctx context.Context, request ModelRequest, worker
 	}
 
 	// 4. Queue depth score (lower depth is better, so invert)
-	// Normalize queue depth: assume 0-10 range, where 0 is best, 10 is worst
+	// Normalize queue depth against maxQueueDepth: depth 0 scores 1.0,
+	// depth >= maxQueueDepth scores 0.0.
 	queueDepthScore := 0.0
 	if worker.QueueDepth >= 0 {
-		// Normalize to 0-1 range where 1 is best (depth 0), 0 is worst (depth >=10)
-		queueDepthScore = 1.0 - math.Min(float64(worker.QueueDepth)/10.0, 1.0)
+		norm := s.maxQueueDepth
+		if norm <= 0 {
+			norm = 10
+		}
+		queueDepthScore = 1.0 - math.Min(float64(worker.QueueDepth)/float64(norm), 1.0)
 		if queueDepthScore < 0 {
 			queueDepthScore = 0
 		}
@@ -204,7 +230,7 @@ func (s *WeightedScorer) Score(ctx context.Context, request ModelRequest, worker
 			queueDepthScore = 1
 		}
 	} else {
-		// If queue depth unknown, assume 5 (neutral)
+		// If queue depth unknown, assume neutral
 		queueDepthScore = 0.5
 	}
 

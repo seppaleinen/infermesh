@@ -17,6 +17,7 @@ import (
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/pkg/registry"
+	"github.com/seppaleinen/infermesh/pkg/scheduler"
 	"github.com/seppaleinen/infermesh/pkg/security"
 	"log/slog"
 )
@@ -32,6 +33,17 @@ type PopularModelInfo struct {
 // PopularModelsResponse is the response from the /meta/models/popular endpoint.
 type PopularModelsResponse struct {
 	Models []PopularModelInfo `json:"models"`
+}
+
+// schedulerWeights mirrors the WeightedScorer fields so the router can
+// configure the scorer from CLI flags and detect no-op calls.
+type schedulerWeights struct {
+	QuantMatchWeight float64
+	VRAMFreeWeight   float64
+	GPUUtilWeight    float64
+	QueueDepthWeight float64
+	LatencyWeight    float64
+	MaxQueueDepth    int
 }
 
 // ErrorResponse represents an OpenAI-compatible error response.
@@ -122,6 +134,15 @@ type Server struct {
 	server  *http.Server
 	counter *CallCounter
 
+	// scorer selects the best worker for a model request using weighted
+	// scoring (quantization match, free VRAM, GPU utilization, queue depth,
+	// latency). Nil falls back to round-robin (candidates[0]).
+	scorer scheduler.ScoringAlgorithm
+
+	// scorerWeights holds the last weights applied to the scorer, so
+	// SetScorerWeights can detect no-op calls.
+	scorerWeights schedulerWeights
+
 	// proxyTimeout bounds how long proxyStream waits for a worker response
 	// before emitting a 504. Defaults to 30s; tests override it to drive the
 	// 504 path without sleeping. See SetProxyTimeout.
@@ -190,12 +211,14 @@ type ModelsResponse struct {
 	Data   []protocol.ModelInfo `json:"data"`
 }
 
-// NewServer creates a new router HTTP server.
+// NewServer creates a new router HTTP server. It constructs a default
+// WeightedScorer so worker selection is weighted rather than round-robin;
+// the scorer is wired into selectWorker at request time.
 func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg security.Config) *Server {
 	cache := NewCapabilityCache(reg, log)
 	hub := NewWSHub(reg, log)
 	hub.SetAPIKey(cfg.APIKey)
-	return &Server{
+	s := &Server{
 		log:          log,
 		reg:          reg,
 		addr:         addr,
@@ -205,6 +228,39 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 		counter:      NewCallCounter(10 * time.Minute),
 		proxyTimeout: 30 * time.Second,
 	}
+	s.scorer = scheduler.NewWeightedScorer()
+	s.scorerWeights = schedulerWeights{
+		QuantMatchWeight: s.scorer.(*scheduler.WeightedScorer).QuantMatchWeight,
+		VRAMFreeWeight:   s.scorer.(*scheduler.WeightedScorer).VRAMFreeWeight,
+		GPUUtilWeight:    s.scorer.(*scheduler.WeightedScorer).GPUUtilWeight,
+		QueueDepthWeight: s.scorer.(*scheduler.WeightedScorer).QueueDepthWeight,
+		LatencyWeight:    s.scorer.(*scheduler.WeightedScorer).LatencyWeight,
+		MaxQueueDepth:    s.scorer.(*scheduler.WeightedScorer).MaxQueueDepth(),
+	}
+	return s
+}
+
+// SetScorerWeights overrides the scorer's weights. A zero value for any
+// weight leaves that weight at its default (the scorer is only rebuilt when
+// at least one weight is non-zero). maxQueueDepth <= 0 falls back to 10.
+func (s *Server) SetScorerWeights(quantMatch, vramFree, gpuUtil, queueDepth, latency float64, maxQueueDepth int) {
+	s.scorerWeights = schedulerWeights{
+		QuantMatchWeight: quantMatch,
+		VRAMFreeWeight:   vramFree,
+		GPUUtilWeight:    gpuUtil,
+		QueueDepthWeight: queueDepth,
+		LatencyWeight:    latency,
+		MaxQueueDepth:    maxQueueDepth,
+	}
+	s.scorer = scheduler.NewWeightedScorerWithConfig(
+		quantMatch, vramFree, gpuUtil, queueDepth, latency,
+		scheduler.DefaultUnavailableTTL(), maxQueueDepth,
+	)
+}
+
+// ScorerWeights returns the weights currently applied to the scorer.
+func (s *Server) ScorerWeights() schedulerWeights {
+	return s.scorerWeights
 }
 
 // SetRelayURL configures the relay WebSocket URL for outbound-only mode.
@@ -702,7 +758,16 @@ func (s *Server) handleDevRegister(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// selectWorker selects a worker for the given model (simple round-robin for now).
+// selectWorker selects a worker for the given model. When a WeightedScorer
+// is configured it scores every candidate by live router-side signals
+// (queue depth, in-flight count) plus cached capability signals (free VRAM,
+// quantization match) and picks the highest-scoring worker. Without a scorer
+// it falls back to the first candidate (round-robin).
+//
+// The queue-depth and in-flight signals come from the WSHub's per-connection
+// state, so a saturated worker (deep queue, many in-flight calls) scores
+// lower than an idle one — the queue system from issues #55-#60 actually
+// influences dispatch instead of being neutered.
 func (s *Server) selectWorker(model string) (protocol.WorkerInfo, error) {
 	if s.cache == nil {
 		return protocol.WorkerInfo{}, fmt.Errorf("capability cache not configured")
@@ -747,29 +812,123 @@ func (s *Server) selectWorker(model string) (protocol.WorkerInfo, error) {
 		}
 	}
 
-	if len(candidates) > 0 {
-		// Simple round-robin selection (use timestamp for now)
-		return candidates[0], nil
-	}
-
-	// Fallback: if no exact loaded-model match, route to any cached worker
-	// that advertises the model (even if not marked loaded), then to any
-	// available worker. This keeps dev-mode usable when backends report
-	// catalogue models without load state (e.g. LM Studio /v1/models).
-	for _, worker := range s.cache.cache {
-		for _, m := range worker.Capabilities.Models {
-			if m.Name == model {
-				s.log.Warn("routing to worker with model not marked loaded", "model", model, "worker", worker.ID)
-				return worker, nil
+	if len(candidates) == 0 {
+		// Fallback: if no exact loaded-model match, route to any cached worker
+		// that advertises the model (even if not marked loaded), then to any
+		// available worker. This keeps dev-mode usable when backends report
+		// catalogue models without load state (e.g. LM Studio /v1/models).
+		for _, worker := range s.cache.cache {
+			for _, m := range worker.Capabilities.Models {
+				if m.Name == model {
+					s.log.Warn("routing to worker with model not marked loaded", "model", model, "worker", worker.ID)
+					return worker, nil
+				}
 			}
 		}
-	}
-	for _, worker := range s.cache.cache {
-		s.log.Warn("no worker has requested model, falling back to available worker", "model", model, "worker", worker.ID)
-		return worker, nil
+		for _, worker := range s.cache.cache {
+			s.log.Warn("no worker has requested model, falling back to available worker", "model", model, "worker", worker.ID)
+			return worker, nil
+		}
+
+		return protocol.WorkerInfo{}, fmt.Errorf("no worker found with model %s loaded", model)
 	}
 
-	return protocol.WorkerInfo{}, fmt.Errorf("no worker found with model %s loaded", model)
+	// Score candidates when a scorer is configured.
+	if s.scorer != nil {
+		// Sort candidates by ID for deterministic ordering.
+		// Map iteration order is non-deterministic; sorting ensures
+		// the scorer always sees the same candidate sequence, so ties
+		// (identical scores) resolve consistently.
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].ID < candidates[j].ID
+		})
+
+		selected, err := s.scoreCandidates(model, candidates)
+		if err == nil && selected != nil {
+			s.log.Debug("selected worker via weighted scorer",
+				"model", model, "worker", selected.ID, "score", selected.Score, "reason", selected.Reason)
+			// Map the selected scheduler.WorkerInfo back to the cached
+			// protocol.WorkerInfo so callers get the original capability
+			// snapshot (not the load-augmented copy).
+			for _, w := range candidates {
+				if w.ID == selected.ID {
+					return w, nil
+				}
+			}
+			// The scorer picked a worker not in candidates (should not
+			// happen since we only scored candidates); fall through.
+		}
+		s.log.Warn("weighted scorer failed, falling back to round-robin",
+			"model", model, "error", err)
+	}
+
+	// Round-robin fallback: pick the first candidate.
+	return candidates[0], nil
+}
+
+// workerLoad returns the live router-side load signals for a worker: the
+// number of in-flight calls and the outbound send-queue depth. Both come
+// from the wsConnection held by the WSHub (relay-mode workers share the
+// hub-side counters). Returns ok=false when the worker has no tracked
+// connection, in which case the caller treats both signals as unknown.
+func (s *Server) workerLoad(workerID string) (inFlight, queueDepth int64, ok bool) {
+	if s.hub == nil {
+		return 0, 0, false
+	}
+	s.hub.mu.RLock()
+	c, found := s.hub.conns[workerID]
+	s.hub.mu.RUnlock()
+	if !found {
+		// Relay-mode workers have no direct connection; the hub tracks
+		// their in-flight count centrally.
+		return s.hub.relayInFlightAt(workerID), 0, true
+	}
+	return c.workerInFlight(), c.queueDepthSnapshot(), true
+}
+
+// toSchedulerWorker maps a cached protocol.WorkerInfo plus live load signals
+// into the scheduler's WorkerInfo shape. GPU utilization and average latency
+// are reported as -1 (sentinel) because the worker never pushes GPU
+// utilization and the router has no per-worker inference-latency metric; the
+// scorer treats -1 as a neutral 0.5 component.
+func (s *Server) toSchedulerWorker(w protocol.WorkerInfo, inFlight, queueDepth int64) scheduler.WorkerInfo {
+	var vramTotal, vramFree int
+	if w.Capabilities.VRAM.TotalMB > 0 {
+		vramTotal = int(w.Capabilities.VRAM.TotalMB)
+		vramFree = int(w.Capabilities.VRAM.FreeMB)
+	}
+	return scheduler.WorkerInfo{
+		ID:           w.ID,
+		Addr:         fmt.Sprintf("%s:%d", w.IP, w.Port),
+		Models:       w.Capabilities.Models,
+		VRAMTotalMB:  vramTotal,
+		VRAMFreeMB:   vramFree,
+		GPUUtilPct:   -1, // unknown → neutral scorer component
+		QueueDepth:   int(queueDepth),
+		AvgLatencyMS: -1, // unknown → neutral scorer component
+		LastHeartbeat: w.LastSeen,
+	}
+}
+
+// scoreCandidates builds the scheduler's WorkerInfo slice from the cached
+// candidates augmented with live load signals, then delegates to
+// scheduler.SelectWorker. The in-flight count is folded into the queue-depth
+// term so a worker at its MaxInFlight cap is deprioritized even when its
+// send queue is empty.
+func (s *Server) scoreCandidates(model string, candidates []protocol.WorkerInfo) (*scheduler.SelectedWorker, error) {
+	req := scheduler.ModelRequest{Model: model}
+	workers := make([]scheduler.WorkerInfo, 0, len(candidates))
+	for _, w := range candidates {
+		inFlight, queueDepth, ok := s.workerLoad(w.ID)
+		sw := s.toSchedulerWorker(w, inFlight, queueDepth)
+		if ok {
+			// Fold in-flight into the queue term: a worker at its cap is
+			// effectively queued, so it scores as if it had a deep queue.
+			sw.QueueDepth = int(queueDepth) + int(inFlight)
+		}
+		workers = append(workers, sw)
+	}
+	return scheduler.SelectWorker(context.Background(), s.scorer, req, workers, scheduler.DefaultUnavailableTTL())
 }
 
 // loadModelOnWorker attempts to load a model on a worker using HTTP proxy

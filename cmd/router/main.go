@@ -28,6 +28,17 @@ type RouterFlags struct {
 	RelayURL       string
 	MaxInFlight    int
 	MaxConnections int
+
+	// ScorerWeights configures the WeightedScorer wired into selectWorker.
+	// All weights default to 0, which leaves the scorer at its built-in
+	// defaults (QuantMatch=0.40, VRAMFree=0.25, GPUUtil=0.15,
+	// QueueDepth=0.10, Latency=0.10, MaxQueueDepth=10).
+	ScorerQuantMatch  float64
+	ScorerVRAMFree    float64
+	ScorerGPUUtil     float64
+	ScorerQueueDepth  float64
+	ScorerLatency     float64
+	ScorerMaxQueueDepth int
 }
 
 // parseRouterFlags parses args into RouterFlags. It uses ContinueOnError so
@@ -52,6 +63,15 @@ func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
 	fs.StringVar(&f.RelayURL, "relay-url", "", "relay URL for outbound-only WebSocket connectivity (dev mode only)")
 	fs.IntVar(&f.MaxInFlight, "max-in-flight", 0, "max concurrent in-flight calls per worker (0 = default of 4); rejects excess with HTTP 429")
 	fs.IntVar(&f.MaxConnections, "max-connections", 0, "max concurrent worker WebSocket connections (0 = default of 256); rejects excess with a protocol error frame")
+
+	// Scorer weights for the WeightedScorer wired into selectWorker.
+	// All default to 0, which leaves the scorer at its built-in defaults.
+	fs.Float64Var(&f.ScorerQuantMatch, "scorer-quant-match", 0, "weight for exact quantization match (default 0.40)")
+	fs.Float64Var(&f.ScorerVRAMFree, "scorer-vram-free", 0, "weight for free VRAM ratio (default 0.25)")
+	fs.Float64Var(&f.ScorerGPUUtil, "scorer-gpu-util", 0, "weight for GPU utilization, inverted (default 0.15)")
+	fs.Float64Var(&f.ScorerQueueDepth, "scorer-queue-depth", 0, "weight for queue depth, inverted (default 0.10)")
+	fs.Float64Var(&f.ScorerLatency, "scorer-latency", 0, "weight for latency, inverted (default 0.10)")
+	fs.IntVar(&f.ScorerMaxQueueDepth, "scorer-max-queue-depth", 0, "queue-depth normalization threshold (default 10); a worker at or above this depth scores 0.0 for the queue term")
 }
 
 func main() {
@@ -155,6 +175,10 @@ func runRouter(args []string) int {
 	if f.MaxConnections > 0 {
 		srv.SetMaxConnections(f.MaxConnections)
 	}
+	// Wire the scorer weights from CLI flags. Any weight left at 0 keeps
+	// the scorer's built-in default for that term.
+	srv.SetScorerWeights(f.ScorerQuantMatch, f.ScorerVRAMFree, f.ScorerGPUUtil,
+		f.ScorerQueueDepth, f.ScorerLatency, f.ScorerMaxQueueDepth)
 	if f.RelayURL != "" {
 		srv.SetRelayURL(f.RelayURL)
 		// Establish the relay connection in the background with retry. The

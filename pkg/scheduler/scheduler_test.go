@@ -718,7 +718,7 @@ func TestSelectWorkerDeterminism(t *testing.T) {
 
 // TestCustomWeightedScorer tests creating a scorer with custom weights.
 func TestCustomWeightedScorer(t *testing.T) {
-	s := NewWeightedScorerWithConfig(0.5, 0.2, 0.1, 0.1, 0.1, 60*time.Second)
+	s := NewWeightedScorerWithConfig(0.5, 0.2, 0.1, 0.1, 0.1, 60*time.Second, 10)
 
 	if s.QuantMatchWeight != 0.5 {
 		t.Errorf("QuantMatchWeight: got %f, want 0.5", s.QuantMatchWeight)

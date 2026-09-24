@@ -1830,3 +1830,170 @@ func (c *timeoutClient) RecordTimeout(workerID string) {
 		c.hub.recordTimeout(workerID)
 	}
 }
+
+// TestSelectWorkerDeterminism verifies that selectWorker returns the same
+// worker for the same pool state across repeated calls. With the WeightedScorer
+// the selection is purely deterministic (no randomness in scoring); the first
+// max-score wins and the candidate slice order is preserved.
+func TestSelectWorkerDeterminism(t *testing.T) {
+	// Two workers with identical capability signals but different IDs.
+	// Both have the model loaded; same VRAM, queue, GPU util → identical score.
+	// The scorer picks the first max, which is candidates[0] since iteration
+	// order over the cache is deterministic under RLock (map iteration is not
+	// guaranteed, but our test builds the cache with a known insertion order
+	// and the candidate filter preserves that order).
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+
+	// Build workers with identical scores
+	now := time.Now()
+	workers := []protocol.WorkerInfo{
+		{
+			ID: "worker-a", Hostname: "worker-a", IP: "127.0.0.1", Port: 8081,
+			Status: protocol.StatusAvailable, Version: "v1", LastSeen: now,
+			Capabilities: protocol.Capabilities{
+				Models: []protocol.ModelInfo{
+					{Name: "deterministic-model", Quantization: "Q4_K_M", Loaded: true},
+				},
+				VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 16384},
+			},
+		},
+		{
+			ID: "worker-b", Hostname: "worker-b", IP: "127.0.0.1", Port: 8082,
+			Status: protocol.StatusAvailable, Version: "v1", LastSeen: now,
+			Capabilities: protocol.Capabilities{
+				Models: []protocol.ModelInfo{
+					{Name: "deterministic-model", Quantization: "Q4_K_M", Loaded: true},
+				},
+				VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 16384},
+			},
+		},
+	}
+
+	for _, w := range workers {
+		_ = tr.reg.HandleEvent(protocol.DiscoveryEvent{
+			Type:   protocol.EventAdded,
+			Worker: w,
+		})
+	}
+
+	srv := tr.Server()
+
+	// Populate cache directly (bypass HTTP fetch)
+	srv.cache = NewCapabilityCache(tr.reg, testLogger())
+	srv.cache.Start(tr.ctx)
+	srv.cache.mu.Lock()
+	for _, w := range workers {
+		srv.cache.cache[w.ID] = w
+	}
+	srv.cache.mu.Unlock()
+
+	// Set a fixed scorer so the test doesn't depend on CLI defaults
+	srv.SetScorerWeights(0.40, 0.25, 0.15, 0.10, 0.10, 10)
+
+	var firstID string
+	for i := 0; i < 20; i++ {
+		sel, err := srv.selectWorker("deterministic-model")
+		if err != nil {
+			t.Fatalf("selectWorker failed: %v", err)
+		}
+		if firstID == "" {
+			firstID = sel.ID
+		} else if sel.ID != firstID {
+			t.Errorf("selection not deterministic: call %d got %s, previously %s", i+1, sel.ID, firstID)
+		}
+	}
+}
+
+// TestSelectWorkerRespectsQueueDepth verifies that the scorer deprioritizes
+// a worker with a deeper queue (higher queueDepth + inFlight).
+func TestSelectWorkerRespectsQueueDepth(t *testing.T) {
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+
+	now := time.Now()
+	// worker-idle: empty queue, 0 in-flight
+	// worker-busy: 5 in-flight calls, 5 queue depth
+	workers := []protocol.WorkerInfo{
+		{
+			ID: "worker-idle", Hostname: "worker-idle", IP: "127.0.0.1", Port: 8081,
+			Status: protocol.StatusAvailable, Version: "v1", LastSeen: now,
+			Capabilities: protocol.Capabilities{
+				Models: []protocol.ModelInfo{
+					{Name: "qd-model", Quantization: "Q4_K_M", Loaded: true},
+				},
+				VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 16384},
+			},
+		},
+		{
+			ID: "worker-busy", Hostname: "worker-busy", IP: "127.0.0.1", Port: 8082,
+			Status: protocol.StatusAvailable, Version: "v1", LastSeen: now,
+			Capabilities: protocol.Capabilities{
+				Models: []protocol.ModelInfo{
+					{Name: "qd-model", Quantization: "Q4_K_M", Loaded: true},
+				},
+				VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 16384},
+			},
+		},
+	}
+
+	for _, w := range workers {
+		_ = tr.reg.HandleEvent(protocol.DiscoveryEvent{
+			Type:   protocol.EventAdded,
+			Worker: w,
+		})
+	}
+
+	srv := tr.Server()
+
+	srv.cache = NewCapabilityCache(tr.reg, testLogger())
+	srv.cache.Start(tr.ctx)
+	srv.cache.mu.Lock()
+	for _, w := range workers {
+		srv.cache.cache[w.ID] = w
+	}
+	srv.cache.mu.Unlock()
+
+	// Inject a hub with connections to provide live load signals
+	hub := NewWSHub(tr.reg, testLogger())
+	hub.Start(context.Background())
+	srv.hub = hub
+
+	// For worker-busy, inject a connection with 5 in-flight
+	connBusy := &wsConnection{
+		hub:     hub,
+		id:      "worker-busy",
+		sendCh:  make(chan []byte, 10),
+		doneCh:  make(chan struct{}),
+		pending: make(map[string]*pendingCall),
+	}
+	// Add 5 dummy pending calls
+	connBusy.pendingMu.Lock()
+	for i := 0; i < 5; i++ {
+		connBusy.pending[fmt.Sprintf("call-%d", i)] = &pendingCall{}
+	}
+	connBusy.pendingMu.Unlock()
+	// queueDepth 5
+	connBusy.queueDepth.Store(5)
+
+	hub.mu.Lock()
+	hub.conns["worker-busy"] = connBusy
+	hub.mu.Unlock()
+
+	// worker-idle has no connection → inFlight=0, queueDepth=0
+
+	srv.SetScorerWeights(0.40, 0.25, 0.15, 0.10, 0.10, 10)
+
+	// Run multiple selections; the idle worker should always win.
+	for i := 0; i < 10; i++ {
+		sel, err := srv.selectWorker("qd-model")
+		if err != nil {
+			t.Fatalf("selectWorker failed: %v", err)
+		}
+		if sel.ID != "worker-idle" {
+			t.Errorf("expected idle worker (worker-idle) to win, got %s", sel.ID)
+		}
+	}
+}
