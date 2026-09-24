@@ -64,16 +64,37 @@ func writeErrorResponse(w http.ResponseWriter, statusCode int, errMsg string, er
 	}
 }
 
+// writeRateLimitError writes an OpenAI-shaped 429 rate-limit response with a
+// Retry-After header. It is written BEFORE SSE headers are flushed so the
+// client sees a clean JSON error rather than a half-open SSE stream.
+func writeRateLimitError(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", "1")
+	w.WriteHeader(http.StatusTooManyRequests)
+
+	errorResp := ErrorResponse{
+		Error: ErrorDetail{
+			Message: "rate limit exceeded: max in-flight calls reached for this worker",
+			Type:    "rate_limit_error",
+			Code:    "rate_limit_exceeded",
+		},
+	}
+
+	if err := json.NewEncoder(w).Encode(errorResp); err != nil {
+		slog.Error("failed to encode rate limit error response", "error", err)
+	}
+}
+
 // WorkerInfo represents a simplified worker information for the /v1/workers endpoint.
 type WorkerInfo struct {
-	ID            string           `json:"id"`
-	Hostname      string           `json:"hostname"`
-	IP            string           `json:"ip"`
-	Port          int              `json:"port"`
-	Status        protocol.WorkerStatus `json:"status"`
-	Version       string           `json:"version"`
-	LoadedModels  []string         `json:"loaded_models"`
-	LastSeen      time.Time        `json:"last_seen"`
+	ID           string                `json:"id"`
+	Hostname     string                `json:"hostname"`
+	IP           string                `json:"ip"`
+	Port         int                   `json:"port"`
+	Status       protocol.WorkerStatus `json:"status"`
+	Version      string                `json:"version"`
+	LoadedModels []string              `json:"loaded_models"`
+	LastSeen     time.Time             `json:"last_seen"`
 }
 
 // WorkersResponse represents the response from the /v1/workers endpoint.
@@ -92,16 +113,15 @@ func (e *ErrModelNotFound) Error() string {
 
 // Server is the HTTP server for the router.
 type Server struct {
-	log    *slog.Logger
-	reg    registry.Registry
-	addr   string
-	cache  *CapabilityCache
-	cfg    security.Config
-	hub    *WSHub
-	server *http.Server
+	log     *slog.Logger
+	reg     registry.Registry
+	addr    string
+	cache   *CapabilityCache
+	cfg     security.Config
+	hub     *WSHub
+	server  *http.Server
 	counter *CallCounter
 }
-
 
 // ChatMessage represents a single message in a chat conversation.
 type ChatMessage struct {
@@ -171,12 +191,12 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 	hub := NewWSHub(reg, log)
 	hub.SetAPIKey(cfg.APIKey)
 	return &Server{
-		log:    log,
-		reg:    reg,
-		addr:   addr,
-		cache:  cache,
-		cfg:    cfg,
-		hub:    hub,
+		log:     log,
+		reg:     reg,
+		addr:    addr,
+		cache:   cache,
+		cfg:     cfg,
+		hub:     hub,
 		counter: NewCallCounter(10 * time.Minute),
 	}
 }
@@ -184,6 +204,12 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 // SetRelayURL configures the relay WebSocket URL for outbound-only mode.
 func (s *Server) SetRelayURL(url string) {
 	s.hub.SetRelayURL(url)
+}
+
+// SetMaxInFlight overrides the per-worker concurrent-call cap. A value <= 0
+// falls back to defaultMaxInFlight.
+func (s *Server) SetMaxInFlight(n int) {
+	s.hub.SetMaxInFlight(n)
 }
 
 // RunRelay maintains the outbound relay connection, dialing immediately and
@@ -204,6 +230,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/workers", s.handleWorkersList)
 	mux.HandleFunc("/v1/dev/register", s.handleDevRegister)
 	mux.HandleFunc("/meta/models/popular", s.handlePopularModels)
+	mux.HandleFunc("/v1/queue/stats", s.handleQueueStats)
 
 	// Outbound WebSocket worker connectivity: workers dial ws://router:8080/v1/connect
 	// Only mount when NOT in relay mode — in relay mode, Handler() returns nil
@@ -287,11 +314,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Set SSE headers
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
 	// Parse request
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -319,6 +341,20 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if s.counter != nil {
 		s.counter.Record(req.Model)
 	}
+
+	// Rate-limit check BEFORE SSE headers are flushed: a slow/stalled client
+	// can fill chunkCh and freeze the worker's reader loop (heartbeats, pings
+	// and all other in-flight streams stall). Reject with an OpenAI-shaped 429.
+	if s.hub != nil && s.hub.isRateLimited(worker.ID) {
+		s.hub.recordRejection(worker.ID, 429)
+		writeRateLimitError(w)
+		return
+	}
+
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
 
 	// Proxy the request to the selected worker with SSE support
 	s.proxyChatStream(w, r, worker, req)
@@ -362,6 +398,13 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	// Record this inference dispatch for the popularity counter.
 	if s.counter != nil {
 		s.counter.Record(req.Model)
+	}
+
+	// Rate-limit check BEFORE SSE headers are flushed.
+	if s.hub != nil && s.hub.isRateLimited(worker.ID) {
+		s.hub.recordRejection(worker.ID, 429)
+		writeRateLimitError(w)
+		return
 	}
 
 	// Proxy the request to the selected worker with SSE support
@@ -417,6 +460,7 @@ func getLoadedModelNames(models []protocol.ModelInfo) []string {
 	}
 	return names
 }
+
 // handleModelsList handles the /v1/models HTTP endpoint.
 func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -517,6 +561,25 @@ func (s *Server) handlePopularModels(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewEncoder(w).Encode(PopularModelsResponse{Models: popularModels}); err != nil {
 		s.log.Error("failed to encode popular models", "error", err)
+	}
+}
+
+// handleQueueStats handles the /v1/queue/stats HTTP endpoint.
+func (s *Server) handleQueueStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error", "method_not_allowed")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	if s.hub == nil {
+		writeErrorResponse(w, http.StatusInternalServerError, "queue stats not configured", "server_error", "internal_error")
+		return
+	}
+
+	resp := s.hub.QueueStats()
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		s.log.Error("failed to encode queue stats", "error", err)
 	}
 }
 

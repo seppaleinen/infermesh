@@ -52,24 +52,78 @@ type WSHub struct {
 	relayPendingMu sync.Mutex
 	relayPending   map[string]*pendingCall
 
+	// relayInFlight tracks per-worker in-flight call counts across relay
+	// shares (the relay connection is shared, so counts live on the hub).
+	// relayRejected429 tracks per-worker 429 rejections in relay mode.
+	relayInFlight    map[string]int64
+	relayRejected429 map[string]int64
+
+	// qm holds pool-level queue-wait observability (reservoir percentiles).
+	qm *queueMetrics
+
 	writeTimeout  time.Duration
 	sendQueueSize int
 	apiKey        string
+
+	// maxInFlight caps concurrent in-flight calls per worker (streaming +
+	// non-streaming + model-load). 0 means defaultMaxInFlight.
+	maxInFlight int
 }
+
+// defaultMaxInFlight is the per-worker concurrent-call cap applied when the
+// router is started without --max-in-flight. A slow/stalled HTTP client can
+// fill chunkCh and freeze the reader loop (heartbeats, pings and all other
+// in-flight streams stall) without this cap.
+const defaultMaxInFlight = 4
+
+// errRateLimited is returned when a worker is at its MaxInFlight cap. It is
+// surfaced to HTTP clients as an OpenAI-shaped 429 with Retry-After.
+var errRateLimited = errors.New("rate limited: max in-flight calls reached for this worker")
 
 // NewWSHub creates a hub bridging WebSocket worker connections into the
 // registry. reg may be nil (events are then dropped).
 func NewWSHub(reg registry.Registry, log *slog.Logger) *WSHub {
 	return &WSHub{
-		log:           log,
-		reg:           reg,
-		conns:         make(map[string]*wsConnection),
-		relaySendCh:   make(chan []byte, wsutil.SendQueueSize),
-		relayDone:     make(chan struct{}),
-		relayPending:  make(map[string]*pendingCall),
-		writeTimeout:  wsutil.WriteTimeout,
-		sendQueueSize: wsutil.SendQueueSize,
+		log:              log,
+		reg:              reg,
+		conns:            make(map[string]*wsConnection),
+		relaySendCh:      make(chan []byte, wsutil.SendQueueSize),
+		relayDone:        make(chan struct{}),
+		relayPending:     make(map[string]*pendingCall),
+		relayInFlight:    make(map[string]int64),
+		relayRejected429: make(map[string]int64),
+		qm:               newQueueMetrics(),
+		writeTimeout:     wsutil.WriteTimeout,
+		sendQueueSize:    wsutil.SendQueueSize,
+		maxInFlight:      defaultMaxInFlight,
 	}
+}
+
+// SetMaxInFlight overrides the per-worker concurrent-call cap. A value <= 0
+// falls back to defaultMaxInFlight.
+func (h *WSHub) SetMaxInFlight(n int) {
+	if n <= 0 {
+		h.maxInFlight = defaultMaxInFlight
+		return
+	}
+	h.maxInFlight = n
+}
+
+// maxInFlightFor returns the effective cap for a worker connection.
+func (h *WSHub) maxInFlightFor() int {
+	if h.maxInFlight <= 0 {
+		return defaultMaxInFlight
+	}
+	return h.maxInFlight
+}
+
+// workerInFlight returns the current in-flight count for worker id. The
+// counter is owned by the connection's pendingMu; callers must not hold
+// pendingMu across this call.
+func (c *wsConnection) workerInFlight() int64 {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	return int64(len(c.pending))
 }
 
 // SetAPIKey sets the API key used to validate worker registrations.
@@ -127,15 +181,16 @@ func (h *WSHub) relayConnSnapshot() *websocket.Conn {
 
 // registerRelayCall registers a pending call on the relay connection,
 // keyed by message ID. Returns the pendingCall or an error if a duplicate
-// ID already exists.
-func (h *WSHub) registerRelayCall(id string, respCh chan protocol.Message, errCh chan error) (*pendingCall, error) {
+// ID already exists or the worker is at its MaxInFlight cap.
+func (h *WSHub) registerRelayCall(id string, respCh chan protocol.Message, errCh chan error, workerID string) (*pendingCall, error) {
 	pc := &pendingCall{
-		id:     id,
-		respCh: respCh,
-		errCh:  errCh,
-		doneCh: make(chan struct{}),
-		conn:   nil, // no wsConnection; hub-level tracking
-		hub:    h,
+		id:       id,
+		respCh:   respCh,
+		errCh:    errCh,
+		doneCh:   make(chan struct{}),
+		conn:     nil, // no wsConnection; hub-level tracking
+		hub:      h,
+		workerID: workerID,
 	}
 	pc.handle = func(msg protocol.Message) {
 		switch msg.Type {
@@ -159,22 +214,29 @@ func (h *WSHub) registerRelayCall(id string, respCh chan protocol.Message, errCh
 	}
 	h.relayPendingMu.Lock()
 	defer h.relayPendingMu.Unlock()
+	if h.relayInFlight[workerID] >= int64(h.maxInFlightFor()) {
+		h.relayRejected429[workerID]++
+		return nil, errRateLimited
+	}
 	if _, exists := h.relayPending[id]; exists {
 		return nil, fmt.Errorf("duplicate relay pending message id %s", id)
 	}
+	h.relayInFlight[workerID]++
+	pc.queuedAt = time.Now()
 	h.relayPending[id] = pc
 	return pc, nil
 }
 
 // registerRelayStream registers a streaming call on the relay connection.
-func (h *WSHub) registerRelayStream(id string, chunkCh chan StreamEvent, errCh chan error) (*pendingCall, error) {
+func (h *WSHub) registerRelayStream(id string, chunkCh chan StreamEvent, errCh chan error, workerID string) (*pendingCall, error) {
 	pc := &pendingCall{
-		id:      id,
-		chunkCh: chunkCh,
-		errCh:   errCh,
-		doneCh:  make(chan struct{}),
-		conn:    nil, // no wsConnection; hub-level tracking
-		hub:     h,
+		id:       id,
+		chunkCh:  chunkCh,
+		errCh:    errCh,
+		doneCh:   make(chan struct{}),
+		conn:     nil, // no wsConnection; hub-level tracking
+		hub:      h,
+		workerID: workerID,
 	}
 	pc.handle = func(msg protocol.Message) {
 		switch msg.Type {
@@ -219,9 +281,15 @@ func (h *WSHub) registerRelayStream(id string, chunkCh chan StreamEvent, errCh c
 	}
 	h.relayPendingMu.Lock()
 	defer h.relayPendingMu.Unlock()
+	if h.relayInFlight[workerID] >= int64(h.maxInFlightFor()) {
+		h.relayRejected429[workerID]++
+		return nil, errRateLimited
+	}
 	if _, exists := h.relayPending[id]; exists {
 		return nil, fmt.Errorf("duplicate relay pending message id %s", id)
 	}
+	h.relayInFlight[workerID]++
+	pc.queuedAt = time.Now()
 	h.relayPending[id] = pc
 	return pc, nil
 }
@@ -238,6 +306,201 @@ func (h *WSHub) routeRelayResponse(msg protocol.Message) bool {
 	}
 	pc.handle(msg)
 	return true
+}
+
+// isRateLimited reports whether the worker identified by id is at its
+// MaxInFlight cap. For direct-connection workers the count is the size of
+// the connection's pending map; for relay-mode workers it is the hub-side
+// per-worker counter. The check is read-only and does not mutate state, so
+// callers must atomically record the rejection themselves if the check
+// passes (see addPending / registerRelayCall).
+func (h *WSHub) isRateLimited(workerID string) bool {
+	h.mu.RLock()
+	c, ok := h.conns[workerID]
+	h.mu.RUnlock()
+	if ok {
+		return c.workerInFlight() >= int64(h.maxInFlightFor())
+	}
+	return h.relayInFlightAt(workerID) >= int64(h.maxInFlightFor())
+}
+
+// relayInFlightAt returns the current in-flight count for worker id in relay
+// mode. Safe to call concurrently; the counter is only mutated under
+// relayPendingMu, which is also the lock guarding the relayPending map.
+func (h *WSHub) relayInFlightAt(workerID string) int64 {
+	h.relayPendingMu.Lock()
+	defer h.relayPendingMu.Unlock()
+	return h.relayInFlight[workerID]
+}
+
+// decrementRelayInFlight decrements the per-worker in-flight counter for
+// relay-mode calls. Called from pendingCall.finish for relay-level calls.
+func (h *WSHub) decrementRelayInFlight(workerID string) {
+	h.relayPendingMu.Lock()
+	defer h.relayPendingMu.Unlock()
+	if h.relayInFlight[workerID] <= 0 {
+		return
+	}
+	h.relayInFlight[workerID]--
+}
+
+// recordRejection bumps the per-worker 429 counter for a direct-connection
+// worker. The counter is stored on the connection so it survives only for
+// the life of that connection (matching the per-worker stats semantics).
+// Safe to call from outside any pendingMu lock.
+func (h *WSHub) recordRejection(workerID string, code int) {
+	h.mu.RLock()
+	c, ok := h.conns[workerID]
+	h.mu.RUnlock()
+	if !ok {
+		return
+	}
+	c.pendingMu.Lock()
+	c.rejected429++
+	c.pendingMu.Unlock()
+}
+
+// recordRejectionLocked bumps the per-worker 429 counter for a direct-
+// connection worker. The caller MUST hold c.pendingMu (used by addPending
+// to avoid a re-entrant lock deadlock).
+func (h *WSHub) recordRejectionLocked(c *wsConnection) {
+	c.rejected429++
+}
+
+// recordWait records a queue-wait sample into the pool reservoir for the
+// worker whose call just completed. Called from pendingCall.finish.
+func (h *WSHub) recordWait(workerID string, queuedAt time.Time) {
+	if h.qm != nil {
+		h.qm.recordWait(time.Since(queuedAt))
+	}
+}
+
+// connSnapshot returns the current connection map under a brief RLock.
+// Callers must not retain references to the returned slice's elements
+// across a mutation of the hub's conn map.
+func (h *WSHub) connSnapshot() []*wsConnection {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make([]*wsConnection, 0, len(h.conns))
+	for _, c := range h.conns {
+		out = append(out, c)
+	}
+	return out
+}
+
+// avgWaitFor returns the average queue-wait duration for worker id based
+// on the pool reservoir's samples. This is a coarse estimate (reservoir
+// sampling is not per-worker), but it is read-only and fast.
+func (h *WSHub) avgWaitFor(workerID string) time.Duration {
+	if h.qm == nil {
+		return 0
+	}
+	p50, _, _ := h.qm.percentiles()
+	return p50
+}
+
+// relayRejected429Total returns the sum of per-worker 429 counts across
+// all relay-mode workers.
+func (h *WSHub) relayRejected429Total() int64 {
+	h.relayPendingMu.Lock()
+	defer h.relayPendingMu.Unlock()
+	var total int64
+	for _, v := range h.relayRejected429 {
+		total += v
+	}
+	return total
+}
+
+// relayInFlightSnapshot returns a copy of the per-worker in-flight counts
+// for relay-mode workers.
+func (h *WSHub) relayInFlightSnapshot() map[string]int64 {
+	h.relayPendingMu.Lock()
+	defer h.relayPendingMu.Unlock()
+	out := make(map[string]int64, len(h.relayInFlight))
+	for k, v := range h.relayInFlight {
+		out[k] = v
+	}
+	return out
+}
+
+// queuePercentiles returns the 50th, 95th and 99th percentiles of the
+// pool-level queue-wait reservoir.
+func (h *WSHub) queuePercentiles() (time.Duration, time.Duration, time.Duration) {
+	if h.qm == nil {
+		return 0, 0, 0
+	}
+	return h.qm.percentiles()
+}
+
+// QueueStats returns a snapshot of the pool's queue observability for the
+// /v1/queue/stats endpoint. Read-only; safe to call concurrently.
+func (h *WSHub) QueueStats() QueueStatsResponse {
+	conns := h.connSnapshot()
+	workers := make([]WorkerQueueStats, 0, len(conns))
+	var (
+		totalQueued      int64
+		totalInFlight    int64
+		totalRejected429 int64
+		totalRejected504 int64
+	)
+	for _, c := range conns {
+		depth := c.queueDepthSnapshot()
+		inFlight := c.workerInFlight()
+		rej429 := c.rejected429Snapshot()
+		rej504 := c.rejected504Snapshot()
+		avgWait := 0.0
+		if inFlight > 0 {
+			avgWait = floatMs(h.avgWaitFor(c.id))
+		}
+		workers = append(workers, WorkerQueueStats{
+			WorkerID:         c.id,
+			QueueDepth:       depth,
+			InFlight:         inFlight,
+			AvgWaitMs:        avgWait,
+			Rejected429Total: rej429,
+			Rejected504Total: rej504,
+		})
+		totalQueued += depth
+		totalInFlight += inFlight
+		totalRejected429 += rej429
+		totalRejected504 += rej504
+	}
+
+	// Pool-level relay counters (relay-mode workers have no direct conn).
+	for _, inflight := range h.relayInFlightSnapshot() {
+		totalInFlight += inflight
+	}
+	totalRejected429 += h.relayRejected429Total()
+
+	p50, p95, p99 := h.queuePercentiles()
+	return QueueStatsResponse{
+		Workers: workers,
+		Pool: PoolQueueStats{
+			TotalQueued:      totalQueued,
+			TotalInFlight:    totalInFlight,
+			TotalRejected429: totalRejected429,
+			TotalRejected504: totalRejected504,
+			QueueTimeP50Ms:   floatMs(p50),
+			QueueTimeP95Ms:   floatMs(p95),
+			QueueTimeP99Ms:   floatMs(p99),
+		},
+	}
+}
+
+// rejected429For returns the per-worker 429 count for a direct-connection
+// worker. Safe to call concurrently.
+func (c *wsConnection) rejected429Snapshot() int64 {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	return c.rejected429
+}
+
+// rejected504For returns the per-worker 504 count for a direct-connection
+// worker.
+func (c *wsConnection) rejected504Snapshot() int64 {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+	return c.rejected504
 }
 
 // Handler returns the /v1/connect upgrade handler.
@@ -508,13 +771,28 @@ type wsConnection struct {
 
 	lastRead atomic.Int64
 
+	// queueDepth counts inference requests sitting in sendCh awaiting
+	// the writer loop. It is incremented in send() and decremented in
+	// writerLoop, so it reflects real backpressure on the outbound path
+	// (the reader-loop-freeze vector from issue #58).
+	queueDepth atomic.Int64
+
 	stateMu sync.RWMutex
 	worker  protocol.WorkerInfo // latest known snapshot (register/heartbeat/caps)
 
 	pendingMu sync.Mutex
 	pending   map[string]*pendingCall
 
+	// Per-worker observability counters (guarded by pendingMu).
+	rejected429 int64
+	rejected504 int64
+
 	closeOnce sync.Once
+}
+
+// queueDepthSnapshot returns the current queue depth.
+func (c *wsConnection) queueDepthSnapshot() int64 {
+	return c.queueDepth.Load()
 }
 
 func (c *wsConnection) setWorker(w protocol.WorkerInfo) {
@@ -557,6 +835,7 @@ func (c *wsConnection) writerLoop() {
 	for {
 		select {
 		case data := <-c.sendCh:
+			c.queueDepth.Add(-1)
 			if err := wsutil.SetWriteDeadline(c.ws, time.Now().Add(c.hub.writeTimeout)); err != nil {
 				c.shutdown("write deadline error")
 				return
@@ -599,12 +878,15 @@ func (c *wsConnection) send(ctx context.Context, msg protocol.Message) error {
 	if err != nil {
 		return fmt.Errorf("marshal websocket message: %w", err)
 	}
+	c.queueDepth.Add(1)
 	select {
 	case c.sendCh <- data:
 		return nil
 	case <-ctx.Done():
+		c.queueDepth.Add(-1)
 		return ctx.Err()
 	case <-c.doneCh:
+		c.queueDepth.Add(-1)
 		return errConnClosed
 	}
 }
@@ -730,13 +1012,23 @@ func (c *wsConnection) failPending(id string, err error) {
 	}
 }
 
-// addPending registers a pending call, rejecting duplicate IDs.
+// addPending registers a pending call, rejecting duplicate IDs and rejecting
+// the call when the worker is at its MaxInFlight cap (returns errRateLimited).
+//
+// The cap is checked atomically with the enqueue so a concurrent dequeue
+// cannot race a new enqueue past the limit: a queued request that is
+// dequeued still re-checks the cap here.
 func (c *wsConnection) addPending(pc *pendingCall) error {
 	c.pendingMu.Lock()
 	defer c.pendingMu.Unlock()
 	if _, exists := c.pending[pc.id]; exists {
 		return fmt.Errorf("duplicate pending message id %s", pc.id)
 	}
+	if int64(len(c.pending)) >= int64(c.hub.maxInFlightFor()) {
+		c.hub.recordRejectionLocked(c)
+		return errRateLimited
+	}
+	pc.queuedAt = time.Now()
 	c.pending[pc.id] = pc
 	return nil
 }
@@ -837,10 +1129,12 @@ func (c *wsConnection) registerCall(id string, respCh chan protocol.Message, err
 
 // pendingCall correlates an in-flight request with its response(s).
 type pendingCall struct {
-	conn   *wsConnection
-	hub    *WSHub // non-nil for relay-level calls (conn == nil); used to reap the hub-side pending map entry
-	id     string
-	handle func(protocol.Message)
+	conn     *wsConnection
+	hub      *WSHub // non-nil for relay-level calls (conn == nil); used to reap the hub-side pending map entry
+	workerID string // non-empty for relay-level calls; decrements hub-side in-flight on finish
+	id       string
+	handle   func(protocol.Message)
+	queuedAt time.Time // set by addPending; used to measure queue-wait for stats
 
 	chunkCh chan StreamEvent      // stream flavor: SSE-framed events
 	respCh  chan protocol.Message // call flavor: raw correlated messages
@@ -890,6 +1184,9 @@ func (pc *pendingCall) finish() {
 				delete(pc.conn.pending, pc.id)
 			}
 			pc.conn.pendingMu.Unlock()
+			if pc.hub != nil {
+				pc.hub.recordWait(pc.conn.id, pc.queuedAt)
+			}
 			return
 		}
 		// Relay-level call (registered in the hub's relayPending map): reap
@@ -900,6 +1197,10 @@ func (pc *pendingCall) finish() {
 				delete(pc.hub.relayPending, pc.id)
 			}
 			pc.hub.relayPendingMu.Unlock()
+			if pc.workerID != "" {
+				pc.hub.decrementRelayInFlight(pc.workerID)
+				pc.hub.recordWait(pc.workerID, pc.queuedAt)
+			}
 		}
 	})
 	close(pc.doneCh)
@@ -1358,7 +1659,7 @@ func (c *relayWorkerClient) Complete(ctx context.Context, worker protocol.Worker
 
 	respCh := make(chan protocol.Message, 4)
 	errCh := make(chan error, 1)
-	pc, err := c.hub.registerRelayCall(msg.ID, respCh, errCh)
+	pc, err := c.hub.registerRelayCall(msg.ID, respCh, errCh, worker.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -1401,7 +1702,7 @@ func (c *relayWorkerClient) Stream(ctx context.Context, worker protocol.WorkerIn
 	}
 	msg.WorkerID = worker.ID
 
-	pc, err := c.hub.registerRelayStream(msg.ID, chunkCh, errCh)
+	pc, err := c.hub.registerRelayStream(msg.ID, chunkCh, errCh, worker.ID)
 	if err != nil {
 		errCh <- err
 		close(chunkCh)
@@ -1437,7 +1738,7 @@ func (c *relayWorkerClient) LoadModel(ctx context.Context, worker protocol.Worke
 
 	respCh := make(chan protocol.Message, 4)
 	errCh := make(chan error, 1)
-	pc, err := c.hub.registerRelayCall(msg.ID, respCh, errCh)
+	pc, err := c.hub.registerRelayCall(msg.ID, respCh, errCh, worker.ID)
 	if err != nil {
 		return false, err
 	}

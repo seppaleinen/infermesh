@@ -1,4 +1,5 @@
 package router
+
 import (
 	"bytes"
 	"context"
@@ -24,7 +25,7 @@ func testLogger() *slog.Logger {
 // testRegistry creates a registry with a single worker that has a loaded model.
 func testRegistry(t *testing.T, workers []protocol.WorkerInfo) *testRegistryImpl {
 	regCfg := registry.Defaults()
-	regCfg.CheckInterval = 5 * time.Second      // 5s minimum
+	regCfg.CheckInterval = 5 * time.Second // 5s minimum
 	regCfg.UnavailableTTL = 60 * time.Second
 	regCfg.RemoveTTL = 120 * time.Second
 
@@ -81,7 +82,7 @@ func TestModelsListHandler(t *testing.T) {
 				{Name: "mistral-7b", Size: 4370000000, Quantization: "Q5_K_M", MaxTokens: 8192, Backend: "llama-cpp", Loaded: true},
 				{Name: "qwen-72b", Size: 45000000000, Quantization: "Q4_K_M", MaxTokens: 4096, Backend: "vllm", Loaded: false},
 			},
-			VRAM:   protocol.MemoryInfo{TotalMB: 24576, FreeMB: 20480},
+			VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 20480},
 		},
 	}
 
@@ -260,13 +261,13 @@ func TestChatCompletionsHandlerInvalidRequest(t *testing.T) {
 		statusExpect int
 	}{
 		{
-			name:        "invalid JSON",
-			body:        `{invalid json`,
+			name:         "invalid JSON",
+			body:         `{invalid json`,
 			statusExpect: http.StatusBadRequest,
 		},
 		{
-			name:        "empty body",
-			body:        `{}`,
+			name:         "empty body",
+			body:         `{}`,
 			statusExpect: http.StatusServiceUnavailable, // no model specified, scheduler fails
 		},
 	}
@@ -711,12 +712,12 @@ func TestChatCompletionsNonStreamingProxiesToWorker(t *testing.T) {
 		if r.URL.Path == "/capabilities" {
 			w.Header().Set("Content-Type", "application/json")
 			caps := protocol.WorkerInfo{
-				ID:          "nosteam-worker",
-				Hostname:    "nosteam-worker",
-				IP:          "127.0.0.1",
-				Port:        8081,
-				Status:      protocol.StatusAvailable,
-				Version:     "v1",
+				ID:       "nosteam-worker",
+				Hostname: "nosteam-worker",
+				IP:       "127.0.0.1",
+				Port:     8081,
+				Status:   protocol.StatusAvailable,
+				Version:  "v1",
 				Capabilities: protocol.Capabilities{
 					Models: []protocol.ModelInfo{
 						{Name: "nosteam-model", Quantization: "Q4_K_M", Loaded: true},
@@ -767,13 +768,13 @@ func TestChatCompletionsNonStreamingProxiesToWorker(t *testing.T) {
 	_, _ = fmt.Sscanf(portStr, "%d", &port)
 
 	worker := protocol.WorkerInfo{
-		ID:          "nosteam-worker",
-		Hostname:    "nosteam-worker",
-		IP:          "127.0.0.1",
-		Port:        port,
-		Status:      protocol.StatusAvailable,
-		Version:     "v1",
-		LastSeen:    time.Now(),
+		ID:       "nosteam-worker",
+		Hostname: "nosteam-worker",
+		IP:       "127.0.0.1",
+		Port:     port,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
 		Capabilities: protocol.Capabilities{
 			Models: []protocol.ModelInfo{
 				{Name: "nosteam-model", Quantization: "Q4_K_M", Loaded: true},
@@ -1315,6 +1316,199 @@ func TestWorkerUnavailable(t *testing.T) {
 	// Should return 503 since the worker is reachable but returns service unavailable
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected status %d, got %d, body: %s", http.StatusServiceUnavailable, w.Code, w.Body.String())
+	}
+}
+
+// TestChatCompletionsRateLimitRejectsAtCap tests that when a worker is at its
+// MaxInFlight cap the router returns an OpenAI-shaped 429 BEFORE SSE headers
+// are flushed (so the client sees a clean JSON error, not a half-open stream).
+func TestChatCompletionsRateLimitRejectsAtCap(t *testing.T) {
+	// Use a WebSocket worker with an active hub connection so the first
+	// request registers a pending call that never completes (the fake worker
+	// never responds), keeping the worker at its cap for the second request.
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+
+	hub := NewWSHub(tr.reg, testLogger())
+	hub.SetMaxInFlight(1)
+	hub.Start(context.Background())
+	wsServer := httptest.NewServer(hub.Handler())
+	defer wsServer.Close()
+
+	srv := tr.Server()
+	// Swap the server's internal hub for the one we configured above so the
+	// HTTP handlers read the same in-flight state the WS connection populates.
+	srv.hub = hub
+
+	info := protocol.WorkerInfo{
+		ID: "rl-worker", Hostname: "rl-worker", IP: "127.0.0.1", Port: 8081,
+		Status: protocol.StatusAvailable, Version: "v1", Transport: protocol.TransportWS,
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "rl-model", Quantization: "Q4_K_M", Loaded: true},
+			},
+		},
+	}
+	w := dialFakeWorker(t, wsServer.URL+"/v1/connect")
+	w.send(t, rawMsg(t, protocol.MsgRegister, protocol.RegisterPayload{Worker: info}))
+	_ = w.recv(t, 3*time.Second) // welcome
+
+	// Populate the capability cache so selectWorker finds the worker.
+	srv.cache = NewCapabilityCache(tr.reg, testLogger())
+	srv.cache.Start(context.Background())
+	srv.cache.mu.Lock()
+	srv.cache.cache[info.ID] = info
+	srv.cache.mu.Unlock()
+
+	chatReq := ChatRequest{
+		Model: "rl-model", Stream: true,
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+	}
+	body, _ := json.Marshal(chatReq)
+
+	// First request: should succeed (in_flight=0 < max=1). The fake worker
+	// never responds, so the request stays in-flight. Run it in a goroutine
+	// with a short timeout so the test doesn't block on the 30s proxyStream
+	// deadline.
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel1()
+	req = req.WithContext(ctx1)
+	wrec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.handleChatCompletions(wrec, req)
+	}()
+
+	// Wait until the first request has registered its pending call so the
+	// second request hits the cap.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		conn := srv.hub.Client("rl-worker")
+		if conn != nil {
+			c := conn.(*wsWorkerClient).conn
+			if c.workerInFlight() >= 1 {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first request did not register a pending call in time")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Second request: should be rejected with 429 BEFORE SSE headers.
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	srv.handleChatCompletions(w2, req2)
+
+	if w2.Code != http.StatusTooManyRequests {
+		t.Errorf("second request: expected status %d, got %d, body: %s", http.StatusTooManyRequests, w2.Code, w2.Body.String())
+	}
+	if w2.Header().Get("Content-Type") != "application/json" {
+		t.Errorf("expected application/json content type, got %q", w2.Header().Get("Content-Type"))
+	}
+	if w2.Header().Get("Retry-After") != "1" {
+		t.Errorf("expected Retry-After: 1, got %q", w2.Header().Get("Retry-After"))
+	}
+
+	var errResp ErrorResponse
+	if err := json.NewDecoder(w2.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+	if errResp.Error.Type != "rate_limit_error" {
+		t.Errorf("expected error type rate_limit_error, got %q", errResp.Error.Type)
+	}
+
+	// Clean up the first request's goroutine.
+	cancel1()
+	<-done
+}
+
+// TestQueueStatsEndpoint tests the /v1/queue/stats endpoint. It uses a real
+// WebSocket worker connection so the hub's connection map (which the endpoint
+// reads) has a registered worker.
+func TestQueueStatsEndpoint(t *testing.T) {
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+
+	hub := NewWSHub(tr.reg, testLogger())
+	hub.Start(context.Background())
+	wsServer := httptest.NewServer(hub.Handler())
+	defer wsServer.Close()
+
+	srv := tr.Server()
+	srv.hub = hub
+
+	info := protocol.WorkerInfo{
+		ID: "stats-worker", Hostname: "stats-worker", IP: "127.0.0.1", Port: 8081,
+		Status: protocol.StatusAvailable, Version: "v1", Transport: protocol.TransportWS,
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "stats-model", Quantization: "Q4_K_M", Loaded: true},
+			},
+		},
+	}
+	w := dialFakeWorker(t, wsServer.URL+"/v1/connect")
+	w.send(t, rawMsg(t, protocol.MsgRegister, protocol.RegisterPayload{Worker: info}))
+	_ = w.recv(t, 3*time.Second) // welcome
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/queue/stats", nil)
+	wrec := httptest.NewRecorder()
+	srv.handleQueueStats(wrec, req)
+
+	if wrec.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d, body: %s", http.StatusOK, wrec.Code, wrec.Body.String())
+	}
+	if wrec.Header().Get("Content-Type") != "application/json" {
+		t.Errorf("expected application/json, got %q", wrec.Header().Get("Content-Type"))
+	}
+
+	var resp QueueStatsResponse
+	if err := json.NewDecoder(wrec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode queue stats: %v", err)
+	}
+	if len(resp.Workers) != 1 {
+		t.Fatalf("expected 1 worker, got %d", len(resp.Workers))
+	}
+	if resp.Workers[0].WorkerID != "stats-worker" {
+		t.Errorf("expected worker_id stats-worker, got %s", resp.Workers[0].WorkerID)
+	}
+	if resp.Workers[0].InFlight != 0 {
+		t.Errorf("expected in_flight=0, got %d", resp.Workers[0].InFlight)
+	}
+	if resp.Pool.TotalInFlight != 0 {
+		t.Errorf("expected total_in_flight=0, got %d", resp.Pool.TotalInFlight)
+	}
+	if resp.Pool.QueueTimeP50Ms < 0 {
+		t.Errorf("expected p50 >= 0, got %f", resp.Pool.QueueTimeP50Ms)
+	}
+	if resp.Pool.QueueTimeP95Ms < 0 {
+		t.Errorf("expected p95 >= 0, got %f", resp.Pool.QueueTimeP95Ms)
+	}
+	if resp.Pool.QueueTimeP99Ms < 0 {
+		t.Errorf("expected p99 >= 0, got %f", resp.Pool.QueueTimeP99Ms)
+	}
+}
+
+// TestQueueStatsEndpointMethodNotAllowed tests that non-GET methods are rejected.
+func TestQueueStatsEndpointMethodNotAllowed(t *testing.T) {
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+	server := tr.Server()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/queue/stats", nil)
+	w := httptest.NewRecorder()
+	server.handleQueueStats(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected status %d, got %d", http.StatusMethodNotAllowed, w.Code)
 	}
 }
 
