@@ -41,6 +41,9 @@ type RunConfig struct {
 	MTLSCert string
 	MTLSKey  string
 	CertDir  string
+	// TrustedCNs is a comma-separated list of allowed client certificate CNs
+	// for mTLS verification (empty = any CA-signed cert).
+	TrustedCNs string
 	// RouterBase is the router base URL for dev-mode HTTP registration
 	// (e.g. http://127.0.0.1:8080). Empty means mDNS discovery.
 	RouterBase string
@@ -123,6 +126,7 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 		MTLSCert:           cfg.MTLSCert,
 		MTLSKey:            cfg.MTLSKey,
 		CertDir:            cfg.CertDir,
+		TrustedCNs:         cfg.TrustedCNs,
 		EnableHealthChecks: cfg.EnableHealthChecks,
 	}
 

@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"sort"
 	"time"
@@ -333,32 +331,44 @@ func (s *Server) Start(ctx context.Context) error {
 
 	var handler http.Handler = mux
 	if !security.IsDevMode(s.cfg) {
-		// Prod mode: enforce mTLS - router requires client cert from worker
-		tlsConfig := &tls.Config{
-			ClientAuth: tls.RequireAndVerifyClientCert,
+		// Prod mode: validate the TLS configuration before starting so we
+		// fail fast with a clear error instead of crashing inside
+		// ListenAndServe with an invalid TLS config.
+		caCertPath := filepath.Join(s.cfg.CertDir, "ca.crt")
+		if err := security.ValidateTLSConfig(s.cfg.MTLSCert, s.cfg.MTLSKey, caCertPath); err != nil {
+			return fmt.Errorf("invalid TLS configuration: %w", err)
 		}
 
-		// Load router's certificate for serving HTTPS
-		if cert, err := security.LoadTLSCertFromFile(s.cfg.MTLSCert, s.cfg.MTLSKey); err == nil {
-			tlsConfig.Certificates = []tls.Certificate{*cert}
+		// Load the CA cert pool for client-certificate verification.
+		caCertPool := security.LoadCACertPool(caCertPath)
 
-			// Load CA cert to verify worker's client certificate
-			if s.cfg.CertDir != "" {
-				caCertPool := x509.NewCertPool()
-				caCertPath := filepath.Join(s.cfg.CertDir, "ca.crt")
-				if caCertBytes, err := os.ReadFile(caCertPath); err == nil {
-					if caCert, err := x509.ParseCertificate(caCertBytes); err == nil {
-						caCertPool.AddCert(caCert)
-					}
-				}
-				tlsConfig.ClientCAs = caCertPool
-			}
+		// Wrap the handler with the mTLS middleware so the router enforces
+		// client-certificate verification and CN restriction at the HTTP
+		// layer. This replaces the raw tls.Config that was never enforced.
+		mtlsMW := security.NewMTLSMiddleware(caCertPool, true, security.SplitCNs(s.cfg.TrustedCNs)...)
+		handler = mtlsMW(mux)
+
+		// Per-endpoint API key check on inference endpoints. External
+		// clients must present a valid X-API-Key; the mTLS middleware
+		// handles worker-facing endpoints.
+		if s.cfg.APIKey != "" {
+			handler = s.wrapInferenceEndpoints(handler, s.cfg.APIKey)
+		}
+
+		// Load the router's certificate for serving HTTPS.
+		cert, err := security.LoadTLSCertFromFile(s.cfg.MTLSCert, s.cfg.MTLSKey)
+		if err != nil {
+			return fmt.Errorf("failed to load router TLS certificate: %w", err)
 		}
 
 		s.server = &http.Server{
 			Addr:      s.addr,
 			Handler:   handler,
-			TLSConfig: tlsConfig,
+			TLSConfig: &tls.Config{
+				Certificates: []tls.Certificate{*cert},
+				ClientAuth:   tls.RequireAndVerifyClientCert,
+				ClientCAs:    caCertPool,
+			},
 		}
 	} else {
 		s.server = &http.Server{
@@ -383,6 +393,21 @@ func (s *Server) Addr() string {
 		return s.server.Addr
 	}
 	return s.addr
+}
+
+// wrapInferenceEndpoints wraps the given handler so that inference endpoints
+// (/v1/chat/completions, /v1/completions) require a valid API key while
+// other endpoints pass through unchanged.
+func (s *Server) wrapInferenceEndpoints(next http.Handler, apiKey string) http.Handler {
+	apiKeyMW := security.NewAPIKeyMiddleware(apiKey, true)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/completions", "/v1/completions":
+			apiKeyMW(next).ServeHTTP(w, r)
+		default:
+			next.ServeHTTP(w, r)
+		}
+	})
 }
 
 // handleChatCompletions handles the /v1/chat/completions HTTP endpoint.

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/seppaleinen/infermesh/pkg/discovery"
@@ -24,6 +25,7 @@ type RouterFlags struct {
 	MTLSKey        string
 	CertDir        string
 	APIKey         string
+	TrustedCNs     string
 	Addr           string
 	RelayURL       string
 	MaxInFlight    int
@@ -59,6 +61,7 @@ func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
 	fs.StringVar(&f.MTLSKey, "mtls-key", "", "path to mTLS key file")
 	fs.StringVar(&f.CertDir, "cert-dir", "", "path to certificate directory (for CA)")
 	fs.StringVar(&f.APIKey, "api-key", "", "API key for authentication (production mode)")
+	fs.StringVar(&f.TrustedCNs, "trusted-cn", "", "comma-separated list of trusted client certificate CNs for mTLS (empty = any)")
 	fs.StringVar(&f.Addr, "addr", ":8080", "listen address (host:port) for the router HTTP server")
 	fs.StringVar(&f.RelayURL, "relay-url", "", "relay URL for outbound-only WebSocket connectivity (dev mode only)")
 	fs.IntVar(&f.MaxInFlight, "max-in-flight", 0, "max concurrent in-flight calls per worker (0 = default of 4); rejects excess with HTTP 429")
@@ -160,11 +163,22 @@ func runRouter(args []string) int {
 
 	// Security configuration
 	secCfg := security.Config{
-		DevMode:  isDevMode,
-		MTLSCert: f.MTLSCert,
-		MTLSKey:  f.MTLSKey,
-		CertDir:  f.CertDir,
-		APIKey:   f.APIKey,
+		DevMode:     isDevMode,
+		MTLSCert:    f.MTLSCert,
+		MTLSKey:     f.MTLSKey,
+		CertDir:     f.CertDir,
+		APIKey:      f.APIKey,
+		TrustedCNs:  f.TrustedCNs,
+	}
+
+	// Validate TLS configuration in production mode before starting the server
+	// so we fail fast with a clear error instead of crashing inside ListenAndServe.
+	if !isDevMode {
+		caCertPath := filepath.Join(f.CertDir, "ca.crt")
+		if err := security.ValidateTLSConfig(f.MTLSCert, f.MTLSKey, caCertPath); err != nil {
+			log.Error("invalid TLS configuration", "error", err)
+			return 1
+		}
 	}
 
 	// Start router HTTP server
