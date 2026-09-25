@@ -61,7 +61,9 @@ var (
 // defaultUnavailableTTL is how long since last heartbeat before a worker is considered unavailable.
 const defaultUnavailableTTL = 30 * time.Second
 
-
+// defaultMaxQueueDepth is the queue depth treated as fully loaded when normalizing
+// queue depth into the 0-1 score range.
+const defaultMaxQueueDepth = 10
 
 // WeightedScorer implements a deterministic weighted scoring algorithm.
 // Formula: score = w1*quantMatch + w2*vramFreeRatio - w3*gpuUtil - w4*queueDepth - w5*latencyNorm
@@ -72,6 +74,9 @@ type WeightedScorer struct {
 	GPUUtilWeight    float64 // weight for GPU utilization (inverted)
 	QueueDepthWeight float64 // weight for queue depth (inverted)
 	LatencyWeight    float64 // weight for latency (inverted)
+	// maxQueueDepth is the queue depth treated as fully loaded when normalizing
+	// queue depth into the 0-1 score range.
+	maxQueueDepth int
 	// unavailableTTL is how long since last heartbeat before worker is unavailable
 	unavailableTTL time.Duration
 }
@@ -85,19 +90,25 @@ func NewWeightedScorer() *WeightedScorer {
 		GPUUtilWeight:    0.15,
 		QueueDepthWeight: 0.10,
 		LatencyWeight:    0.10,
+		maxQueueDepth:    defaultMaxQueueDepth,
 		unavailableTTL:   defaultUnavailableTTL,
 	}
 }
 
 // NewWeightedScorerWithConfig creates a new WeightedScorer with custom weights.
 // Weights should sum to 1.0 for predictable scoring, but this is not enforced.
-func NewWeightedScorerWithConfig(quantMatch, vramFree, gpuUtil, queueDepth, latency float64, unavailableTTL time.Duration) *WeightedScorer {
+// maxQueueDepth <= 0 falls back to defaultMaxQueueDepth.
+func NewWeightedScorerWithConfig(quantMatch, vramFree, gpuUtil, queueDepth, latency float64, unavailableTTL time.Duration, maxQueueDepth int) *WeightedScorer {
+	if maxQueueDepth <= 0 {
+		maxQueueDepth = defaultMaxQueueDepth
+	}
 	return &WeightedScorer{
 		QuantMatchWeight: quantMatch,
 		VRAMFreeWeight:   vramFree,
 		GPUUtilWeight:    gpuUtil,
 		QueueDepthWeight: queueDepth,
 		LatencyWeight:    latency,
+		maxQueueDepth:    maxQueueDepth,
 		unavailableTTL:   unavailableTTL,
 	}
 }
@@ -110,6 +121,15 @@ func (s *WeightedScorer) Name() string {
 // GetUnavailableTTL returns the unavailable TTL.
 func (s *WeightedScorer) GetUnavailableTTL() time.Duration {
 	return s.unavailableTTL
+}
+
+// MaxQueueDepth returns the queue depth treated as fully loaded when normalizing
+// queue depth into the 0-1 score range.
+func (s *WeightedScorer) MaxQueueDepth() int {
+	if s.maxQueueDepth <= 0 {
+		return defaultMaxQueueDepth
+	}
+	return s.maxQueueDepth
 }
 
 // Score implements the weighted scoring algorithm.
@@ -192,11 +212,11 @@ func (s *WeightedScorer) Score(ctx context.Context, request ModelRequest, worker
 	}
 
 	// 4. Queue depth score (lower depth is better, so invert)
-	// Normalize queue depth: assume 0-10 range, where 0 is best, 10 is worst
+	// Normalize queue depth against maxQueueDepth: 0 is best, >= maxQueueDepth is worst.
 	queueDepthScore := 0.0
 	if worker.QueueDepth >= 0 {
-		// Normalize to 0-1 range where 1 is best (depth 0), 0 is worst (depth >=10)
-		queueDepthScore = 1.0 - math.Min(float64(worker.QueueDepth)/10.0, 1.0)
+		maxDepth := s.MaxQueueDepth()
+		queueDepthScore = 1.0 - math.Min(float64(worker.QueueDepth)/float64(maxDepth), 1.0)
 		if queueDepthScore < 0 {
 			queueDepthScore = 0
 		}
@@ -204,7 +224,7 @@ func (s *WeightedScorer) Score(ctx context.Context, request ModelRequest, worker
 			queueDepthScore = 1
 		}
 	} else {
-		// If queue depth unknown, assume 5 (neutral)
+		// If queue depth unknown, assume half of maxQueueDepth (neutral)
 		queueDepthScore = 0.5
 	}
 

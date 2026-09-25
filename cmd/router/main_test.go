@@ -5,7 +5,8 @@ import (
 )
 
 // TestParseRouterFlags verifies the router flag set parses correctly, including
-// the --max-in-flight and --max-connections caps introduced for issue #54.
+// the --max-in-flight/--max-connections caps (issue #54) and the --scorer-*
+// weighted-scorer flags (issue #62).
 func TestParseRouterFlags(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -44,6 +45,26 @@ func TestParseRouterFlags(t *testing.T) {
 			args:    []string{"--max-in-flight", "not-a-number"},
 			wantErr: true,
 		},
+		{
+			name: "scorer weights",
+			args: []string{
+				"--scorer-quant-match", "0.5",
+				"--scorer-vram-free", "0.3",
+				"--scorer-gpu-util", "0.1",
+				"--scorer-queue-depth", "0.05",
+				"--scorer-latency", "0.05",
+				"--scorer-max-queue-depth", "20",
+			},
+			want: RouterFlags{
+				Addr:                ":8080",
+				ScorerQuantMatch:    0.5,
+				ScorerVRAMFree:      0.3,
+				ScorerGPUUtil:       0.1,
+				ScorerQueueDepth:    0.05,
+				ScorerLatency:       0.05,
+				ScorerMaxQueueDepth: 20,
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -69,6 +90,24 @@ func TestParseRouterFlags(t *testing.T) {
 			}
 			if f.MaxConnections != tt.want.MaxConnections {
 				t.Errorf("MaxConnections: got %d, want %d", f.MaxConnections, tt.want.MaxConnections)
+			}
+			if f.ScorerQuantMatch != tt.want.ScorerQuantMatch {
+				t.Errorf("ScorerQuantMatch: got %v, want %v", f.ScorerQuantMatch, tt.want.ScorerQuantMatch)
+			}
+			if f.ScorerVRAMFree != tt.want.ScorerVRAMFree {
+				t.Errorf("ScorerVRAMFree: got %v, want %v", f.ScorerVRAMFree, tt.want.ScorerVRAMFree)
+			}
+			if f.ScorerGPUUtil != tt.want.ScorerGPUUtil {
+				t.Errorf("ScorerGPUUtil: got %v, want %v", f.ScorerGPUUtil, tt.want.ScorerGPUUtil)
+			}
+			if f.ScorerQueueDepth != tt.want.ScorerQueueDepth {
+				t.Errorf("ScorerQueueDepth: got %v, want %v", f.ScorerQueueDepth, tt.want.ScorerQueueDepth)
+			}
+			if f.ScorerLatency != tt.want.ScorerLatency {
+				t.Errorf("ScorerLatency: got %v, want %v", f.ScorerLatency, tt.want.ScorerLatency)
+			}
+			if f.ScorerMaxQueueDepth != tt.want.ScorerMaxQueueDepth {
+				t.Errorf("ScorerMaxQueueDepth: got %d, want %d", f.ScorerMaxQueueDepth, tt.want.ScorerMaxQueueDepth)
 			}
 		})
 	}

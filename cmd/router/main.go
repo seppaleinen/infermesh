@@ -28,6 +28,14 @@ type RouterFlags struct {
 	RelayURL       string
 	MaxInFlight    int
 	MaxConnections int
+
+	// Weighted scorer settings. Zero values keep the built-in defaults (no-op).
+	ScorerQuantMatch    float64
+	ScorerVRAMFree      float64
+	ScorerGPUUtil       float64
+	ScorerQueueDepth    float64
+	ScorerLatency       float64
+	ScorerMaxQueueDepth int
 }
 
 // parseRouterFlags parses args into RouterFlags. It uses ContinueOnError so
@@ -52,6 +60,12 @@ func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
 	fs.StringVar(&f.RelayURL, "relay-url", "", "relay URL for outbound-only WebSocket connectivity (dev mode only)")
 	fs.IntVar(&f.MaxInFlight, "max-in-flight", 0, "max concurrent in-flight calls per worker (0 = default of 4); rejects excess with HTTP 429")
 	fs.IntVar(&f.MaxConnections, "max-connections", 0, "max concurrent worker WebSocket connections (0 = default of 256); rejects excess with a protocol error frame")
+	fs.Float64Var(&f.ScorerQuantMatch, "scorer-quant-match", 0, "weight for quantization match in weighted scoring (0 = keep default of 0.40)")
+	fs.Float64Var(&f.ScorerVRAMFree, "scorer-vram-free", 0, "weight for free VRAM ratio in weighted scoring (0 = keep default of 0.25)")
+	fs.Float64Var(&f.ScorerGPUUtil, "scorer-gpu-util", 0, "weight for GPU utilization in weighted scoring (0 = keep default of 0.15)")
+	fs.Float64Var(&f.ScorerQueueDepth, "scorer-queue-depth", 0, "weight for queue depth in weighted scoring (0 = keep default of 0.10)")
+	fs.Float64Var(&f.ScorerLatency, "scorer-latency", 0, "weight for latency in weighted scoring (0 = keep default of 0.10)")
+	fs.IntVar(&f.ScorerMaxQueueDepth, "scorer-max-queue-depth", 0, "queue depth treated as fully loaded when normalizing queue depth score (0 = keep default of 10)")
 }
 
 func main() {
@@ -155,6 +169,8 @@ func runRouter(args []string) int {
 	if f.MaxConnections > 0 {
 		srv.SetMaxConnections(f.MaxConnections)
 	}
+	// Zero values are no-ops that keep the built-in scorer defaults.
+	srv.SetScorerWeights(f.ScorerQuantMatch, f.ScorerVRAMFree, f.ScorerGPUUtil, f.ScorerQueueDepth, f.ScorerLatency, f.ScorerMaxQueueDepth)
 	if f.RelayURL != "" {
 		srv.SetRelayURL(f.RelayURL)
 		// Establish the relay connection in the background with retry. The

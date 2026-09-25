@@ -718,7 +718,7 @@ func TestSelectWorkerDeterminism(t *testing.T) {
 
 // TestCustomWeightedScorer tests creating a scorer with custom weights.
 func TestCustomWeightedScorer(t *testing.T) {
-	s := NewWeightedScorerWithConfig(0.5, 0.2, 0.1, 0.1, 0.1, 60*time.Second)
+	s := NewWeightedScorerWithConfig(0.5, 0.2, 0.1, 0.1, 0.1, 60*time.Second, 10)
 
 	if s.QuantMatchWeight != 0.5 {
 		t.Errorf("QuantMatchWeight: got %f, want 0.5", s.QuantMatchWeight)
@@ -737,6 +737,85 @@ func TestCustomWeightedScorer(t *testing.T) {
 	}
 	if s.GetUnavailableTTL() != 60*time.Second {
 		t.Errorf("UnavailableTTL: got %v, want 60s", s.GetUnavailableTTL())
+	}
+	if s.MaxQueueDepth() != 10 {
+		t.Errorf("MaxQueueDepth: got %d, want 10", s.MaxQueueDepth())
+	}
+}
+
+// TestMaxQueueDepthNormalization verifies queue depth is normalized against the
+// configured maxQueueDepth rather than a hardcoded 10.
+func TestMaxQueueDepthNormalization(t *testing.T) {
+	ctx := context.Background()
+
+	worker := WorkerInfo{
+		ID:            "worker-1",
+		Addr:          "127.0.0.1:8080",
+		VRAMTotalMB:   24576,
+		VRAMFreeMB:    16384,
+		GPUUtilPct:    10.0,
+		QueueDepth:    5,
+		AvgLatencyMS:  50.0,
+		LastHeartbeat: time.Now(),
+		Models: []protocol.ModelInfo{
+			{Name: "llama3-8b", Quantization: "Q4", Size: 4660000000, Loaded: true},
+		},
+	}
+
+	req := ModelRequest{Model: "llama3-8b", Quantization: "Q4"}
+
+	// With maxQueueDepth=10 (default), depth 5 is half-loaded → queue score 0.5.
+	sDefault := NewWeightedScorerWithConfig(0.40, 0.25, 0.15, 0.10, 0.10, defaultUnavailableTTL, 10)
+	scoreDefault, err := sDefault.Score(ctx, req, worker)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// With maxQueueDepth=20, the same depth 5 is a quarter-loaded → queue score
+	// 0.75, so the total must be strictly higher than with maxQueueDepth=10.
+	sWide := NewWeightedScorerWithConfig(0.40, 0.25, 0.15, 0.10, 0.10, defaultUnavailableTTL, 20)
+	scoreWide, err := sWide.Score(ctx, req, worker)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if scoreWide <= scoreDefault {
+		t.Errorf("expected wider maxQueueDepth to raise the score for the same depth: got %.6f, want > %.6f", scoreWide, scoreDefault)
+	}
+
+	// Depth >= maxQueueDepth saturates at a queue score of 0 and must be strictly
+	// worse than depth 5 under the same scorer.
+	saturated := worker
+	saturated.QueueDepth = 20
+	scoreSat, err := sWide.Score(ctx, req, saturated)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if scoreSat >= scoreWide {
+		t.Errorf("expected saturated queue to lower the score: got %.6f, want < %.6f", scoreSat, scoreWide)
+	}
+}
+
+// TestMaxQueueDepthAccessor verifies MaxQueueDepth() returns the configured value
+// and falls back to defaultMaxQueueDepth for non-positive values.
+func TestMaxQueueDepthAccessor(t *testing.T) {
+	s := NewWeightedScorerWithConfig(0.4, 0.25, 0.15, 0.1, 0.1, defaultUnavailableTTL, 25)
+	if got := s.MaxQueueDepth(); got != 25 {
+		t.Errorf("MaxQueueDepth: got %d, want 25", got)
+	}
+
+	sZero := NewWeightedScorerWithConfig(0.4, 0.25, 0.15, 0.1, 0.1, defaultUnavailableTTL, 0)
+	if got := sZero.MaxQueueDepth(); got != defaultMaxQueueDepth {
+		t.Errorf("MaxQueueDepth (zero config): got %d, want %d", got, defaultMaxQueueDepth)
+	}
+
+	sNeg := NewWeightedScorerWithConfig(0.4, 0.25, 0.15, 0.1, 0.1, defaultUnavailableTTL, -3)
+	if got := sNeg.MaxQueueDepth(); got != defaultMaxQueueDepth {
+		t.Errorf("MaxQueueDepth (negative config): got %d, want %d", got, defaultMaxQueueDepth)
+	}
+
+	sDefault := NewWeightedScorer()
+	if got := sDefault.MaxQueueDepth(); got != defaultMaxQueueDepth {
+		t.Errorf("MaxQueueDepth (default scorer): got %d, want %d", got, defaultMaxQueueDepth)
 	}
 }
 

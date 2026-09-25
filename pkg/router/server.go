@@ -17,6 +17,7 @@ import (
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/pkg/registry"
+	"github.com/seppaleinen/infermesh/pkg/scheduler"
 	"github.com/seppaleinen/infermesh/pkg/security"
 	"log/slog"
 )
@@ -122,6 +123,15 @@ type Server struct {
 	server  *http.Server
 	counter *CallCounter
 
+	// scorer is the deterministic weighted scoring algorithm used by
+	// selectWorker. Never nil after NewServer; tests may replace it.
+	scorer        scheduler.ScoringAlgorithm
+	scorerWeights schedulerWeights
+
+	// loadSnapshot returns per-worker queue-load data for scoring. Defaults to
+	// reading the hub; tests may override it with deterministic values.
+	loadSnapshot func() map[string]WorkerQueueStats
+
 	// proxyTimeout bounds how long proxyStream waits for a worker response
 	// before emitting a 504. Defaults to 30s; tests override it to drive the
 	// 504 path without sleeping. See SetProxyTimeout.
@@ -195,7 +205,8 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 	cache := NewCapabilityCache(reg, log)
 	hub := NewWSHub(reg, log)
 	hub.SetAPIKey(cfg.APIKey)
-	return &Server{
+	scorer := scheduler.NewWeightedScorer()
+	srv := &Server{
 		log:          log,
 		reg:          reg,
 		addr:         addr,
@@ -204,7 +215,18 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 		hub:          hub,
 		counter:      NewCallCounter(10 * time.Minute),
 		proxyTimeout: 30 * time.Second,
+		scorer:       scorer,
+		scorerWeights: schedulerWeights{
+			QuantMatch:    scorer.QuantMatchWeight,
+			VRAMFree:      scorer.VRAMFreeWeight,
+			GPUUtil:       scorer.GPUUtilWeight,
+			QueueDepth:    scorer.QueueDepthWeight,
+			Latency:       scorer.LatencyWeight,
+			MaxQueueDepth: scorer.MaxQueueDepth(),
+		},
 	}
+	srv.loadSnapshot = srv.hubLoadSnapshot
+	return srv
 }
 
 // SetRelayURL configures the relay WebSocket URL for outbound-only mode.
@@ -232,6 +254,53 @@ func (s *Server) SetProxyTimeout(d time.Duration) {
 		d = 30 * time.Second
 	}
 	s.proxyTimeout = d
+}
+
+// schedulerWeights holds the configurable weighted-scorer settings exposed via
+// CLI flags. Zero values mean "keep current" when passed to SetScorerWeights.
+type schedulerWeights struct {
+	QuantMatch    float64
+	VRAMFree      float64
+	GPUUtil       float64
+	QueueDepth    float64
+	Latency       float64
+	MaxQueueDepth int
+}
+
+// SetScorerWeights updates the weighted scorer used by selectWorker. A zero
+// value for any weight keeps that weight at its current value, so an all-zero
+// call is a no-op and the built-in defaults survive; maxQueueDepth <= 0 keeps
+// the current threshold (defaultMaxQueueDepth when unset).
+func (s *Server) SetScorerWeights(quantMatch, vramFree, gpuUtil, queueDepth, latency float64, maxQueueDepth int) {
+	w := s.scorerWeights
+	if quantMatch > 0 {
+		w.QuantMatch = quantMatch
+	}
+	if vramFree > 0 {
+		w.VRAMFree = vramFree
+	}
+	if gpuUtil > 0 {
+		w.GPUUtil = gpuUtil
+	}
+	if queueDepth > 0 {
+		w.QueueDepth = queueDepth
+	}
+	if latency > 0 {
+		w.Latency = latency
+	}
+	if maxQueueDepth > 0 {
+		w.MaxQueueDepth = maxQueueDepth
+	}
+	s.scorerWeights = w
+	s.scorer = scheduler.NewWeightedScorerWithConfig(
+		w.QuantMatch, w.VRAMFree, w.GPUUtil, w.QueueDepth, w.Latency,
+		scheduler.DefaultUnavailableTTL(), w.MaxQueueDepth,
+	)
+}
+
+// ScorerWeights returns the current scorer weight configuration.
+func (s *Server) ScorerWeights() schedulerWeights {
+	return s.scorerWeights
 }
 
 // RunRelay maintains the outbound relay connection, dialing immediately and
@@ -748,7 +817,22 @@ func (s *Server) selectWorker(model string) (protocol.WorkerInfo, error) {
 	}
 
 	if len(candidates) > 0 {
-		// Simple round-robin selection (use timestamp for now)
+		// Deterministic ordering before scoring so equal scores resolve to the
+		// lowest worker ID.
+		sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID < candidates[j].ID })
+		if s.scorer != nil {
+			sel, err := s.scoreCandidates(model, candidates, s.loadSnapshot())
+			if err == nil && sel != nil {
+				for _, w := range candidates {
+					if w.ID == sel.ID {
+						s.log.Debug("selected worker via weighted scorer", "model", model, "worker", w.ID, "score", sel.Score)
+						return w, nil
+					}
+				}
+			} else if err != nil {
+				s.log.Warn("weighted scorer failed, falling back to deterministic selection", "model", model, "error", err)
+			}
+		}
 		return candidates[0], nil
 	}
 
@@ -770,6 +854,61 @@ func (s *Server) selectWorker(model string) (protocol.WorkerInfo, error) {
 	}
 
 	return protocol.WorkerInfo{}, fmt.Errorf("no worker found with model %s loaded", model)
+}
+
+// hubLoadSnapshot returns a per-worker queue-load snapshot from the hub, taken
+// once per selection so every candidate sees consistent load data. Returns an
+// empty map when no hub is configured (e.g. minimal test servers).
+func (s *Server) hubLoadSnapshot() map[string]WorkerQueueStats {
+	load := make(map[string]WorkerQueueStats)
+	if s.hub == nil {
+		return load
+	}
+	for _, ws := range s.hub.QueueStats().Workers {
+		load[ws.WorkerID] = ws
+	}
+	return load
+}
+
+// toSchedulerWorker converts a cached protocol worker into the scheduler's
+// view, attaching queue depth and wait latency from the hub snapshot when
+// available. Unknown signals are left negative so the scorer treats them as
+// neutral (workers do not push live GPU utilization today).
+func (s *Server) toSchedulerWorker(w protocol.WorkerInfo, load WorkerQueueStats, haveLoad bool) scheduler.WorkerInfo {
+	sw := scheduler.WorkerInfo{
+		ID:            w.ID,
+		Addr:          fmt.Sprintf("%s:%d", w.IP, w.Port),
+		GPUUtilPct:    -1, // unknown; scorer treats as neutral
+		QueueDepth:    -1, // unknown until the load snapshot says otherwise
+		AvgLatencyMS:  -1, // unknown until the load snapshot says otherwise
+		LastHeartbeat: w.LastSeen,
+	}
+	if w.Capabilities.VRAM.TotalMB > 0 {
+		sw.VRAMTotalMB = int(w.Capabilities.VRAM.TotalMB)
+		sw.VRAMFreeMB = int(w.Capabilities.VRAM.FreeMB)
+	}
+	for _, m := range w.Capabilities.Models {
+		sw.Models = append(sw.Models, m)
+	}
+	if haveLoad {
+		sw.QueueDepth = int(load.QueueDepth)
+		if load.AvgWaitMs >= 0 {
+			sw.AvgLatencyMS = load.AvgWaitMs
+		}
+	}
+	return sw
+}
+
+// scoreCandidates runs the weighted scorer over candidates and returns the best
+// worker. Candidates must already be deterministically ordered (by ID) so equal
+// scores resolve to the lowest ID.
+func (s *Server) scoreCandidates(model string, candidates []protocol.WorkerInfo, load map[string]WorkerQueueStats) (*scheduler.SelectedWorker, error) {
+	workers := make([]scheduler.WorkerInfo, 0, len(candidates))
+	for _, w := range candidates {
+		l, ok := load[w.ID]
+		workers = append(workers, s.toSchedulerWorker(w, l, ok))
+	}
+	return scheduler.SelectWorker(context.Background(), s.scorer, scheduler.ModelRequest{Model: model}, workers, s.scorer.GetUnavailableTTL())
 }
 
 // loadModelOnWorker attempts to load a model on a worker using HTTP proxy
