@@ -57,23 +57,28 @@ build-app:
 	cd app && wails3 task build OUTPUT=../bin/app/infermesh-app
 
 # macOS: build host-arch production binary, create the .app bundle (ad-hoc
-# signed), relocate to bin/app/. Leaves the raw binary at app/bin/InferMesh
-# (gitignored) so re-runs stay idempotent.
+# signed with hardened runtime + entitlements), relocate to bin/app/.
+# Leaves the raw binary at app/bin/InferMesh (gitignored) so re-runs stay
+# idempotent. The Taskfile's `codesign:verify` task runs after bundling and
+# exits non-zero if the bundle is not ad-hoc signed — so a failed signature
+# fails the whole build.
 package-app:
 	$(require-wails3)
 	cd app && wails3 task package APP_NAME=$(APP_NAME)
 	mkdir -p $(APP_BIN_DIR)
 	rm -rf $(APP_BIN_DIR)/$(APP_NAME).app
 	mv app/bin/$(APP_NAME).app $(APP_BIN_DIR)/
-	@echo "Packaged: $(APP_BIN_DIR)/$(APP_NAME).app (ad-hoc signed)"
+	@echo "Packaged: $(APP_BIN_DIR)/$(APP_NAME).app (ad-hoc signed, hardened runtime)"
 
-# macOS: .dmg (darwin-only; builds package first).
+# macOS: .digm (darwin-only; builds package first, which signs + verifies).
+# A README is dropped into the DMG so users find the Gatekeeper workaround
+# without digging through System Settings.
 package-app-dmg:
 	$(require-wails3)
-	cd app && wails3 task darwin:package:dmg APP_NAME=$(APP_NAME)
+	cd app && wails3 task darwin:package:dmg APP_NAME=$(APP_NAME) DMG_FILES="README.md=build/darwin/README.md"
 	mkdir -p $(APP_BIN_DIR)
 	mv -f app/bin/*.dmg $(APP_BIN_DIR)/ 2>/dev/null || { echo "expected app/bin/*.dmg but nothing found"; exit 1; }
-	@echo "Packaged: $(APP_BIN_DIR)/$(APP_NAME).dmg"
+	@echo "Packaged: $(APP_BIN_DIR)/$(APP_NAME).dmg (ad-hoc signed, hardened runtime)"
 
 # Linux: AppImage + deb. Requires a Linux host (webkit2gtk) or Docker with the
 # wails-cross image. On non-Linux hosts this prints guidance and FAILS (exit 1):
