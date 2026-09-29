@@ -109,6 +109,50 @@ func NewMTLSMiddleware(caCertPool *x509.CertPool, required bool, allowedCN ...st
 	}
 }
 
+// NewAPIKeyMiddleware creates a middleware that enforces API key authentication
+// on inference endpoints. When required is false (dev mode) it passes through.
+// When required is true every request must present a valid key in the
+// X-API-Key header.
+func NewAPIKeyMiddleware(apiKey string, required bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !required {
+				next.ServeHTTP(w, r)
+				return
+			}
+			key := r.Header.Get("X-API-Key")
+			if key == "" {
+				logAudit(r.Context(), "API key denied: missing X-API-Key header", r)
+				http.Error(w, "API key required", http.StatusUnauthorized)
+				return
+			}
+			if key != apiKey {
+				logAudit(r.Context(), "API key denied: invalid key", r)
+				http.Error(w, "invalid API key", http.StatusUnauthorized)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// SplitCNs splits a comma-separated list of trusted CNs into a slice.
+// An empty string yields an empty slice (no CN restriction).
+func SplitCNs(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func logAudit(ctx context.Context, msg string, r *http.Request) {
 	slog.Warn(msg, "remote_addr", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
 }

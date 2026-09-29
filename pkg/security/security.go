@@ -7,6 +7,7 @@ type Config struct {
 	MTLSKey            string `json:"mtls_key"`
 	CertDir            string `json:"cert_dir"`
 	APIKey             string `json:"api_key"`
+	TrustedCNs         string `json:"trusted_cns"` // comma-separated CNs allowed to present client certs (empty = any)
 	EnableHealthChecks bool   `json:"enable_health_checks"` // Controls periodic backend health check loop
 }
 

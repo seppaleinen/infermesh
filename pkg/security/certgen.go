@@ -185,6 +185,69 @@ func VerifyCertSignedByCA(cert *x509.Certificate, caCert *x509.Certificate) bool
 	return err == nil
 }
 
+// ValidateTLSConfig verifies that the mTLS cert, key, and CA files exist and
+// are parseable before the server starts. It fails fast with a descriptive
+// error so operators get a clear message instead of a crash inside
+// ListenAndServeTLS with empty cert paths.
+func ValidateTLSConfig(certFile, keyFile, caCertFile string) error {
+	if certFile == "" {
+		return fmt.Errorf("mtls-cert path is required in production mode")
+	}
+	if keyFile == "" {
+		return fmt.Errorf("mtls-key path is required in production mode")
+	}
+	if caCertFile == "" {
+		return fmt.Errorf("ca.crt path is required in production mode (use --cert-dir)")
+	}
+
+	if _, err := os.Stat(certFile); err != nil {
+		return fmt.Errorf("mtls-cert %q: %w", certFile, err)
+	}
+	if _, err := os.Stat(keyFile); err != nil {
+		return fmt.Errorf("mtls-key %q: %w", keyFile, err)
+	}
+	if _, err := os.Stat(caCertFile); err != nil {
+		return fmt.Errorf("ca.crt %q: %w", caCertFile, err)
+	}
+
+	// Verify the cert/key pair loads and the CA parses.
+	if _, err := LoadTLSCertFromFile(certFile, keyFile); err != nil {
+		return fmt.Errorf("failed to load mTLS certificate: %w", err)
+	}
+
+	caPEM, err := os.ReadFile(caCertFile)
+	if err != nil {
+		return fmt.Errorf("failed to read ca.crt: %w", err)
+	}
+	block, _ := pem.Decode(caPEM)
+	if block == nil {
+		return fmt.Errorf("ca.crt %q is not a PEM-encoded certificate", caCertFile)
+	}
+	if block.Type != "CERTIFICATE" {
+		return fmt.Errorf("ca.crt %q is a %q block, want CERTIFICATE", caCertFile, block.Type)
+	}
+	if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+		return fmt.Errorf("failed to parse ca.crt: %w", err)
+	}
+	return nil
+}
+
+// LoadCACertPool loads the CA certificate from the given PEM file into an
+// x509.CertPool. Returns an empty pool on error; callers should check the
+// return value or call ValidateTLSConfig first.
+func LoadCACertPool(caCertFile string) *x509.CertPool {
+	pool := x509.NewCertPool()
+	if caCertFile == "" {
+		return pool
+	}
+	data, err := os.ReadFile(caCertFile)
+	if err != nil {
+		return pool
+	}
+	_ = pool.AppendCertsFromPEM(data)
+	return pool
+}
+
 func getPrimaryIPv4() net.IP {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {

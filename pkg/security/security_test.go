@@ -813,3 +813,165 @@ func splitLines(content string) []string {
 // Ensure unused import doesn't cause issues
 var _ = io.Discard
 var _ = testLogger
+
+// TestValidateTLSConfig verifies that ValidateTLSConfig enforces cert/key/CA
+// existence and validity before the server starts.
+func TestValidateTLSConfig(t *testing.T) {
+	caDir := t.TempDir()
+	nodeDir := t.TempDir()
+
+	caCertPath, caKeyPath, err := GenerateSelfSignedCA(caDir)
+	if err != nil {
+		t.Fatalf("GenerateSelfSignedCA failed: %v", err)
+	}
+	certPath, keyPath, err := GenerateNodeCert(nodeDir, caCertPath, caKeyPath, "worker-1")
+	if err != nil {
+		t.Fatalf("GenerateNodeCert failed: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		certFile   string
+		keyFile    string
+		caCertFile string
+		wantErr    bool
+	}{
+		{"valid config", certPath, keyPath, caCertPath, false},
+		{"missing cert", "", keyPath, caCertPath, true},
+		{"missing key", certPath, "", caCertPath, true},
+		{"missing CA", certPath, keyPath, "", true},
+		{"cert file missing", "/nonexistent/cert.pem", keyPath, caCertPath, true},
+		{"key file missing", certPath, "/nonexistent/key.pem", caCertPath, true},
+		{"CA file missing", certPath, keyPath, "/nonexistent/ca.crt", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateTLSConfig(tt.certFile, tt.keyFile, tt.caCertFile)
+			if tt.wantErr && err == nil {
+				t.Errorf("ValidateTLSConfig(%q,%q,%q) expected error, got nil", tt.certFile, tt.keyFile, tt.caCertFile)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("ValidateTLSConfig(%q,%q,%q) unexpected error: %v", tt.certFile, tt.keyFile, tt.caCertFile, err)
+			}
+		})
+	}
+}
+
+// TestLoadCACertPool verifies that LoadCACertPool loads a CA cert into a pool
+// and returns an empty pool for a missing file.
+func TestLoadCACertPool(t *testing.T) {
+	caDir := t.TempDir()
+	caCertPath, _, err := GenerateSelfSignedCA(caDir)
+	if err != nil {
+		t.Fatalf("GenerateSelfSignedCA failed: %v", err)
+	}
+
+	pool := LoadCACertPool(caCertPath)
+	if pool == nil {
+		t.Fatal("LoadCACertPool returned nil")
+	}
+
+	// Parse the CA cert and verify it's in the pool
+	caPEM, err := os.ReadFile(caCertPath)
+	if err != nil {
+		t.Fatalf("Failed to read CA cert: %v", err)
+	}
+	block, _ := pem.Decode(caPEM)
+	caCert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("Failed to parse CA cert: %v", err)
+	}
+	if _, err := caCert.Verify(x509.VerifyOptions{Roots: pool}); err != nil {
+		t.Errorf("CA cert not verifiable against loaded pool: %v", err)
+	}
+
+	emptyPool := LoadCACertPool("/nonexistent/ca.crt")
+	if emptyPool == nil {
+		t.Fatal("LoadCACertPool returned nil for missing file")
+	}
+}
+
+// TestNewAPIKeyMiddleware verifies the API key middleware enforces the
+// X-API-Key header in required mode and passes through in dev mode.
+func TestNewAPIKeyMiddleware(t *testing.T) {
+	mw := NewAPIKeyMiddleware("secret-key", true)
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	})
+
+	tests := []struct {
+		name           string
+		method         string
+		header         string
+		expectedStatus int
+	}{
+		{"missing key", http.MethodGet, "", http.StatusUnauthorized},
+		{"wrong key", http.MethodGet, "wrong", http.StatusUnauthorized},
+		{"valid key", http.MethodGet, "secret-key", http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := mw(testHandler)
+			req := httptest.NewRequest(tt.method, "/v1/chat/completions", nil)
+			if tt.header != "" {
+				req.Header.Set("X-API-Key", tt.header)
+			}
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if w.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d, body: %s", tt.expectedStatus, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestNewAPIKeyMiddlewareDevMode verifies the API key middleware passes
+// through when required is false (dev mode).
+func TestNewAPIKeyMiddlewareDevMode(t *testing.T) {
+	mw := NewAPIKeyMiddleware("secret-key", false)
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	})
+
+	handler := mw(testHandler)
+	req := httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+}
+
+// TestSplitCNs verifies SplitCNs handles empty, single, and comma-separated
+// CN lists correctly.
+func TestSplitCNs(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{"empty", "", nil},
+		{"single", "worker-1", []string{"worker-1"}},
+		{"multiple", "worker-1,worker-2", []string{"worker-1", "worker-2"}},
+		{"with spaces", "worker-1, worker-2 , worker-3", []string{"worker-1", "worker-2", "worker-3"}},
+		{"trailing comma", "worker-1,", []string{"worker-1"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SplitCNs(tt.input)
+			if len(got) != len(tt.expected) {
+				t.Errorf("SplitCNs(%q) = %v, want %v", tt.input, got, tt.expected)
+			}
+			for i, v := range tt.expected {
+				if got[i] != v {
+					t.Errorf("SplitCNs(%q)[%d] = %q, want %q", tt.input, i, got[i], v)
+				}
+			}
+		})
+	}
+}
