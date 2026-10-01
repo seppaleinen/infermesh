@@ -134,6 +134,21 @@ type Server struct {
 	// before emitting a 504. Defaults to 30s; tests override it to drive the
 	// 504 path without sleeping. See SetProxyTimeout.
 	proxyTimeout time.Duration
+
+	// maxAttempts bounds how many worker attempts dispatchWithFailover makes
+	// for a single non-streaming client request (1 = no failover). Defaults to
+	// 3; overridden by SetMaxAttempts / the --max-attempts CLI flag.
+	maxAttempts int
+
+	// retryBudget is the global deadline applied across all failover attempts
+	// for a single non-streaming client request. Defaults to 60s; overridden
+	// by SetRetryBudget / the --retry-budget CLI flag.
+	retryBudget time.Duration
+
+	// clientFactory returns the WorkerClient used to talk to a worker. Defaults
+	// to clientFor; tests override it to inject deterministic errors into the
+	// failover loop without spinning up real worker servers.
+	clientFactory func(protocol.WorkerInfo) WorkerClient
 }
 
 // ChatMessage represents a single message in a chat conversation.
@@ -223,7 +238,11 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 			MaxQueueDepth: scorer.MaxQueueDepth(),
 		},
 	}
-	srv.loadSnapshot = srv.hubLoadSnapshot
+srv.loadSnapshot = srv.hubLoadSnapshot
+	// Default retry/failover configuration.
+	srv.maxAttempts = 3
+	srv.retryBudget = 60 * time.Second
+	srv.clientFactory = srv.clientFor
 	return srv
 }
 
@@ -252,6 +271,27 @@ func (s *Server) SetProxyTimeout(d time.Duration) {
 		d = 30 * time.Second
 	}
 	s.proxyTimeout = d
+}
+
+// SetMaxAttempts overrides the maximum number of worker attempts
+// dispatchWithFailover makes for a single non-streaming client request.
+// A value <= 1 disables failover (single attempt, current behavior).
+// A value > 1 enables failover with up to maxAttempts total attempts.
+// Values <= 0 fall back to the default (3).
+func (s *Server) SetMaxAttempts(n int) {
+	if n <= 0 {
+		n = 3
+	}
+	s.maxAttempts = n
+}
+
+// SetRetryBudget overrides the global deadline applied across all failover
+// attempts for a single non-streaming request. A value <= 0 falls back to 60s.
+func (s *Server) SetRetryBudget(d time.Duration) {
+	if d <= 0 {
+		d = 60 * time.Second
+	}
+	s.retryBudget = d
 }
 
 // schedulerWeights holds the configurable weighted-scorer settings exposed via
@@ -445,35 +485,51 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Select a worker using the registry
-	worker, err := s.selectWorker(req.Model)
+	// Marshal the request body once for dispatch.
+	body, err := json.Marshal(req)
 	if err != nil {
-		s.log.Error("failed to select worker", "error", err)
-		writeErrorResponse(w, http.StatusServiceUnavailable, "no workers", "server_error", "no_workers")
+		s.log.Error("failed to marshal chat request", "error", err)
+		writeErrorResponse(w, http.StatusInternalServerError, "internal server error", "server_error", "marshal_error")
 		return
 	}
 
-	// Record this inference dispatch for the popularity counter.
+	if req.Stream {
+		// Streaming: fail fast, no failover (cannot undo partial SSE output).
+		worker, err := s.selectWorker(req.Model)
+		if err != nil {
+			s.log.Error("failed to select worker", "error", err)
+			writeErrorResponse(w, http.StatusServiceUnavailable, "no workers", "server_error", "no_workers")
+			return
+		}
+		if s.counter != nil {
+			s.counter.Record(req.Model)
+		}
+		if s.hub != nil && s.hub.isRateLimited(worker.ID) {
+			s.hub.recordRejection(worker.ID, 429)
+			writeRateLimitError(w)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		s.proxyChatStream(w, r, worker, req)
+		return
+	}
+
+	// Non-streaming: dispatch with failover to a different worker on
+	// transport/5xx/429 errors. The response is buffered until the first
+	// successful attempt so nothing is written to the client until then.
 	if s.counter != nil {
 		s.counter.Record(req.Model)
 	}
-
-	// Rate-limit check BEFORE SSE headers are flushed: a slow/stalled client
-	// can fill chunkCh and freeze the worker's reader loop (heartbeats, pings
-	// and all other in-flight streams stall). Reject with an OpenAI-shaped 429.
-	if s.hub != nil && s.hub.isRateLimited(worker.ID) {
-		s.hub.recordRejection(worker.ID, 429)
-		writeRateLimitError(w)
+	resp, err := s.dispatchWithFailover(r.Context(), req.Model, body, "chat", s.maxAttempts, s.retryBudget)
+	if err != nil {
+		s.writeFailoverError(w, req.Model, err)
 		return
 	}
-
-	// Set SSE headers
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	// Proxy the request to the selected worker with SSE support
-	s.proxyChatStream(w, r, worker, req)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(resp)
 }
 
 // handleCompletions handles the /v1/completions HTTP endpoint.
@@ -482,11 +538,6 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 		writeErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error", "method_not_allowed")
 		return
 	}
-
-	// Set SSE headers
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
 
 	// Parse request
 	var req CompletionRequest
@@ -503,28 +554,51 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Select a worker using the registry
-	worker, err := s.selectWorker(req.Model)
+	// Marshal the request body once for dispatch.
+	body, err := json.Marshal(req)
 	if err != nil {
-		s.log.Error("failed to select worker", "error", err)
-		writeErrorResponse(w, http.StatusServiceUnavailable, "no workers", "server_error", "no_workers")
+		s.log.Error("failed to marshal completion request", "error", err)
+		writeErrorResponse(w, http.StatusInternalServerError, "internal server error", "server_error", "marshal_error")
 		return
 	}
 
-	// Record this inference dispatch for the popularity counter.
+	if req.Stream {
+		// Streaming: fail fast, no failover (cannot undo partial SSE output).
+		worker, err := s.selectWorker(req.Model)
+		if err != nil {
+			s.log.Error("failed to select worker", "error", err)
+			writeErrorResponse(w, http.StatusServiceUnavailable, "no workers", "server_error", "no_workers")
+			return
+		}
+		if s.counter != nil {
+			s.counter.Record(req.Model)
+		}
+		if s.hub != nil && s.hub.isRateLimited(worker.ID) {
+			s.hub.recordRejection(worker.ID, 429)
+			writeRateLimitError(w)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		s.proxyCompletionStream(w, r, worker, req)
+		return
+	}
+
+	// Non-streaming: dispatch with failover to a different worker on
+	// transport/5xx/429 errors. The response is buffered until the first
+	// successful attempt so nothing is written to the client until then.
 	if s.counter != nil {
 		s.counter.Record(req.Model)
 	}
-
-	// Rate-limit check BEFORE SSE headers are flushed.
-	if s.hub != nil && s.hub.isRateLimited(worker.ID) {
-		s.hub.recordRejection(worker.ID, 429)
-		writeRateLimitError(w)
+	resp, err := s.dispatchWithFailover(r.Context(), req.Model, body, "completion", s.maxAttempts, s.retryBudget)
+	if err != nil {
+		s.writeFailoverError(w, req.Model, err)
 		return
 	}
-
-	// Proxy the request to the selected worker with SSE support
-	s.proxyCompletionStream(w, r, worker, req)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(resp)
 }
 
 // handleWorkersList handles the /v1/workers HTTP endpoint.
@@ -796,17 +870,21 @@ func (s *Server) handleDevRegister(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// selectWorker selects a worker for the given model (simple round-robin for now).
-func (s *Server) selectWorker(model string) (protocol.WorkerInfo, error) {
+
+// buildCandidates builds the list of candidate workers that have the
+// requested model loaded, attempting auto-load when no loaded candidate
+// is found. The returned slice is deterministically ordered by worker ID
+// (lowest ID first) and is safe to use outside the cache lock.
+// Caller must hold no lock; the function acquires the cache RLock internally.
+func (s *Server) buildCandidates(model string) []protocol.WorkerInfo {
 	if s.cache == nil {
-		return protocol.WorkerInfo{}, fmt.Errorf("capability cache not configured")
+		return nil
 	}
 	s.cache.mu.RLock()
 	defer s.cache.mu.RUnlock()
 
 	var candidates []protocol.WorkerInfo
 	for _, worker := range s.cache.cache {
-		// Check if worker has the requested model loaded
 		for _, m := range worker.Capabilities.Models {
 			if m.Name == model && m.Loaded {
 				candidates = append(candidates, worker)
@@ -841,6 +919,33 @@ func (s *Server) selectWorker(model string) (protocol.WorkerInfo, error) {
 		}
 	}
 
+	// Deterministic ordering so equal scores resolve to the lowest worker ID.
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID < candidates[j].ID })
+	return candidates
+}
+
+// selectWorkerExcluding selects a worker for the given model, excluding any
+// workers whose IDs are in the provided set. This is used by the failover
+// loop to avoid retrying the same worker. The exclusion set is respected
+// during both the primary candidate selection and the fallback paths.
+func (s *Server) selectWorkerExcluding(model string, excluded map[string]struct{}) (protocol.WorkerInfo, error) {
+	if s.cache == nil {
+		return protocol.WorkerInfo{}, fmt.Errorf("capability cache not configured")
+	}
+
+	candidates := s.buildCandidates(model)
+
+	// Filter out excluded workers before scoring.
+	if len(excluded) > 0 {
+		filtered := make([]protocol.WorkerInfo, 0, len(candidates))
+		for _, w := range candidates {
+			if _, ok := excluded[w.ID]; !ok {
+				filtered = append(filtered, w)
+			}
+		}
+		candidates = filtered
+	}
+
 	if len(candidates) > 0 {
 		// Deterministic ordering before scoring so equal scores resolve to the
 		// lowest worker ID.
@@ -863,22 +968,195 @@ func (s *Server) selectWorker(model string) (protocol.WorkerInfo, error) {
 
 	// Fallback: if no exact loaded-model match, route to any cached worker
 	// that advertises the model (even if not marked loaded), then to any
-	// available worker. This keeps dev-mode usable when backends report
-	// catalogue models without load state (e.g. LM Studio /v1/models).
-	for _, worker := range s.cache.cache {
-		for _, m := range worker.Capabilities.Models {
-			if m.Name == model {
-				s.log.Warn("routing to worker with model not marked loaded", "model", model, "worker", worker.ID)
-				return worker, nil
+	// available worker. Respect exclusion in both cases.
+	if s.cache != nil {
+		s.cache.mu.RLock()
+		defer s.cache.mu.RUnlock()
+		for _, worker := range s.cache.cache {
+			if _, ok := excluded[worker.ID]; ok {
+				continue
+			}
+			for _, m := range worker.Capabilities.Models {
+				if m.Name == model {
+					s.log.Warn("routing to worker with model not marked loaded", "model", model, "worker", worker.ID)
+					return worker, nil
+				}
 			}
 		}
-	}
-	for _, worker := range s.cache.cache {
-		s.log.Warn("no worker has requested model, falling back to available worker", "model", model, "worker", worker.ID)
-		return worker, nil
+		for _, worker := range s.cache.cache {
+			if _, ok := excluded[worker.ID]; ok {
+				continue
+			}
+			s.log.Warn("no worker has requested model, falling back to available worker", "model", model, "worker", worker.ID)
+			return worker, nil
+		}
 	}
 
-	return protocol.WorkerInfo{}, fmt.Errorf("no worker found with model %s loaded", model)
+	return protocol.WorkerInfo{}, scheduler.ErrNoMatchingWorkers
+}
+
+// selectWorker selects a worker for the given model using the default
+// (empty) exclusion set. This delegates to selectWorkerExcluding for
+// implementation reuse.
+func (s *Server) selectWorker(model string) (protocol.WorkerInfo, error) {
+	return s.selectWorkerExcluding(model, nil)
+}
+
+// isRetryableError classifies an error as retryable (should trigger failover
+// to the next worker) or non-retryable (fail fast). Retryable errors include
+// transport failures, timeouts, 5xx/429 worker responses, and deadline
+// exceeded; non-retryable includes 4xx (except 429), parse errors, and
+// scheduler exhaustion sentinels.
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Explicitly non-retryable first.
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, scheduler.ErrNoMatchingWorkers) ||
+		errors.Is(err, scheduler.ErrAllWorkersUnavailable) {
+		return false
+	}
+	// Retryable sentinels.
+	if errors.Is(err, errTimeout) {
+		return true
+	}
+	if errors.Is(err, errConnClosed) {
+		return true
+	}
+	if errors.Is(err, errRelayDisconnected) {
+		return true
+	}
+	if errors.Is(err, errRateLimited) {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	// Worker HTTP errors: 5xx and 429 are retryable; other 4xx are not.
+	var herr *WorkerHTTPError
+	if errors.As(err, &herr) {
+		switch {
+		case herr.StatusCode >= 500:
+			return true
+		case herr.StatusCode == http.StatusTooManyRequests:
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+// errAllAttemptsFailed is a sentinel error returned when all failover
+// attempts have been exhausted. It wraps the last underlying error for
+// diagnostic purposes.
+var errAllAttemptsFailed = errors.New("all failover attempts exhausted")
+
+// dispatchWithFailover dispatches a non-streaming inference request with
+// automatic failover across workers. It returns the successful worker's
+// response body or an error after exhausting all attempts or the retry
+// budget. The response body is raw (unprocessed) and should be written
+// with Content-Type: application/json by the caller.
+func (s *Server) dispatchWithFailover(ctx context.Context, model string, body []byte, kind string, maxAttempts int, budget time.Duration) ([]byte, error) {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	excluded := make(map[string]struct{})
+	var lastErr error
+	recorded := false
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		// Respect the retry budget.
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("%w: %w", errAllAttemptsFailed, ctx.Err())
+		}
+
+		worker, err := s.selectWorkerExcluding(model, excluded)
+		if err != nil {
+			lastErr = err
+			if attempt == maxAttempts {
+				break
+			}
+			continue
+		}
+
+		// Record this inference dispatch for the popularity counter exactly
+		// once per client request (not per attempt).
+		if !recorded && s.counter != nil {
+			s.counter.Record(model)
+			recorded = true
+		}
+
+		// Pre-dispatch rate-limit check: a worker at its MaxInFlight cap
+		// cannot take the call right now; treat it as a retryable rejection
+		// and try the next best worker instead of failing the request outright.
+		if s.hub != nil && s.hub.isRateLimited(worker.ID) {
+			s.hub.recordRejection(worker.ID, http.StatusTooManyRequests)
+			excluded[worker.ID] = struct{}{}
+			lastErr = errRateLimited
+			continue
+		}
+
+        resp, err := s.clientFactory(worker).Complete(ctx, worker, kind, body)
+        if err == nil {
+            return resp, nil
+        }
+        lastErr = err
+        if isRetryableError(err) {
+            excluded[worker.ID] = struct{}{}
+            continue
+        }
+        // Non-retryable error: fail fast.
+        return nil, err
+    }
+
+    if lastErr == nil {
+        lastErr = fmt.Errorf("no worker available for model %s", model)
+    }
+    return nil, fmt.Errorf("%w: %w", errAllAttemptsFailed, lastErr)
+}
+
+// writeFailoverError maps a failover error to an appropriate HTTP response
+// and writes it to the client. It is called after the failover loop has
+// exhausted all attempts or hit a non-retryable error.
+func (s *Server) writeFailoverError(w http.ResponseWriter, model string, err error) {
+    if err == nil {
+        writeErrorResponse(w, http.StatusInternalServerError, "internal server error", "server_error", "internal_error")
+        return
+    }
+    // All attempts exhausted sentinel.
+    if errors.Is(err, errAllAttemptsFailed) {
+        writeErrorResponse(w, http.StatusServiceUnavailable, "all failover attempts exhausted", "server_error", "all_attempts_failed")
+        return
+    }
+    // Retry budget exceeded.
+    if errors.Is(err, context.DeadlineExceeded) {
+        writeErrorResponse(w, http.StatusGatewayTimeout, "request timed out after retries", "server_error", "timeout_error")
+        return
+    }
+    // Worker HTTP errors: pass through their status code.
+    var herr *WorkerHTTPError
+    if errors.As(err, &herr) {
+        writeErrorResponse(w, herr.StatusCode, "worker error", "server_error", "worker_error")
+        return
+    }
+    // Transport / relay errors.
+    if errors.Is(err, errTimeout) {
+        writeErrorResponse(w, http.StatusGatewayTimeout, "request timed out", "server_error", "timeout_error")
+        return
+    }
+    if errors.Is(err, errConnClosed) || errors.Is(err, errRelayDisconnected) {
+        writeErrorResponse(w, http.StatusServiceUnavailable, "worker unavailable", "server_error", "connection_error")
+        return
+    }
+    // Scheduler exhaustion / no workers.
+    writeErrorResponse(w, http.StatusServiceUnavailable, "no workers available for model "+model, "server_error", "no_workers")
 }
 
 // hubLoadSnapshot returns a per-worker queue-load snapshot from the hub, taken
