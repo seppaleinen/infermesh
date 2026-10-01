@@ -115,6 +115,31 @@ func TestRouterWorkerE2E(t *testing.T) {
 		_ = resp.Body.Close()
 	}
 
+	// Non-streaming requests must return application/json (not SSE).
+	// The router's failover path buffers the response and writes JSON only
+	// after the first successful attempt; a backend failure surfaces as a
+	// JSON error body with application/json content type.
+	chatBody := `{"model":"nonexistent","messages":[{"role":"user","content":"hi"}],"stream":false}`
+	chatResp, err := http.Post(routerBase+"/v1/chat/completions", "application/json", strings.NewReader(chatBody))
+	if err != nil {
+		t.Fatalf("POST /v1/chat/completions: %v", err)
+	}
+	if ct := chatResp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("non-streaming chat completions content-type = %q, want application/json", ct)
+	}
+	_ = chatResp.Body.Close()
+
+	// Streaming requests still use text/event-stream.
+	streamBody := `{"model":"nonexistent","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	streamResp, err := http.Post(routerBase+"/v1/chat/completions", "application/json", strings.NewReader(streamBody))
+	if err != nil {
+		t.Fatalf("POST /v1/chat/completions stream: %v", err)
+	}
+	if ct := streamResp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Errorf("streaming chat completions content-type = %q, want text/event-stream", ct)
+	}
+	_ = streamResp.Body.Close()
+
 	// SIGTERM both processes → clean exit 0 within timeout.
 	for _, cmd := range []*exec.Cmd{worker, router} {
 		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
