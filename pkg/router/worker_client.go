@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,19 +82,70 @@ func truncate(s string, max int) string {
 
 // httpWorkerClient proxies to a worker's legacy HTTP API. It is the
 // dial-back path used by mDNS/discovered and dev-HTTP workers.
+//
+// In dev mode the client dials plain HTTP. In prod mode the worker serves
+// HTTPS with RequireAndVerifyClientCert, so the router must present its own
+// client certificate signed by the shared CA. prodClient is non-nil in prod
+// mode; when nil the client behaves exactly as before (plain HTTP, no TLS).
 type httpWorkerClient struct {
-	log *slog.Logger
+	log        *slog.Logger
+	prodClient *http.Client // non-nil in prod mode
 }
 
 func newHTTPWorkerClient(log *slog.Logger) *httpWorkerClient {
 	return &httpWorkerClient{log: log}
 }
 
+// newHTTPWorkerClientWithCerts builds a client that dials workers over mTLS
+// when the router's certificate and the worker CA pool are provided. Both
+// args must be non-nil for prod-mode behavior; passing nil for either falls
+// back to plain HTTP (dev mode), matching newHTTPWorkerClient exactly.
+func newHTTPWorkerClientWithCerts(log *slog.Logger, routerCert *tls.Certificate, workerCAPool *x509.CertPool) *httpWorkerClient {
+	c := &httpWorkerClient{log: log}
+	if routerCert != nil && workerCAPool != nil {
+		c.prodClient = &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					Certificates: []tls.Certificate{*routerCert},
+					RootCAs:      workerCAPool,
+					// Prod is single-machine loopback-only: the router dials
+					// 127.0.0.1 (IPv4, guaranteed connectable) but the worker's
+					// cert SAN list carries "localhost" (DNS) + the primary
+					// IPv4, never 127.0.0.1. Pin ServerName to "localhost"
+					// so verification matches the cert's DNS SAN.
+					ServerName: "localhost",
+					MinVersion: tls.VersionTLS12,
+				},
+			},
+		}
+	}
+	return c
+}
+
 func (c *httpWorkerClient) Transport() string { return protocol.TransportHTTP }
 
-// endpoint returns the worker HTTP URL for the given kind.
-func endpoint(worker protocol.WorkerInfo, kind string) string {
-	base := fmt.Sprintf("http://%s:%d", worker.IP, worker.Port)
+// client returns the HTTP client to use for this worker. In prod mode this
+// is the mTLS client; in dev mode it is a plain HTTP client.
+func (c *httpWorkerClient) client() *http.Client {
+	if c.prodClient != nil {
+		return c.prodClient
+	}
+	return &http.Client{Timeout: 30 * time.Second}
+}
+
+// scheme returns the URL scheme for this worker: "https" in prod mode,
+// "http" in dev mode.
+func (c *httpWorkerClient) scheme() string {
+	if c.prodClient != nil {
+		return "https"
+	}
+	return "http"
+}
+
+// endpoint returns the worker HTTP URL for the given kind. The scheme follows
+// the client's mode (https in prod, http in dev).
+func (c *httpWorkerClient) endpoint(worker protocol.WorkerInfo, kind string) string {
+	base := fmt.Sprintf("%s://%s:%d", c.scheme(), worker.IP, worker.Port)
 	if kind == "completion" {
 		return base + "/v1/completions"
 	}
@@ -121,8 +174,7 @@ func postWithRetry(ctx context.Context, client *http.Client, url string, body []
 }
 
 func (c *httpWorkerClient) Complete(ctx context.Context, worker protocol.WorkerInfo, kind string, body []byte) ([]byte, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := postWithRetry(ctx, client, endpoint(worker, kind), body)
+	resp, err := postWithRetry(ctx, c.client(), c.endpoint(worker, kind), body)
 	if err != nil {
 		return nil, err
 	}
@@ -142,8 +194,8 @@ func (c *httpWorkerClient) Stream(ctx context.Context, worker protocol.WorkerInf
 	go func() {
 		defer close(chunkCh)
 
-		client := &http.Client{Timeout: 30 * time.Second}
-		resp, err := postWithRetry(ctx, client, endpoint(worker, kind), body)
+		client := c.client()
+		resp, err := postWithRetry(ctx, client, c.endpoint(worker, kind), body)
 		if err != nil {
 			if ctx.Err() == context.DeadlineExceeded {
 				errCh <- fmt.Errorf("%w: %w", errTimeout, ctx.Err())
@@ -206,13 +258,12 @@ func readSSEFrame(r *bufio.Reader) ([]byte, error) {
 }
 
 func (c *httpWorkerClient) LoadModel(ctx context.Context, worker protocol.WorkerInfo, model string) (bool, error) {
-	url := fmt.Sprintf("http://%s:%d/v1/models/load", worker.IP, worker.Port)
+	url := fmt.Sprintf("%s://%s:%d/v1/models/load", c.scheme(), worker.IP, worker.Port)
 	body, err := json.Marshal(map[string]string{"model": model})
 	if err != nil {
 		return false, err
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	resp, err := c.client().Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return false, err
 	}
@@ -225,9 +276,8 @@ func (c *httpWorkerClient) LoadModel(ctx context.Context, worker protocol.Worker
 }
 
 func (c *httpWorkerClient) Capabilities(ctx context.Context, worker protocol.WorkerInfo) (protocol.Capabilities, error) {
-	url := fmt.Sprintf("http://%s:%d/capabilities", worker.IP, worker.Port)
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(url)
+	url := fmt.Sprintf("%s://%s:%d/capabilities", c.scheme(), worker.IP, worker.Port)
+	resp, err := c.client().Get(url)
 	if err != nil {
 		return protocol.Capabilities{}, fmt.Errorf("fetching capabilities: %w", err)
 	}

@@ -47,6 +47,11 @@ type RunConfig struct {
 	// RouterBase is the router base URL for dev-mode HTTP registration
 	// (e.g. http://127.0.0.1:8080). Empty means mDNS discovery.
 	RouterBase string
+	// ProdRouter is the router base URL for prod-mode mTLS registration
+	// (e.g. https://127.0.0.1:8080). When set and DevMode is false the
+	// worker registers over mTLS instead of mDNS. The router's prod
+	// loopback check requires the advertised IP to be 127.0.0.1.
+	ProdRouter string
 	// RelayURL is the relay WebSocket URL for outbound-only connectivity.
 	// When set, the worker uses WebSocket registration via the relay instead
 	// of HTTP registration or mDNS. Only supported in dev mode.
@@ -228,6 +233,25 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 		}
 	}
 
+	// Prod-mode mTLS registration (bypasses mDNS). The router's /v1/dev/register
+	// endpoint is wrapped by the mTLS middleware in prod mode, so the worker
+	// must present its client cert over HTTPS. The router's prod loopback
+	// check (server.go handleDevRegister) requires worker.IP == 127.0.0.1.
+	if cfg.ProdRouter != "" && !cfg.DevMode {
+		log.Info("prod-mode: registering with router via mTLS", "router", cfg.ProdRouter)
+		prodInfo := info
+		prodInfo.IP = "127.0.0.1" // satisfies router's prod loopback check
+		baseInfo := prodInfo
+		caCertPath := filepath.Join(cfg.CertDir, "ca.crt")
+		go RegisterLoopWithRefreshMTLS(wctx, cfg.ProdRouter, func() protocol.WorkerInfo {
+			current := baseInfo
+			current.Capabilities = caps
+			current.Capabilities.Models = srv.GetModels()
+			return current
+		}, DefaultRegisterInterval, cfg.MTLSCert, cfg.MTLSKey, caCertPath, log)
+		return h, nil
+	}
+
 	// Dev-mode HTTP registration (bypasses mDNS)
 	if cfg.RouterBase != "" {
 		if cfg.DevMode {
@@ -256,7 +280,7 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 			return h, nil
 		}
 		// Prod mode with --router: warn and fall through to mDNS
-		log.Warn("--router flag is ignored in production mode; using mDNS discovery", "router", cfg.RouterBase)
+		log.Warn("--router flag is ignored in production mode; use --prod-router for mTLS registration", "router", cfg.RouterBase)
 	}
 
 	// mDNS discovery path (original behavior)

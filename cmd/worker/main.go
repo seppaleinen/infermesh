@@ -27,6 +27,7 @@ type WorkerFlags struct {
 	Backend            string
 	BackendURL         string
 	Router             string
+	ProdRouter         string
 	RelayURL           string
 	TrustedCNs         string
 	EnableHealthChecks bool
@@ -55,6 +56,7 @@ func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	fs.StringVar(&f.Backend, "backend", "llama-cpp", "backend adapter (llama-cpp, ollama, lmstudio, vllm, custom)")
 	fs.StringVar(&f.BackendURL, "backend-url", "", "backend adapter base URL (overrides the adapter's default endpoint)")
 	fs.StringVar(&f.Router, "router", "", "router base URL for HTTP registration (e.g. http://127.0.0.1:8080, dev-mode only)")
+	fs.StringVar(&f.ProdRouter, "prod-router", "", "router base URL for mTLS registration in production mode (e.g. https://127.0.0.1:8080); bypasses mDNS")
 	fs.StringVar(&f.RelayURL, "relay-url", "", "relay URL for outbound-only WebSocket connectivity (dev mode only)")
 	fs.StringVar(&f.TrustedCNs, "trusted-cn", "", "comma-separated list of trusted client certificate CNs for mTLS (empty = any)")
 	fs.BoolVar(&f.EnableHealthChecks, "enable-health-checks", true, "enable periodic backend health checks")
@@ -113,6 +115,7 @@ func runWorker(args []string) int {
 		CertDir:            f.CertDir,
 		TrustedCNs:         f.TrustedCNs,
 		RouterBase:         f.Router,
+		ProdRouter:         f.ProdRouter,
 		RelayURL:           f.RelayURL,
 		EnableHealthChecks: f.EnableHealthChecks,
 	})

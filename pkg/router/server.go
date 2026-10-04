@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -149,6 +150,13 @@ type Server struct {
 	// to clientFor; tests override it to inject deterministic errors into the
 	// failover loop without spinning up real worker servers.
 	clientFactory func(protocol.WorkerInfo) WorkerClient
+
+	// routerClientCert is the router's own client certificate, presented to
+	// workers over mTLS in prod mode. Nil in dev mode.
+	routerClientCert *tls.Certificate
+	// workerCAPool is the CA pool used to verify worker certificates. Nil in
+	// dev mode.
+	workerCAPool *x509.CertPool
 }
 
 // ChatMessage represents a single message in a chat conversation.
@@ -414,6 +422,11 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to load router TLS certificate: %w", err)
 		}
 
+		// Cache the cert + CA pool so the router→worker dial-back client can
+		// present the router's cert and verify worker certs over mTLS.
+		s.routerClientCert = cert
+		s.workerCAPool = caCertPool
+
 		s.server = &http.Server{
 			Addr:      s.addr,
 			Handler:   handler,
@@ -437,6 +450,13 @@ func (s *Server) Start(ctx context.Context) error {
 		_ = s.server.Shutdown(context.Background())
 	}()
 
+	// Prod mode: enforce the TLS configuration. ListenAndServeTLS activates
+	// the http.Server.TLSConfig (RequireAndVerifyClientCert + CA pool) so
+	// the mTLS middleware actually sees r.TLS. Without this the server
+	// served plain HTTP and every request was rejected with 403.
+	if !security.IsDevMode(s.cfg) {
+		return s.server.ListenAndServeTLS(s.cfg.MTLSCert, s.cfg.MTLSKey)
+	}
 	return s.server.ListenAndServe()
 }
 
@@ -1246,6 +1266,9 @@ func (s *Server) clientFor(worker protocol.WorkerInfo) WorkerClient {
 		return newRelayWorkerClient(s.hub, s.log)
 	}
 	s.log.Warn("worker advertises websocket transport but has no active connection; falling back to http", "worker", worker.ID)
+	if s.routerClientCert != nil && s.workerCAPool != nil {
+		return newHTTPWorkerClientWithCerts(s.log, s.routerClientCert, s.workerCAPool)
+	}
 	return newHTTPWorkerClient(s.log)
 }
 
