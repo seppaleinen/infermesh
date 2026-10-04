@@ -966,6 +966,33 @@ func (s *Server) selectWorkerExcluding(model string, excluded map[string]struct{
 		candidates = filtered
 	}
 
+	// Apply model opt-out filters (AllowedModels/ExcludedModels) to the
+	// loaded-model candidates. Workers that opted out of the requested model
+	// must not be considered, even if they have the model loaded.
+	if s.cache != nil {
+		s.cache.mu.RLock()
+		// Build scheduler view for FilterByAllowedModels
+		schedCands := make([]scheduler.WorkerInfo, 0, len(candidates))
+		for _, w := range candidates {
+			schedCands = append(schedCands, s.toSchedulerWorker(w, WorkerQueueStats{}, false))
+		}
+		s.cache.mu.RUnlock()
+
+		schedCands = scheduler.FilterByAllowedModels(scheduler.ModelRequest{Model: model}, schedCands)
+
+		// Map back to protocol workers by ID (unique in cache)
+		filteredProto := make([]protocol.WorkerInfo, 0, len(schedCands))
+		for _, sc := range schedCands {
+			for _, pc := range candidates {
+				if pc.ID == sc.ID {
+					filteredProto = append(filteredProto, pc)
+					break
+				}
+			}
+		}
+		candidates = filteredProto
+	}
+
 	if len(candidates) > 0 {
 		// Deterministic ordering before scoring so equal scores resolve to the
 		// lowest worker ID.
@@ -989,26 +1016,76 @@ func (s *Server) selectWorkerExcluding(model string, excluded map[string]struct{
 	// Fallback: if no exact loaded-model match, route to any cached worker
 	// that advertises the model (even if not marked loaded), then to any
 	// available worker. Respect exclusion in both cases.
+	//
+	// The model opt-out filters (AllowedModels/ExcludedModels) are applied
+	// here too. Without this, a worker that opted out of the requested model
+	// would still be selected as a last-resort fallback, silently bypassing
+	// the whitelist/blacklist (e.g. requesting model-z on a fleet where every
+	// worker whitelists a different model would route to an unwilling worker
+	// instead of returning no_workers).
 	if s.cache != nil {
 		s.cache.mu.RLock()
 		defer s.cache.mu.RUnlock()
+
+		// Build the scheduler's view of every non-excluded cached worker so
+		// FilterByAllowedModels (which operates on scheduler.WorkerInfo) can
+		// honour the opt-out flags. The protocol snapshot is kept alongside
+		// the sched view so the returned value carries the full cached
+		// worker; the two slices are kept in lockstep.
+		allProto := make([]protocol.WorkerInfo, 0, len(s.cache.cache))
+		allSched := make([]scheduler.WorkerInfo, 0, len(s.cache.cache))
 		for _, worker := range s.cache.cache {
 			if _, ok := excluded[worker.ID]; ok {
 				continue
 			}
-			for _, m := range worker.Capabilities.Models {
+			allProto = append(allProto, worker)
+			allSched = append(allSched, s.toSchedulerWorker(worker, WorkerQueueStats{}, false))
+		}
+
+		// 1. Any worker advertising the model (loaded or not) that is willing
+		//    to serve it. FilterByAllowedModels preserves input order, so the
+		//    returned sched entries map 1:1 onto the proto entries.
+		adProto := make([]protocol.WorkerInfo, 0, len(allProto))
+		adSched := make([]scheduler.WorkerInfo, 0, len(allSched))
+		for i := range allProto {
+			for _, m := range allProto[i].Capabilities.Models {
 				if m.Name == model {
-					s.log.Warn("routing to worker with model not marked loaded", "model", model, "worker", worker.ID)
-					return worker, nil
+					adProto = append(adProto, allProto[i])
+					adSched = append(adSched, allSched[i])
+					break
 				}
 			}
 		}
-		for _, worker := range s.cache.cache {
-			if _, ok := excluded[worker.ID]; ok {
-				continue
+		adSched = scheduler.FilterByAllowedModels(scheduler.ModelRequest{Model: model}, adSched)
+		if len(adSched) > 0 {
+			// FilterByAllowedModels preserves input order, but the first
+			// surviving sched entry may not be the first advertising proto
+			// entry (an unwilling advertiser is skipped). Map back by ID,
+			// which is unique within the cache.
+			selectedID := adSched[0].ID
+			s.log.Warn("routing to worker with model not marked loaded", "model", model, "worker", selectedID)
+			for i := range adProto {
+				if adProto[i].ID == selectedID {
+					return adProto[i], nil
+				}
 			}
-			s.log.Warn("no worker has requested model, falling back to available worker", "model", model, "worker", worker.ID)
-			return worker, nil
+		}
+
+		// 2. Last resort: any available worker willing to serve the model.
+		//    Unfiltered workers (empty lists) remain eligible; workers that
+		//    explicitly opted out are excluded, so a fully opted-out fleet
+		//    returns ErrNoMatchingWorkers rather than forcing the request
+		//    onto an unwilling worker.
+		anySched := scheduler.FilterByAllowedModels(scheduler.ModelRequest{Model: model}, allSched)
+		if len(anySched) > 0 {
+			sort.Slice(anySched, func(i, j int) bool { return anySched[i].ID < anySched[j].ID })
+			s.log.Warn("no worker has requested model, falling back to available worker", "model", model, "worker", anySched[0].ID)
+			// Find the proto snapshot matching the selected sched worker.
+			for i := range allProto {
+				if allProto[i].ID == anySched[0].ID {
+					return allProto[i], nil
+				}
+			}
 		}
 	}
 
@@ -1211,6 +1288,10 @@ func (s *Server) toSchedulerWorker(w protocol.WorkerInfo, load WorkerQueueStats,
 		sw.VRAMFreeMB = int(w.Capabilities.VRAM.FreeMB)
 	}
 	sw.Models = append(sw.Models, w.Capabilities.Models...)
+	// Carry the worker's model opt-out filters so the scheduler can honour
+	// them during selection.
+	sw.AllowedModels = append(sw.AllowedModels, w.Capabilities.AllowedModels...)
+	sw.ExcludedModels = append(sw.ExcludedModels, w.Capabilities.ExcludedModels...)
 	if haveLoad {
 		sw.QueueDepth = int(load.QueueDepth)
 		if load.AvgWaitMs >= 0 {

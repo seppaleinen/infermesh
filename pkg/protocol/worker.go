@@ -63,6 +63,16 @@ type Capabilities struct {
 	Engines []string   `json:"engines"`  // supported backends ["llama-cpp","vllm",...]
 	VRAM    MemoryInfo  `json:"vram"`
 	System  MemoryInfo  `json:"system"`
+
+	// AllowedModels is a whitelist of models this worker is WILLING to serve.
+	// When non-empty, the router only schedules requests for models in this list
+	// on this worker. It takes precedence over ExcludedModels: if both are set,
+	// ExcludedModels is ignored.
+	AllowedModels []string `json:"allowed_models,omitempty"`
+	// ExcludedModels is a blacklist of models this worker is NOT WILLING to
+	// serve. It applies only when AllowedModels is empty; when AllowedModels is
+	// non-empty the whitelist governs and this field is ignored.
+	ExcludedModels []string `json:"excluded_models,omitempty"`
 }
 
 // WorkerInfo is the canonical payload carried in mDNS TXT records.

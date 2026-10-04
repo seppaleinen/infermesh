@@ -656,6 +656,129 @@ func TestSelectWorker(t *testing.T) {
 	}
 }
 
+// TestFilterByAllowedModels tests the model opt-out filter: whitelist match,
+// whitelist miss, blacklist hit, blacklist miss, precedence (whitelist
+// overrides blacklist when both set), empty lists = no filter, exact string
+// match (case-sensitive).
+func TestFilterByAllowedModels(t *testing.T) {
+	now := time.Now()
+	mk := func(id string, allowed, excluded []string) WorkerInfo {
+		return WorkerInfo{
+			ID:             id,
+			Addr:           "127.0.0.1:8080",
+			LastHeartbeat:  now,
+			AllowedModels:  allowed,
+			ExcludedModels: excluded,
+			Models: []protocol.ModelInfo{
+				{Name: "llama3-8b", Quantization: "Q4", Loaded: true},
+			},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		request  ModelRequest
+		workers  []WorkerInfo
+		wantIDs  []string // expected worker IDs in result (order-insensitive)
+	}{
+		{
+			name:    "whitelist match",
+			request: ModelRequest{Model: "llama3-8b"},
+			workers: []WorkerInfo{
+				mk("w-allow", []string{"llama3-8b", "mistral-7b"}, nil),
+				mk("w-miss", []string{"gpt-4"}, nil),
+			},
+			wantIDs: []string{"w-allow"},
+		},
+		{
+			name:    "whitelist miss excludes worker",
+			request: ModelRequest{Model: "llama3-8b"},
+			workers: []WorkerInfo{
+				mk("w-miss", []string{"gpt-4"}, nil),
+			},
+			wantIDs: nil,
+		},
+		{
+			name:    "blacklist hit excludes worker",
+			request: ModelRequest{Model: "llama3-8b"},
+			workers: []WorkerInfo{
+				mk("w-excluded", nil, []string{"llama3-8b"}),
+				mk("w-ok", nil, []string{"gpt-4"}),
+			},
+			wantIDs: []string{"w-ok"},
+		},
+		{
+			name:    "blacklist miss keeps worker",
+			request: ModelRequest{Model: "llama3-8b"},
+			workers: []WorkerInfo{
+				mk("w-ok", nil, []string{"mistral-7b"}),
+			},
+			wantIDs: []string{"w-ok"},
+		},
+		{
+			name:    "precedence: whitelist overrides blacklist when both set",
+			request: ModelRequest{Model: "llama3-8b"},
+			workers: []WorkerInfo{
+				// Both lists name llama3-8b: whitelist governs, so the worker
+				// is WILLING (whitelist match wins over blacklist hit).
+				mk("w-wins", []string{"llama3-8b"}, []string{"llama3-8b"}),
+			},
+			wantIDs: []string{"w-wins"},
+		},
+		{
+			name:    "precedence: blacklist ignored when whitelist set to other model",
+			request: ModelRequest{Model: "llama3-8b"},
+			workers: []WorkerInfo{
+				// Whitelist does not include llama3-8b → worker opts out even
+				// though blacklist also doesn't list it (whitelist governs).
+				mk("w-opts-out", []string{"gpt-4"}, []string{"mistral-7b"}),
+			},
+			wantIDs: nil,
+		},
+		{
+			name:    "empty lists = no filter",
+			request: ModelRequest{Model: "llama3-8b"},
+			workers: []WorkerInfo{
+				mk("w-1", nil, nil),
+				mk("w-2", []string{}, []string{}),
+			},
+			wantIDs: []string{"w-1", "w-2"},
+		},
+		{
+			name:    "exact string match (case-sensitive)",
+			request: ModelRequest{Model: "LLAMA3-8B"},
+			workers: []WorkerInfo{
+				mk("w-lower", []string{"llama3-8b"}, nil),
+			},
+			wantIDs: nil, // "LLAMA3-8B" != "llama3-8b"
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FilterByAllowedModels(tt.request, tt.workers)
+			gotIDs := make([]string, 0, len(got))
+			for _, w := range got {
+				gotIDs = append(gotIDs, w.ID)
+			}
+			if len(gotIDs) != len(tt.wantIDs) {
+				t.Errorf("expected %d workers, got %d: %v", len(tt.wantIDs), len(gotIDs), gotIDs)
+				return
+			}
+			// Order-insensitive comparison.
+			seen := make(map[string]bool)
+			for _, id := range gotIDs {
+				seen[id] = true
+			}
+			for _, id := range tt.wantIDs {
+				if !seen[id] {
+					t.Errorf("expected worker %s in result, missing: %v", id, gotIDs)
+				}
+			}
+		})
+	}
+}
+
 // TestDefaultScoringAlgorithm tests the default algorithm factory.
 func TestDefaultScoringAlgorithm(t *testing.T) {
 	algo := DefaultScoringAlgorithm()

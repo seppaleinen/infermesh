@@ -41,6 +41,14 @@ type WorkerInfo struct {
 	QueueDepth   int
 	AvgLatencyMS float64 // Moving average
 	LastHeartbeat time.Time
+
+	// AllowedModels is a whitelist of models this worker is WILLING to serve.
+	// When non-empty, the worker only serves models in this list; it takes
+	// precedence over ExcludedModels (which is then ignored).
+	AllowedModels []string
+	// ExcludedModels is a blacklist of models this worker is NOT WILLING to
+	// serve. Applies only when AllowedModels is empty.
+	ExcludedModels []string
 }
 
 // SelectedWorker represents the chosen worker along with its score.
@@ -379,6 +387,49 @@ func FilterByVRAM(request ModelRequest, workers []WorkerInfo) []WorkerInfo {
 	return result
 }
 
+// FilterByAllowedModels returns workers willing to serve the requested model.
+//
+// Precedence rule (documented on Capabilities):
+//   - If worker.AllowedModels is non-empty, the model MUST be in that list.
+//     ExcludedModels is ignored in this case.
+//   - If AllowedModels is empty but ExcludedModels is non-empty, the model
+//     must NOT be in ExcludedModels.
+//   - If both are empty/nil, the worker is always willing.
+//
+// Model names are matched exactly (case-sensitive), matching the model-name
+// equality used throughout the scheduler (FilterByModel, Score).
+func FilterByAllowedModels(request ModelRequest, workers []WorkerInfo) []WorkerInfo {
+	var result []WorkerInfo
+	for _, w := range workers {
+		if len(w.AllowedModels) > 0 {
+			allowed := false
+			for _, m := range w.AllowedModels {
+				if m == request.Model {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				continue
+			}
+			// Whitelist governs; ExcludedModels is intentionally ignored.
+		} else if len(w.ExcludedModels) > 0 {
+			excluded := false
+			for _, m := range w.ExcludedModels {
+				if m == request.Model {
+					excluded = true
+					break
+				}
+			}
+			if excluded {
+				continue
+			}
+		}
+		result = append(result, w)
+	}
+	return result
+}
+
 // SelectWorker chooses the best worker from a list using the scoring algorithm.
 // Returns the worker with the highest score, or an error if no workers can be scored.
 // unavailableTTL is the maximum time since last heartbeat before a worker is considered unavailable.
@@ -391,6 +442,14 @@ func SelectWorker(ctx context.Context, algo ScoringAlgorithm, request ModelReque
 	available := FilterUnavailable(workers, unavailableTTL)
 	if len(available) == 0 {
 		return nil, ErrAllWorkersUnavailable
+	}
+
+	// Filter workers that opt out of serving the requested model. This runs
+	// before scoring so an unwilling worker is never considered, regardless of
+	// whether its model is loaded.
+	available = FilterByAllowedModels(request, available)
+	if len(available) == 0 {
+		return nil, ErrNoMatchingWorkers
 	}
 
 	var best WorkerInfo

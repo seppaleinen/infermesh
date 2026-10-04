@@ -2,15 +2,19 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/seppaleinen/infermesh/pkg/protocol"
 )
 
 func TestRouterBaseFromListenAddr(t *testing.T) {
@@ -210,6 +214,85 @@ func TestRunWorkerDevHTTP(t *testing.T) {
 	}
 
 	h.Stop()
+}
+
+// TestRunWorker_AllowedExcludedModels starts a worker with AllowedModels and
+// ExcludedModels against a stub router that captures the posted WorkerInfo
+// bodies. It asserts the opt-out flags are present in the initial registration
+// AND in a subsequent heartbeat, proving the refresh closures preserve the
+// flags after reassigning Capabilities.Models.
+func TestRunWorker_AllowedExcludedModels(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []protocol.WorkerInfo
+
+	router := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body protocol.WorkerInfo
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		bodies = append(bodies, body)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer router.Close()
+
+	port := freeTestPort(t)
+	cfg := RunConfig{
+		Backend:            "custom",
+		ModelPath:          "/tmp/fake-model.bin",
+		Port:               port,
+		DevMode:            true,
+		RouterBase:         router.URL,
+		AllowedModels:      "llama3-8b, mistral-7b",
+		ExcludedModels:     " , gpt-4 ,",
+		EnableHealthChecks: false,
+	}
+
+	h, err := RunWorker(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("RunWorker: %v", err)
+	}
+	defer h.Stop()
+
+	// DefaultRegisterInterval is 10s, so the first heartbeat fires
+	// immediately and the second one after one full interval. Wait for at
+	// least 2 heartbeats to prove the refresh closure preserves the opt-out
+	// flags after reassigning Capabilities.Models.
+	deadline := time.Now().Add(12 * time.Second)
+	for {
+		mu.Lock()
+		n := len(bodies)
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected at least 2 heartbeats, got %d", n)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	for i, body := range bodies {
+		if len(body.Capabilities.AllowedModels) != 2 {
+			t.Errorf("heartbeat %d: expected 2 allowed models, got %d: %v",
+				i, len(body.Capabilities.AllowedModels), body.Capabilities.AllowedModels)
+		}
+		if body.Capabilities.AllowedModels[0] != "llama3-8b" || body.Capabilities.AllowedModels[1] != "mistral-7b" {
+			t.Errorf("heartbeat %d: allowed models = %v", i, body.Capabilities.AllowedModels)
+		}
+		if len(body.Capabilities.ExcludedModels) != 1 {
+			t.Errorf("heartbeat %d: expected 1 excluded model, got %d: %v",
+				i, len(body.Capabilities.ExcludedModels), body.Capabilities.ExcludedModels)
+		}
+		if body.Capabilities.ExcludedModels[0] != "gpt-4" {
+			t.Errorf("heartbeat %d: excluded models = %v", i, body.Capabilities.ExcludedModels)
+		}
+	}
 }
 
 // freeTestPort reserves an ephemeral port on loopback and returns it.

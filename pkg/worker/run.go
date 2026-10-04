@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/capabilities"
@@ -58,6 +59,13 @@ type RunConfig struct {
 	RelayURL string
 	// EnableHealthChecks toggles periodic backend health checks.
 	EnableHealthChecks bool
+	// AllowedModels is a comma-separated whitelist of models this worker is
+	// WILLING to serve. When non-empty the router only schedules requests for
+	// models in this list on this worker. Empty means "serve all".
+	AllowedModels string
+	// ExcludedModels is a comma-separated blacklist of models this worker is
+	// NOT WILLING to serve. Applies only when AllowedModels is empty.
+	ExcludedModels string
 }
 
 // Handle represents a running worker: HTTP server, registration loop (or
@@ -196,6 +204,11 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 		}
 	}()
 
+	// Configure model opt-out filters from the comma-separated CLI values.
+	allowed := splitModelList(cfg.AllowedModels)
+	excluded := splitModelList(cfg.ExcludedModels)
+	srv.SetModelFilters(allowed, excluded)
+
 	// Build WorkerInfo for registration
 	info := protocol.WorkerInfo{
 		ID:           dcfg.InstanceName,
@@ -206,6 +219,10 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 		Status:       protocol.StatusAvailable,
 		Version:      "v1",
 	}
+	// Carry the filters on the base announcement so the mDNS announcer path
+	// (and any path that uses `info` directly) advertises them.
+	info.Capabilities.AllowedModels = allowed
+	info.Capabilities.ExcludedModels = excluded
 
 	// Relay WebSocket registration (dev mode only) - takes precedence over RouterBase
 	if cfg.RelayURL != "" {
@@ -227,6 +244,7 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 					}
 				}
 				current.Capabilities.Models = models
+				srv.ApplyModelFilters(&current.Capabilities)
 				return current
 			}, srv, log)
 			return h, nil
@@ -247,6 +265,7 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 			current := baseInfo
 			current.Capabilities = caps
 			current.Capabilities.Models = srv.GetModels()
+			srv.ApplyModelFilters(&current.Capabilities)
 			return current
 		}, DefaultRegisterInterval, cfg.MTLSCert, cfg.MTLSKey, caCertPath, log)
 		return h, nil
@@ -261,22 +280,23 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 			// so without refresh the router sees zero models and selection
 			// fails with no_workers even though the worker logs success.
 			baseInfo := info
-			go RegisterLoopWithRefresh(wctx, cfg.RouterBase, func() protocol.WorkerInfo {
-				current := baseInfo
-				current.Capabilities = caps
-				models := srv.GetModels()
-				if cfg.DevMode {
-					for i := range models {
-						// Dev backends (LM Studio etc.) serve whatever they list;
-						// treat catalogue entries as routable.
-						if models[i].Name != "" {
-							models[i].Loaded = true
-						}
+go RegisterLoopWithRefresh(wctx, cfg.RouterBase, func() protocol.WorkerInfo {
+			current := baseInfo
+			current.Capabilities = caps
+			models := srv.GetModels()
+			if cfg.DevMode {
+				for i := range models {
+					// Dev backends (LM Studio etc.) serve whatever they list;
+					// treat catalogue entries as routable.
+					if models[i].Name != "" {
+						models[i].Loaded = true
 					}
 				}
-				current.Capabilities.Models = models
-				return current
-			}, DefaultRegisterInterval, log)
+			}
+			current.Capabilities.Models = models
+			srv.ApplyModelFilters(&current.Capabilities)
+			return current
+		}, DefaultRegisterInterval, log)
 			return h, nil
 		}
 		// Prod mode with --router: warn and fall through to mDNS
@@ -402,6 +422,27 @@ func Hostname() string {
 		return "infermesh-worker"
 	}
 	return name
+}
+
+// splitModelList parses a comma-separated model list into a trimmed, non-empty
+// slice. Nil input and empty/whitespace-only entries are filtered out so the
+// JSON encoder omits the field when nothing was declared.
+func splitModelList(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // PrintCapabilities prints the detected capabilities in a human-readable

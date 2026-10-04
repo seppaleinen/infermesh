@@ -224,6 +224,65 @@ models:
 	}
 }
 
+// TestCapabilitiesHandler_IncludesModelFilters verifies that SetModelFilters
+// populates the synthetic WorkerInfo returned by /capabilities so the router's
+// capability cache and scheduler can honour the worker's opt-out flags.
+func TestCapabilitiesHandler_IncludesModelFilters(t *testing.T) {
+	server := NewServer(testLogger(), "", security.Config{DevMode: true})
+	server.SetModelFilters(
+		[]string{"llama3-8b", "mistral-7b"},
+		[]string{"gpt-4"},
+	)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/capabilities", nil)
+	server.handleCapabilities(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	var worker protocol.WorkerInfo
+	if err := json.NewDecoder(w.Body).Decode(&worker); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(worker.Capabilities.AllowedModels) != 2 {
+		t.Errorf("expected 2 allowed models, got %d: %v", len(worker.Capabilities.AllowedModels), worker.Capabilities.AllowedModels)
+	}
+	if worker.Capabilities.AllowedModels[0] != "llama3-8b" || worker.Capabilities.AllowedModels[1] != "mistral-7b" {
+		t.Errorf("allowed models = %v", worker.Capabilities.AllowedModels)
+	}
+	if len(worker.Capabilities.ExcludedModels) != 1 {
+		t.Errorf("expected 1 excluded model, got %d: %v", len(worker.Capabilities.ExcludedModels), worker.Capabilities.ExcludedModels)
+	}
+	if worker.Capabilities.ExcludedModels[0] != "gpt-4" {
+		t.Errorf("excluded models = %v", worker.Capabilities.ExcludedModels)
+	}
+}
+
+// TestCapabilitiesHandler_NoFiltersWhenUnset verifies that an unset filter is
+// encoded as omitted (empty/nil lists), keeping the payload backward compatible
+// with routers that predate the opt-out feature.
+func TestCapabilitiesHandler_NoFiltersWhenUnset(t *testing.T) {
+	server := NewServer(testLogger(), "", security.Config{DevMode: true})
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/capabilities", nil)
+	server.handleCapabilities(w, r)
+
+	var worker protocol.WorkerInfo
+	if err := json.NewDecoder(w.Body).Decode(&worker); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if len(worker.Capabilities.AllowedModels) != 0 {
+		t.Errorf("expected no allowed models, got %v", worker.Capabilities.AllowedModels)
+	}
+	if len(worker.Capabilities.ExcludedModels) != 0 {
+		t.Errorf("expected no excluded models, got %v", worker.Capabilities.ExcludedModels)
+	}
+}
+
 func TestMetricsHandler(t *testing.T) {
 	server := NewServer(testLogger(), "", security.Config{DevMode: true})
 	server.models = []protocol.ModelInfo{{Name: "model-1"}}

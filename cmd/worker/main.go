@@ -31,6 +31,8 @@ type WorkerFlags struct {
 	RelayURL           string
 	TrustedCNs         string
 	EnableHealthChecks bool
+	AllowedModels      string
+	ExcludedModels     string
 }
 
 // parseWorkerFlags parses args into WorkerFlags. It uses ContinueOnError so
@@ -60,6 +62,8 @@ func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	fs.StringVar(&f.RelayURL, "relay-url", "", "relay URL for outbound-only WebSocket connectivity (dev mode only)")
 	fs.StringVar(&f.TrustedCNs, "trusted-cn", "", "comma-separated list of trusted client certificate CNs for mTLS (empty = any)")
 	fs.BoolVar(&f.EnableHealthChecks, "enable-health-checks", true, "enable periodic backend health checks")
+	fs.StringVar(&f.AllowedModels, "allowed-models", "", "comma-separated list of models this worker is WILLING to serve (whitelist); empty = all")
+	fs.StringVar(&f.ExcludedModels, "excluded-models", "", "comma-separated list of models this worker is NOT WILLING to serve (blacklist); applies only when --allowed-models is empty")
 }
 
 // workerFlagUsage prints the worker flag help to w.
@@ -118,6 +122,8 @@ func runWorker(args []string) int {
 		ProdRouter:         f.ProdRouter,
 		RelayURL:           f.RelayURL,
 		EnableHealthChecks: f.EnableHealthChecks,
+		AllowedModels:      f.AllowedModels,
+		ExcludedModels:     f.ExcludedModels,
 	})
 	if err != nil {
 		if errors.Is(err, worker.ErrMissingModelPath) {

@@ -29,6 +29,14 @@ type Server struct {
 	config        security.Config
 	backend       Backend // Backend adapter for model inference
 	healthTracker *ModelHealthTracker
+
+	// allowedModels is a whitelist of models this worker is WILLING to serve.
+	// When non-empty, the router only schedules requests for models in this
+	// list on this worker. Empty means "serve all".
+	allowedModels []string
+	// excludedModels is a blacklist of models this worker is NOT WILLING to
+	// serve. Applies only when allowedModels is empty.
+	excludedModels []string
 }
 
 // ChatMessage represents a single message in a chat conversation.
@@ -238,6 +246,25 @@ func (s *Server) GetModels() []protocol.ModelInfo {
 	return out
 }
 
+// SetModelFilters configures the worker's model-serving opt-out filters.
+// allowed is a whitelist: when non-empty the worker only serves models in
+// this list. excluded is a blacklist: when allowed is empty the worker refuses
+// models in this list. Both are stored as-is (nil when empty) so the JSON
+// encoder omits them when unset.
+func (s *Server) SetModelFilters(allowed, excluded []string) {
+	s.allowedModels = allowed
+	s.excludedModels = excluded
+}
+
+// ApplyModelFilters copies the server's model filters onto the given
+// Capabilities struct. It is called after any reassignment of
+// caps.AllowedModels/caps.ExcludedModels so the flags survive refresh closures
+// that rebuild the Capabilities value (e.g. reassigning caps.Models).
+func (s *Server) ApplyModelFilters(caps *protocol.Capabilities) {
+	caps.AllowedModels = s.allowedModels
+	caps.ExcludedModels = s.excludedModels
+}
+
 // Start runs the HTTP server.
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -364,9 +391,13 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		Capabilities: caps,
 	}
 
-	// Include models declared via SetModels (--model-path) so the router
+// Include models declared via SetModels (--model-path) so the router
 	// can see and schedule them. Detect() only reads the model config file.
 	worker.Capabilities.Models = append(worker.Capabilities.Models, s.models...)
+
+	// Surface the worker's model opt-out filters so the router's
+	// CapabilityCache hydrates them and the scheduler can honour them.
+	s.ApplyModelFilters(&worker.Capabilities)
 
 	if err := json.NewEncoder(w).Encode(worker); err != nil {
 		s.log.Error("failed to encode capabilities", "error", err)
