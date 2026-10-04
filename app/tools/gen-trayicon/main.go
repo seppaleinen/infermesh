@@ -1,6 +1,7 @@
-// Command gen-trayicon regenerates app/assets/trayTemplate.png — the monochrome
+// Command gen-trayicon regenerates app/assets/*.png icons — the monochrome
 // (black + alpha) "mesh" glyph used as the macOS menu-bar template icon and the
-// tray icon fallback on Linux/Windows.
+// tray icon fallback on Linux/Windows. Generates multiple sizes (16x16, 22x22,
+// 32x32, 64x64) as requested in issue #47 "Need an icon".
 //
 // macOS template images must be black + alpha only (white is treated as
 // transparent), so every pixel is RGB(0,0,0) and only the alpha channel varies.
@@ -19,29 +20,35 @@ import (
 	"runtime"
 )
 
-// size is the icon canvas, in pixels. 22x22 matches the conventional macOS
-// menu-bar template size and stays readable (>=16) on Linux/Windows trays.
-const size = 22
+// Define the icon sizes we want (16px tray, 22px menu, 32px big, 64px large)
+var sizes = []int{16, 22, 32, 64}
 
 const (
-	nodeRadius = 2.3 // node dot radius (px)
+	nodeRadius = 2.3 // node dot radius (px) — kept as-is for proportional scaling
 	lineWidth  = 0.9 // connecting wire half-width (px)
 )
 
-// nodes is a 3x3 grid of dots, 5px apart, centered on the 22px canvas.
-var nodes = func() [][2]float64 {
+// nodes is a 3x3 grid of dots, 5px apart, scaled for each size.
+// This generates the mesh glyph layout centered in the canvas.
+func generateNodes(size int) [][2]float64 {
 	var pts [][2]float64
+	spacing := 5.0
+	// Center grid: starting x = (size - (2 * spacing)) / 2? Actually 3 nodes wide: cols = 3, total width = 2*spacing
+	// Starting offset from left: (size - (2 * spacing)) / 2
+	start := (float64(size) - 2*spacing) / 2
 	for row := 0; row < 3; row++ {
 		for col := 0; col < 3; col++ {
-			pts = append(pts, [2]float64{6 + float64(col)*5, 6 + float64(row)*5})
+			x := start + float64(col)*spacing
+			y := start + float64(row)*spacing
+			pts = append(pts, [2]float64{x, y})
 		}
 	}
 	return pts
-}()
+}
 
 // edges connect each node to its right and lower neighbours, forming the
-// wire-mesh grid of the InferMesh glyph.
-var edges = func() [][4]float64 {
+// wire-mesh grid of the InferMesh glyph. Scales with size.
+func generateEdges(nodes [][2]float64) [][4]float64 {
 	var segs [][4]float64
 	for i, n := range nodes {
 		if i%3 < 2 { // right neighbour
@@ -54,7 +61,7 @@ var edges = func() [][4]float64 {
 		}
 	}
 	return segs
-}()
+}
 
 // distToSegment returns the shortest distance from point (px,py) to the line
 // segment from (ax,ay) to (bx,by).
@@ -84,7 +91,11 @@ func clamp01(v float64) float64 {
 	return v
 }
 
-func main() {
+// generateIcon creates a PNG icon of the given size.
+func generateIcon(size int) (*image.RGBA, [][2]float64, [][4]float64) {
+	nodes := generateNodes(size)
+	edges := generateEdges(nodes)
+
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 	for py := 0; py < size; py++ {
 		for px := 0; px < size; px++ {
@@ -111,36 +122,43 @@ func main() {
 			img.SetRGBA(px, py, color.RGBA{R: 0, G: 0, B: 0, A: alpha})
 		}
 	}
+	return img, nodes, edges
+}
 
-	// Resolve the output relative to this source file so the generator works
-	// regardless of the working directory it is invoked from. main.go lives at
-	// app/tools/gen-trayicon/main.go, so three Dir() calls climb to app/.
+func main() {
 	_, srcFile, _, ok := runtime.Caller(0)
 	if !ok {
 		fmt.Fprintln(os.Stderr, "gen-trayicon: cannot locate source file")
 		os.Exit(1)
 	}
 	appDir := filepath.Dir(filepath.Dir(filepath.Dir(srcFile))) // gen-trayicon -> tools -> app/
-	out := filepath.Join(appDir, "assets", "trayTemplate.png")
+	assetsDir := filepath.Join(appDir, "assets")
 
-	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "gen-trayicon: %v\n", err)
 		os.Exit(1)
 	}
-	f, err := os.Create(out)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "gen-trayicon: %v\n", err)
-		os.Exit(1)
-	}
-	defer func() {
-		if err := f.Close(); err != nil {
+
+	for _, size := range sizes {
+		img, _, _ := generateIcon(size)
+
+		out := filepath.Join(assetsDir, fmt.Sprintf("trayIcon%d.png", size))
+
+		f, err := os.Create(out)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "gen-trayicon: %v\n", err)
+			os.Exit(1)
 		}
-	}()
+		defer func() {
+			if err := f.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "gen-trayicon: %v\n", err)
+			}
+		}()
 
-	if err := png.Encode(f, img); err != nil {
-		fmt.Fprintf(os.Stderr, "gen-trayicon: %v\n", err)
-		os.Exit(1)
+		if err := png.Encode(f, img); err != nil {
+			fmt.Fprintf(os.Stderr, "gen-trayicon: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("gen-trayicon: wrote %s (%dx%d)\n", out, size, size)
 	}
-	fmt.Printf("gen-trayicon: wrote %s (%dx%d)\n", out, size, size)
 }
