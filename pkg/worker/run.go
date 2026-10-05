@@ -179,19 +179,33 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 				"count", len(models))
 		} else if err != nil {
 			log.Warn("failed to auto-discover models from backend, using model-path", "error", err)
-			// Fall back to manual model registration if model path provided
+			// For backends that auto-discover models from the runtime (ollama,
+			// lmstudio, vllm), starting the worker without a model-path is OK —
+			// the next capability refresh cycle will retry discovery. Only llama-cpp
+			// requires a declared .gguf path.
+			requireModelPath := cfg.Backend == "llama-cpp"
+			if requireModelPath && cfg.ModelPath == "" {
+				return fail(ErrMissingModelPath)
+			}
 			if cfg.ModelPath != "" {
+				// Fall back to manual model registration if model path provided
 				srv.SetModels([]protocol.ModelInfo{
 					{
 						Name:    filepath.Base(cfg.ModelPath),
 						Backend: cfg.Backend,
-						// In dev mode the backend is mocked (no real load lifecycle), so
-						// treat the declared model as loaded to allow worker selection.
-						Loaded: cfg.DevMode,
+						Loaded:  cfg.DevMode,
 					},
 				})
 				log.Info("registered model from model-path",
 					"model", filepath.Base(cfg.ModelPath))
+			} else {
+				// Auto-discovery failed but ModelPath is empty; start the worker
+				// anyway. Models will be discovered on the next capability refresh
+				// cycle (aggregator Detect() re-reads model config, or restart the
+				// worker after starting the backend).
+				log.Warn("worker started with no models — auto-discovery failed; "+
+					"start the backend (LM Studio, Ollama, vLLM) and restart the "+
+					"worker, or use --model-path to manually specify a model")
 			}
 		}
 
