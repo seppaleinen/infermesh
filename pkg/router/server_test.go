@@ -2077,7 +2077,7 @@ func mkWorker(id, model string) protocol.WorkerInfo {
 		ID: id, Hostname: id, IP: "127.0.0.1", Port: 8081,
 		Status: protocol.StatusAvailable, Version: "v1",
 		Capabilities: protocol.Capabilities{
-			Models: []protocol.ModelInfo{{Name: "failover-model", Quantization: "Q4_K_M", Loaded: true}},
+			Models: []protocol.ModelInfo{{Name: model, Quantization: "Q4_K_M", Loaded: true}},
 			VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 20480},
 		},
 	}

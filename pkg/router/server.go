@@ -34,6 +34,11 @@ type PopularModelsResponse struct {
 	Models []PopularModelInfo `json:"models"`
 }
 
+// autoModelAlias is the logical model name that triggers auto routing.
+// Requests with this model name are classified by prompt complexity and
+// rewritten to a tiered concrete model before worker selection.
+const autoModelAlias = "auto"
+
 // ErrorResponse represents an OpenAI-compatible error response.
 type ErrorResponse struct {
 	Error ErrorDetail `json:"error"`
@@ -157,6 +162,12 @@ type Server struct {
 	// workerCAPool is the CA pool used to verify worker certificates. Nil in
 	// dev mode.
 	workerCAPool *x509.CertPool
+
+	// autoRouting configures the model="auto" alias. When nil, "auto" is
+	// treated as a literal model name (backward compatible). When set,
+	// requests with model="auto" are classified by prompt complexity and
+	// rewritten to a tiered concrete model before worker selection.
+	autoRouting *AutoRoutingConfig
 }
 
 // ChatMessage represents a single message in a chat conversation.
@@ -294,13 +305,73 @@ func (s *Server) SetMaxAttempts(n int) {
 }
 
 // SetRetryBudget overrides the global deadline applied across all failover
-// attempts for a single non-streaming request. A value <= 0 falls back to 60s.
-func (s *Server) SetRetryBudget(d time.Duration) {
-	if d <= 0 {
-		d = 60 * time.Second
+	// attempts for a single non-streaming request. A value <= 0 falls back to 60s.
+	func (s *Server) SetRetryBudget(d time.Duration) {
+		if d <= 0 {
+			d = 60 * time.Second
+		}
+		s.retryBudget = d
 	}
-	s.retryBudget = d
-}
+
+	// SetAutoRouting configures the model="auto" alias. When cfg is nil or
+	// has no tier models configured, the alias is disabled and "auto" is
+	// treated as a literal model name (backward compatible).
+	//
+	// The alias intercepts requests with model="auto" before worker
+	// selection, classifies prompt complexity, and rewrites the model to a
+	// tiered concrete model name.
+	func (s *Server) SetAutoRouting(cfg *AutoRoutingConfig) {
+		s.autoRouting = cfg
+	}
+
+	// autoRoutingActive reports whether the model="auto" alias is enabled
+	// and has at least one tier model configured.
+	func (s *Server) autoRoutingActive() bool {
+		if s.autoRouting == nil || s.autoRouting.Models == nil {
+			return false
+		}
+		for _, m := range s.autoRouting.Models {
+			if m != "" {
+				return true
+			}
+		}
+		return false
+	}
+
+	// resolveAutoModel rewrites a request's model field when it equals the
+	// "auto" alias and auto routing is enabled. It returns the concrete
+	// model name to dispatch on, or an error when the classified tier has
+	// no configured model. Non-"auto" models are returned unchanged.
+	//
+	// This is called before marshal & dispatch so the rest of the pipeline
+	// sees a concrete model name and requires no changes.
+	func (s *Server) resolveAutoModelChat(req *ChatRequest) (string, error) {
+		if req.Model != autoModelAlias || !s.autoRoutingActive() {
+			return req.Model, nil
+		}
+		tier := s.autoRouting.Classify(*req)
+		model, ok := s.autoRouting.ResolveModel(tier)
+		if !ok {
+			return "", fmt.Errorf("no model configured for complexity tier %s", tier)
+		}
+		s.log.Debug("auto-routed chat request", "tier", tier, "model", model, "tokens", s.autoRouting.estimateChatTokens(*req))
+		return model, nil
+	}
+
+	// resolveAutoModelCompletion is the completion-requests counterpart of
+	// resolveAutoModelChat.
+	func (s *Server) resolveAutoModelCompletion(req *CompletionRequest) (string, error) {
+		if req.Model != autoModelAlias || !s.autoRoutingActive() {
+			return req.Model, nil
+		}
+		tier := s.autoRouting.ClassifyCompletion(*req)
+		model, ok := s.autoRouting.ResolveModel(tier)
+		if !ok {
+			return "", fmt.Errorf("no model configured for complexity tier %s", tier)
+		}
+		s.log.Debug("auto-routed completion request", "tier", tier, "model", model, "tokens", estimateTokens(req.Prompt))
+		return model, nil
+	}
 
 // schedulerWeights holds the configurable weighted-scorer settings exposed via
 // CLI flags. Zero values mean "keep current" when passed to SetScorerWeights.
@@ -469,9 +540,9 @@ func (s *Server) Addr() string {
 }
 
 // wrapInferenceEndpoints wraps the given handler so that inference endpoints
-// (/v1/chat/completions, /v1/completions) require a valid API key while
-// other endpoints pass through unchanged.
-func (s *Server) wrapInferenceEndpoints(next http.Handler, apiKey string) http.Handler {
+	// (/v1/chat/completions, /v1/completions) require a valid API key while
+	// other endpoints pass through unchanged.
+	func (s *Server) wrapInferenceEndpoints(next http.Handler, apiKey string) http.Handler {
 	apiKeyMW := security.NewAPIKeyMiddleware(apiKey, true)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -503,6 +574,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("registry not configured")
 		writeErrorResponse(w, http.StatusInternalServerError, "registry not configured", "server_error", "internal_error")
 		return
+	}
+
+	// Resolve the model="auto" alias (if enabled) to a concrete tiered
+	// model before marshal & dispatch. Non-auto models are returned
+	// unchanged, preserving existing routing behavior.
+	if model, err := s.resolveAutoModelChat(&req); err != nil {
+		s.log.Error("auto routing failed", "error", err)
+		writeErrorResponse(w, http.StatusServiceUnavailable, err.Error(), "server_error", "auto_routing_error")
+		return
+	} else {
+		req.Model = model
 	}
 
 	// Marshal the request body once for dispatch.
@@ -572,6 +654,16 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("registry not configured")
 		writeErrorResponse(w, http.StatusInternalServerError, "registry not configured", "server_error", "internal_error")
 		return
+	}
+
+	// Resolve the model="auto" alias (if enabled) to a concrete tiered
+	// model before marshal & dispatch.
+	if model, err := s.resolveAutoModelCompletion(&req); err != nil {
+		s.log.Error("auto routing failed", "error", err)
+		writeErrorResponse(w, http.StatusServiceUnavailable, err.Error(), "server_error", "auto_routing_error")
+		return
+	} else {
+		req.Model = model
 	}
 
 	// Marshal the request body once for dispatch.
@@ -703,6 +795,17 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 				models = append(models, m)
 			}
 		}
+	}
+
+	// When auto routing is enabled, advertise the synthetic "auto" alias so
+	// OpenAI-compatible clients discover it alongside concrete models.
+	if s.autoRoutingActive() {
+		models = append(models, protocol.ModelInfo{
+			Name:        autoModelAlias,
+			Backend:     "auto",
+			MaxTokens:   0,
+			Loaded:      true,
+		})
 	}
 
 	response := ModelsResponse{Object: "list", Data: models}

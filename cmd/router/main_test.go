@@ -91,6 +91,36 @@ func TestParseRouterFlags(t *testing.T) {
 				ScorerMaxQueueDepth: 20,
 			},
 		},
+		{
+			name: "auto routing flags",
+			args: []string{
+				"--dev-mode",
+				"--auto-tier-simple", "small-model",
+				"--auto-tier-medium", "medium-model",
+				"--auto-tier-complex", "large-model",
+				"--auto-simple-max-tokens", "100",
+				"--auto-medium-max-tokens", "500",
+				"--auto-reasoning-keywords", "think,reason,step by step",
+			},
+			want: RouterFlags{
+				DevMode:             true,
+				Addr:                ":8080",
+				AutoTierSimple:      "small-model",
+				AutoTierMedium:      "medium-model",
+				AutoTierComplex:     "large-model",
+				AutoSimpleMaxTokens: 100,
+				AutoMediumMaxTokens: 500,
+				AutoReasoningKeywords: "think,reason,step by step",
+			},
+		},
+		{
+			name: "auto routing disabled by default",
+			args: []string{"--dev-mode"},
+			want: RouterFlags{
+				DevMode: true,
+				Addr:    ":8080",
+			},
+		},
 	}
 
 	for _, tt := range tests {

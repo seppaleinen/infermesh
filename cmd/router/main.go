@@ -43,6 +43,18 @@ type RouterFlags struct {
 	ScorerQueueDepth    float64
 	ScorerLatency       float64
 	ScorerMaxQueueDepth int
+
+	// Auto routing: model="auto" alias maps prompt complexity to tiered
+	// model names. Empty values disable the alias (backward compatible).
+	AutoTierSimple  string
+	AutoTierMedium  string
+	AutoTierComplex string
+
+	// Auto routing classification thresholds (tokens estimated via the
+	// ~4 chars/token heuristic). Zero values keep the documented defaults.
+	AutoSimpleMaxTokens   int
+	AutoMediumMaxTokens   int
+	AutoReasoningKeywords string
 }
 
 // parseRouterFlags parses args into RouterFlags. It uses ContinueOnError so
@@ -52,6 +64,57 @@ func parseRouterFlags(args []string) (RouterFlags, error) {
 	var f RouterFlags
 	registerRouterFlags(fs, &f)
 	return f, fs.Parse(args)
+}
+
+// buildAutoRoutingConfig constructs an AutoRoutingConfig from the parsed
+// flags. Returns nil when no tier model is configured, so the alias stays
+// disabled by default (backward compatible).
+func (f *RouterFlags) buildAutoRoutingConfig() *router.AutoRoutingConfig {
+	if f.AutoTierSimple == "" && f.AutoTierMedium == "" && f.AutoTierComplex == "" {
+		return nil
+	}
+
+	cfg := router.DefaultAutoRoutingConfig()
+	cfg.Models = map[router.ComplexityTier]string{
+		router.TierSimple:  f.AutoTierSimple,
+		router.TierMedium:  f.AutoTierMedium,
+		router.TierComplex: f.AutoTierComplex,
+	}
+	if f.AutoSimpleMaxTokens > 0 {
+		cfg.SimpleMaxTokens = f.AutoSimpleMaxTokens
+	}
+	if f.AutoMediumMaxTokens > 0 {
+		cfg.MediumMaxTokens = f.AutoMediumMaxTokens
+	}
+	if f.AutoReasoningKeywords != "" {
+		for _, kw := range splitCSV(f.AutoReasoningKeywords) {
+			if kw != "" {
+				cfg.ReasoningKeywords = append(cfg.ReasoningKeywords, kw)
+			}
+		}
+	}
+	return &cfg
+}
+
+// splitCSV splits a comma-separated string into trimmed, non-empty tokens.
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	out := make([]string, 0, 4)
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == ',' {
+			if start < i {
+				out = append(out, s[start:i])
+			}
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		out = append(out, s[start:])
+	}
+	return out
 }
 
 // registerRouterFlags registers the router flags on fs, binding values to f.
@@ -76,6 +139,14 @@ func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
 	fs.Float64Var(&f.ScorerQueueDepth, "scorer-queue-depth", 0, "weight for queue depth in weighted scoring (0 = keep default of 0.10)")
 	fs.Float64Var(&f.ScorerLatency, "scorer-latency", 0, "weight for latency in weighted scoring (0 = keep default of 0.10)")
 	fs.IntVar(&f.ScorerMaxQueueDepth, "scorer-max-queue-depth", 0, "queue depth treated as fully loaded when normalizing queue depth score (0 = keep default of 10)")
+
+	// Auto routing: model="auto" alias. Empty tier models disable the alias.
+	fs.StringVar(&f.AutoTierSimple, "auto-tier-simple", "", "model name to route simple prompts to when model=\"auto\" (empty = alias disabled)")
+	fs.StringVar(&f.AutoTierMedium, "auto-tier-medium", "", "model name to route medium-complexity prompts to when model=\"auto\"")
+	fs.StringVar(&f.AutoTierComplex, "auto-tier-complex", "", "model name to route complex prompts to when model=\"auto\"")
+	fs.IntVar(&f.AutoSimpleMaxTokens, "auto-simple-max-tokens", 0, "estimated-token threshold below which prompts are classified simple (0 = default 200)")
+	fs.IntVar(&f.AutoMediumMaxTokens, "auto-medium-max-tokens", 0, "estimated-token threshold below which prompts are classified medium (0 = default 600)")
+	fs.StringVar(&f.AutoReasoningKeywords, "auto-reasoning-keywords", "", "comma-separated substrings whose presence in a prompt bumps it one complexity tier (reasoning signal)")
 }
 
 func main() {
@@ -196,6 +267,11 @@ func runRouter(args []string) int {
 	// Configure retry/failover parameters.
 	srv.SetMaxAttempts(f.MaxAttempts)
 	srv.SetRetryBudget(f.RetryBudget)
+
+	// Configure the model="auto" alias (disabled by default).
+	if autoCfg := f.buildAutoRoutingConfig(); autoCfg != nil {
+		srv.SetAutoRouting(autoCfg)
+	}
 
 	if f.RelayURL != "" {
 		srv.SetRelayURL(f.RelayURL)
