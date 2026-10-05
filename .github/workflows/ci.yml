@@ -12,15 +12,15 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-    
+
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
         go-version: '1.27'
-    
+
     - name: Install dependencies
       run: go mod tidy
-    
+
     - name: Run linting
       uses: golangci/golangci-lint-action@v9
       with:
@@ -28,12 +28,20 @@ jobs:
         # v1.57.2 cannot run on Go ≥1.25 (export-data "unsupported version" /
         # bogus typecheck errors even on trivial modules); v2.13.2 is also
         # what `make lint` runs locally (see README Contributing).
-        
+
+    - name: Check formatting
+      run: |
+        if [ -n "$(gofmt -l .)" ]; then
+          echo "gofmt violations found:"
+          gofmt -l .
+          exit 1
+        fi
+
     - name: Run Go vet
       run: go vet ./...
-    
+
     - name: Build binaries
       run: make build
-    
+
     - name: Run tests
       run: go test ./... -v -cover -race

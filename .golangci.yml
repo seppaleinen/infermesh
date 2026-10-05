@@ -1,0 +1,19 @@
+version: 2
+
+linters:
+  enable:
+    - golangcilint
+    - staticcheck
+    - unused
+    - varcheck
+    - nilcheck
+    - fieldcheck
+    - funlen
+    - cyclop
+
+issues:
+  # New issues as default (any of the enabled linters)
+  exclude-rules:
+    - path: _test.go
+      linters:
+        - gofmt

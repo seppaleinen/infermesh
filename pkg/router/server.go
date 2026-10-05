@@ -257,7 +257,7 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 			MaxQueueDepth: scorer.MaxQueueDepth(),
 		},
 	}
-srv.loadSnapshot = srv.hubLoadSnapshot
+	srv.loadSnapshot = srv.hubLoadSnapshot
 	// Default retry/failover configuration.
 	srv.maxAttempts = 3
 	srv.retryBudget = 60 * time.Second
@@ -305,73 +305,73 @@ func (s *Server) SetMaxAttempts(n int) {
 }
 
 // SetRetryBudget overrides the global deadline applied across all failover
-	// attempts for a single non-streaming request. A value <= 0 falls back to 60s.
-	func (s *Server) SetRetryBudget(d time.Duration) {
-		if d <= 0 {
-			d = 60 * time.Second
-		}
-		s.retryBudget = d
+// attempts for a single non-streaming request. A value <= 0 falls back to 60s.
+func (s *Server) SetRetryBudget(d time.Duration) {
+	if d <= 0 {
+		d = 60 * time.Second
 	}
+	s.retryBudget = d
+}
 
-	// SetAutoRouting configures the model="auto" alias. When cfg is nil or
-	// has no tier models configured, the alias is disabled and "auto" is
-	// treated as a literal model name (backward compatible).
-	//
-	// The alias intercepts requests with model="auto" before worker
-	// selection, classifies prompt complexity, and rewrites the model to a
-	// tiered concrete model name.
-	func (s *Server) SetAutoRouting(cfg *AutoRoutingConfig) {
-		s.autoRouting = cfg
-	}
+// SetAutoRouting configures the model="auto" alias. When cfg is nil or
+// has no tier models configured, the alias is disabled and "auto" is
+// treated as a literal model name (backward compatible).
+//
+// The alias intercepts requests with model="auto" before worker
+// selection, classifies prompt complexity, and rewrites the model to a
+// tiered concrete model name.
+func (s *Server) SetAutoRouting(cfg *AutoRoutingConfig) {
+	s.autoRouting = cfg
+}
 
-	// autoRoutingActive reports whether the model="auto" alias is enabled
-	// and has at least one tier model configured.
-	func (s *Server) autoRoutingActive() bool {
-		if s.autoRouting == nil || s.autoRouting.Models == nil {
-			return false
-		}
-		for _, m := range s.autoRouting.Models {
-			if m != "" {
-				return true
-			}
-		}
+// autoRoutingActive reports whether the model="auto" alias is enabled
+// and has at least one tier model configured.
+func (s *Server) autoRoutingActive() bool {
+	if s.autoRouting == nil || s.autoRouting.Models == nil {
 		return false
 	}
-
-	// resolveAutoModel rewrites a request's model field when it equals the
-	// "auto" alias and auto routing is enabled. It returns the concrete
-	// model name to dispatch on, or an error when the classified tier has
-	// no configured model. Non-"auto" models are returned unchanged.
-	//
-	// This is called before marshal & dispatch so the rest of the pipeline
-	// sees a concrete model name and requires no changes.
-	func (s *Server) resolveAutoModelChat(req *ChatRequest) (string, error) {
-		if req.Model != autoModelAlias || !s.autoRoutingActive() {
-			return req.Model, nil
+	for _, m := range s.autoRouting.Models {
+		if m != "" {
+			return true
 		}
-		tier := s.autoRouting.Classify(*req)
-		model, ok := s.autoRouting.ResolveModel(tier)
-		if !ok {
-			return "", fmt.Errorf("no model configured for complexity tier %s", tier)
-		}
-		s.log.Debug("auto-routed chat request", "tier", tier, "model", model, "tokens", s.autoRouting.estimateChatTokens(*req))
-		return model, nil
 	}
+	return false
+}
 
-	// resolveAutoModelCompletion is the completion-requests counterpart of
-	// resolveAutoModelChat.
-	func (s *Server) resolveAutoModelCompletion(req *CompletionRequest) (string, error) {
-		if req.Model != autoModelAlias || !s.autoRoutingActive() {
-			return req.Model, nil
-		}
-		tier := s.autoRouting.ClassifyCompletion(*req)
-		model, ok := s.autoRouting.ResolveModel(tier)
-		if !ok {
-			return "", fmt.Errorf("no model configured for complexity tier %s", tier)
-		}
-		s.log.Debug("auto-routed completion request", "tier", tier, "model", model, "tokens", estimateTokens(req.Prompt))
-		return model, nil
+// resolveAutoModel rewrites a request's model field when it equals the
+// "auto" alias and auto routing is enabled. It returns the concrete
+// model name to dispatch on, or an error when the classified tier has
+// no configured model. Non-"auto" models are returned unchanged.
+//
+// This is called before marshal & dispatch so the rest of the pipeline
+// sees a concrete model name and requires no changes.
+func (s *Server) resolveAutoModelChat(req *ChatRequest) (string, error) {
+	if req.Model != autoModelAlias || !s.autoRoutingActive() {
+		return req.Model, nil
 	}
+	tier := s.autoRouting.Classify(*req)
+	model, ok := s.autoRouting.ResolveModel(tier)
+	if !ok {
+		return "", fmt.Errorf("no model configured for complexity tier %s", tier)
+	}
+	s.log.Debug("auto-routed chat request", "tier", tier, "model", model, "tokens", s.autoRouting.estimateChatTokens(*req))
+	return model, nil
+}
+
+// resolveAutoModelCompletion is the completion-requests counterpart of
+// resolveAutoModelChat.
+func (s *Server) resolveAutoModelCompletion(req *CompletionRequest) (string, error) {
+	if req.Model != autoModelAlias || !s.autoRoutingActive() {
+		return req.Model, nil
+	}
+	tier := s.autoRouting.ClassifyCompletion(*req)
+	model, ok := s.autoRouting.ResolveModel(tier)
+	if !ok {
+		return "", fmt.Errorf("no model configured for complexity tier %s", tier)
+	}
+	s.log.Debug("auto-routed completion request", "tier", tier, "model", model, "tokens", estimateTokens(req.Prompt))
+	return model, nil
+}
 
 // schedulerWeights holds the configurable weighted-scorer settings exposed via
 // CLI flags. Zero values mean "keep current" when passed to SetScorerWeights.
@@ -499,8 +499,8 @@ func (s *Server) Start(ctx context.Context) error {
 		s.workerCAPool = caCertPool
 
 		s.server = &http.Server{
-			Addr:      s.addr,
-			Handler:   handler,
+			Addr:    s.addr,
+			Handler: handler,
 			TLSConfig: &tls.Config{
 				Certificates: []tls.Certificate{*cert},
 				ClientAuth:   tls.RequireAndVerifyClientCert,
@@ -540,9 +540,9 @@ func (s *Server) Addr() string {
 }
 
 // wrapInferenceEndpoints wraps the given handler so that inference endpoints
-	// (/v1/chat/completions, /v1/completions) require a valid API key while
-	// other endpoints pass through unchanged.
-	func (s *Server) wrapInferenceEndpoints(next http.Handler, apiKey string) http.Handler {
+// (/v1/chat/completions, /v1/completions) require a valid API key while
+// other endpoints pass through unchanged.
+func (s *Server) wrapInferenceEndpoints(next http.Handler, apiKey string) http.Handler {
 	apiKeyMW := security.NewAPIKeyMiddleware(apiKey, true)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -621,9 +621,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Non-streaming: dispatch with failover to a different worker on
 	// transport/5xx/429 errors. The response is buffered until the first
 	// successful attempt so nothing is written to the client until then.
-	if s.counter != nil {
-		s.counter.Record(req.Model)
-	}
 	resp, err := s.dispatchWithFailover(r.Context(), req.Model, body, "chat", s.maxAttempts, s.retryBudget)
 	if err != nil {
 		s.writeFailoverError(w, req.Model, err)
@@ -700,9 +697,6 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	// Non-streaming: dispatch with failover to a different worker on
 	// transport/5xx/429 errors. The response is buffered until the first
 	// successful attempt so nothing is written to the client until then.
-	if s.counter != nil {
-		s.counter.Record(req.Model)
-	}
 	resp, err := s.dispatchWithFailover(r.Context(), req.Model, body, "completion", s.maxAttempts, s.retryBudget)
 	if err != nil {
 		s.writeFailoverError(w, req.Model, err)
@@ -801,10 +795,10 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 	// OpenAI-compatible clients discover it alongside concrete models.
 	if s.autoRoutingActive() {
 		models = append(models, protocol.ModelInfo{
-			Name:        autoModelAlias,
-			Backend:     "auto",
-			MaxTokens:   0,
-			Loaded:      true,
+			Name:      autoModelAlias,
+			Backend:   "auto",
+			MaxTokens: 0,
+			Loaded:    true,
 		})
 	}
 
@@ -992,7 +986,6 @@ func (s *Server) handleDevRegister(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 }
-
 
 // buildCandidates builds the list of candidate workers that have the
 // requested model loaded, attempting auto-load when no loaded candidate
@@ -1303,60 +1296,60 @@ func (s *Server) dispatchWithFailover(ctx context.Context, model string, body []
 			continue
 		}
 
-        resp, err := s.clientFactory(worker).Complete(ctx, worker, kind, body)
-        if err == nil {
-            return resp, nil
-        }
-        lastErr = err
-        if isRetryableError(err) {
-            excluded[worker.ID] = struct{}{}
-            continue
-        }
-        // Non-retryable error: fail fast.
-        return nil, err
-    }
+		resp, err := s.clientFactory(worker).Complete(ctx, worker, kind, body)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+		if isRetryableError(err) {
+			excluded[worker.ID] = struct{}{}
+			continue
+		}
+		// Non-retryable error: fail fast.
+		return nil, err
+	}
 
-    if lastErr == nil {
-        lastErr = fmt.Errorf("no worker available for model %s", model)
-    }
-    return nil, fmt.Errorf("%w: %w", errAllAttemptsFailed, lastErr)
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no worker available for model %s", model)
+	}
+	return nil, fmt.Errorf("%w: %w", errAllAttemptsFailed, lastErr)
 }
 
 // writeFailoverError maps a failover error to an appropriate HTTP response
 // and writes it to the client. It is called after the failover loop has
 // exhausted all attempts or hit a non-retryable error.
 func (s *Server) writeFailoverError(w http.ResponseWriter, model string, err error) {
-    if err == nil {
-        writeErrorResponse(w, http.StatusInternalServerError, "internal server error", "server_error", "internal_error")
-        return
-    }
-    // All attempts exhausted sentinel.
-    if errors.Is(err, errAllAttemptsFailed) {
-        writeErrorResponse(w, http.StatusServiceUnavailable, "all failover attempts exhausted", "server_error", "all_attempts_failed")
-        return
-    }
-    // Retry budget exceeded.
-    if errors.Is(err, context.DeadlineExceeded) {
-        writeErrorResponse(w, http.StatusGatewayTimeout, "request timed out after retries", "server_error", "timeout_error")
-        return
-    }
-    // Worker HTTP errors: pass through their status code.
-    var herr *WorkerHTTPError
-    if errors.As(err, &herr) {
-        writeErrorResponse(w, herr.StatusCode, "worker error", "server_error", "worker_error")
-        return
-    }
-    // Transport / relay errors.
-    if errors.Is(err, errTimeout) {
-        writeErrorResponse(w, http.StatusGatewayTimeout, "request timed out", "server_error", "timeout_error")
-        return
-    }
-    if errors.Is(err, errConnClosed) || errors.Is(err, errRelayDisconnected) {
-        writeErrorResponse(w, http.StatusServiceUnavailable, "worker unavailable", "server_error", "connection_error")
-        return
-    }
-    // Scheduler exhaustion / no workers.
-    writeErrorResponse(w, http.StatusServiceUnavailable, "no workers available for model "+model, "server_error", "no_workers")
+	if err == nil {
+		writeErrorResponse(w, http.StatusInternalServerError, "internal server error", "server_error", "internal_error")
+		return
+	}
+	// All attempts exhausted sentinel.
+	if errors.Is(err, errAllAttemptsFailed) {
+		writeErrorResponse(w, http.StatusServiceUnavailable, "all failover attempts exhausted", "server_error", "all_attempts_failed")
+		return
+	}
+	// Retry budget exceeded.
+	if errors.Is(err, context.DeadlineExceeded) {
+		writeErrorResponse(w, http.StatusGatewayTimeout, "request timed out after retries", "server_error", "timeout_error")
+		return
+	}
+	// Worker HTTP errors: pass through their status code.
+	var herr *WorkerHTTPError
+	if errors.As(err, &herr) {
+		writeErrorResponse(w, herr.StatusCode, "worker error", "server_error", "worker_error")
+		return
+	}
+	// Transport / relay errors.
+	if errors.Is(err, errTimeout) {
+		writeErrorResponse(w, http.StatusGatewayTimeout, "request timed out", "server_error", "timeout_error")
+		return
+	}
+	if errors.Is(err, errConnClosed) || errors.Is(err, errRelayDisconnected) {
+		writeErrorResponse(w, http.StatusServiceUnavailable, "worker unavailable", "server_error", "connection_error")
+		return
+	}
+	// Scheduler exhaustion / no workers.
+	writeErrorResponse(w, http.StatusServiceUnavailable, "no workers available for model "+model, "server_error", "no_workers")
 }
 
 // hubLoadSnapshot returns a per-worker queue-load snapshot from the hub, taken

@@ -10,6 +10,7 @@ set -u
 
 cd "$(git rev-parse --show-toplevel)" || exit 1
 
+# Run golangci-lint if available
 if command -v golangci-lint >/dev/null 2>&1; then
 	echo "pre-push: running 'make lint'..." >&2
 	if ! make lint; then
@@ -20,6 +21,18 @@ else
 	echo "pre-push: golangci-lint not found, falling back to 'go vet ./...'" >&2
 	if ! go vet ./...; then
 		echo "pre-push: go vet failed — push blocked." >&2
+		exit 1
+	fi
+fi
+
+# Also run gofmt check (golangci-lint v2 does not include gofmt)
+if command -v gofmt >/dev/null 2>&1; then
+	echo "pre-push: running 'gofmt -l' check..." >&2
+	unformatted=$(gofmt -l .)
+	if [ -n "$unformatted" ]; then
+		echo "pre-push: gofmt violations found in:" >&2
+		echo "$unformatted" >&2
+		echo "pre-push: gofmt failures — push blocked. Run 'gofmt -w .' to fix." >&2
 		exit 1
 	fi
 fi

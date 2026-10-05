@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -33,8 +34,8 @@ type RouterFlags struct {
 	MaxConnections int
 
 	// Retry/failover settings for non-streaming requests.
-	MaxAttempts   int
-	RetryBudget   time.Duration
+	MaxAttempts int
+	RetryBudget time.Duration
 
 	// Weighted scorer settings. Zero values keep the built-in defaults (no-op).
 	ScorerQuantMatch    float64
@@ -97,22 +98,18 @@ func (f *RouterFlags) buildAutoRoutingConfig() *router.AutoRoutingConfig {
 }
 
 // splitCSV splits a comma-separated string into trimmed, non-empty tokens.
+// Mirrors splitModelList in pkg/worker/run.go — keep in sync.
 func splitCSV(s string) []string {
 	if s == "" {
 		return nil
 	}
-	out := make([]string, 0, 4)
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == ',' {
-			if start < i {
-				out = append(out, s[start:i])
-			}
-			start = i + 1
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
 		}
-	}
-	if start < len(s) {
-		out = append(out, s[start:])
 	}
 	return out
 }
@@ -235,12 +232,12 @@ func runRouter(args []string) int {
 
 	// Security configuration
 	secCfg := security.Config{
-		DevMode:     isDevMode,
-		MTLSCert:    f.MTLSCert,
-		MTLSKey:     f.MTLSKey,
-		CertDir:     f.CertDir,
-		APIKey:      f.APIKey,
-		TrustedCNs:  f.TrustedCNs,
+		DevMode:    isDevMode,
+		MTLSCert:   f.MTLSCert,
+		MTLSKey:    f.MTLSKey,
+		CertDir:    f.CertDir,
+		APIKey:     f.APIKey,
+		TrustedCNs: f.TrustedCNs,
 	}
 
 	// Validate TLS configuration in production mode before starting the server

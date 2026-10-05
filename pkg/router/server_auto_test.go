@@ -3,7 +3,6 @@ package router
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,10 +31,10 @@ func setupAutoRoutingHandler(t *testing.T, workers []protocol.WorkerInfo, autoCf
 
 func makeChatRequest(model string, messages []ChatMessage, maxTokens int, stream bool) (*httptest.ResponseRecorder, *http.Request) {
 	body := map[string]interface{}{
-		"model":       model,
-		"messages":    messages,
-		"max_tokens":  maxTokens,
-		"stream":      stream,
+		"model":      model,
+		"messages":   messages,
+		"max_tokens": maxTokens,
+		"stream":     stream,
 	}
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(bodyBytes))
@@ -365,10 +364,10 @@ func TestAutoRouting_ModelsListExcludesAutoWhenDisabled(t *testing.T) {
 
 func makeCompletionRequest(model string, prompt string, maxTokens int) (*httptest.ResponseRecorder, *http.Request) {
 	body := map[string]interface{}{
-		"model":       model,
-		"prompt":      prompt,
-		"max_tokens":  maxTokens,
-		"stream":      false,
+		"model":      model,
+		"prompt":     prompt,
+		"max_tokens": maxTokens,
+		"stream":     false,
 	}
 	bodyBytes, _ := json.Marshal(body)
 	req := httptest.NewRequest(http.MethodPost, "/v1/completions", bytes.NewReader(bodyBytes))
@@ -400,9 +399,6 @@ func TestAutoRouting_CompletionEndpoint(t *testing.T) {
 
 	w, req := makeCompletionRequest("auto", "short", 100)
 	srv.handleCompletions(w, req)
-
-	// DEBUG
-	fmt.Printf("DEBUG: Response code %d, body: %s\n", w.Code, w.Body.String())
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -509,11 +505,9 @@ func TestAutoRouting_CounterRecordsConcreteModel(t *testing.T) {
 		t.Fatal("counter is nil")
 	}
 	snapshot := srv.counter.Snapshot()
-	// Note: the counter is recorded both in handleChatCompletions and
-	// dispatchWithFailover (existing behavior). We verify the concrete model
-	// is recorded and "auto" is not.
-	if snapshot["small-model"] < 2 {
-		t.Errorf("expected counter for small-model >= 2 (due to existing duplicate recording), got %v", snapshot)
+	// The counter is now recorded exactly once by dispatchWithFailover.
+	if snapshot["small-model"] != 1 {
+		t.Errorf("expected counter for small-model == 1 (single recording), got %v", snapshot)
 	}
 	if _, ok := snapshot["auto"]; ok {
 		t.Errorf("expected no 'auto' entry in counter, got %v", snapshot)
