@@ -9,7 +9,8 @@ Not: Kubernetes, LiteLLM, or distributed model inference.
 ## Quick Start
 
 ```bash
-# Build the router and worker binaries
+# Build the router and worker binaries.
+# The relay broker is built separately with `make relay`.
 make build
 
 # Run router in dev mode (no auth, localhost)

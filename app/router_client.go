@@ -108,6 +108,11 @@ func (c *RouterClient) GetWorkers(ctx context.Context) ([]WorkerView, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, fmt.Errorf("router /v1/workers returned %d: %s", resp.StatusCode, truncateBody(body))
+	}
+
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("read router body: %w", err)
@@ -126,7 +131,7 @@ func (c *RouterClient) GetWorkers(ctx context.Context) ([]WorkerView, error) {
 func parseWorkersResponse(body []byte) ([]WorkerView, error) {
 	var resp router.WorkersResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("decode workers response: %w", err)
+		return nil, fmt.Errorf("decode workers response: %w (body snippet: %q)", err, truncateBody(body))
 	}
 	if resp.Workers == nil {
 		// JSON `null` is legal but useless; normalise to an empty slice so
@@ -198,6 +203,11 @@ func relativeLastSeen(t time.Time) string {
 	}
 }
 
-// ErrRouterUnreachable is the sentinel error returned when the router host
-// cannot be dialed. The UI keys off the error message text.
-var ErrRouterUnreachable = errors.New("router unreachable")
+// truncateBody returns at most maxBody bytes, appending "..." if truncated.
+func truncateBody(b []byte) string {
+	const maxBody = 200
+	if len(b) <= maxBody {
+		return string(b)
+	}
+	return string(b[:maxBody]) + "..."
+}

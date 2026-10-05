@@ -114,8 +114,11 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 		"backend", cfg.Backend,
 	)
 
-	// In production mode, a model path is required so the worker knows what it serves.
-	if !cfg.DevMode && cfg.ModelPath == "" {
+	// In production mode, a model path is required for backends that can't auto-discover
+	// models from the runtime. Currently only llama-cpp requires a declared model path
+	// (it needs a .gguf file); ollama, lmstudio, and vllm can discover models dynamically.
+	requireModelPath := !cfg.DevMode && cfg.Backend == "llama-cpp"
+	if requireModelPath && cfg.ModelPath == "" {
 		return fail(ErrMissingModelPath)
 	}
 

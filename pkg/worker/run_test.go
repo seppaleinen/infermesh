@@ -161,7 +161,7 @@ func TestHostname(t *testing.T) {
 
 func TestRunWorkerRequiresModelPathInProd(t *testing.T) {
 	_, err := RunWorker(context.Background(), RunConfig{
-		Backend: "lmstudio",
+		Backend: "llama-cpp",
 		Port:    8081,
 		DevMode: false,
 	})
