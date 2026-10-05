@@ -211,3 +211,7 @@ func truncateBody(b []byte) string {
 	}
 	return string(b[:maxBody]) + "..."
 }
+
+// ErrRouterUnreachable is the sentinel error returned when the router host
+// cannot be dialed. The UI keys off the error message text.
+var ErrRouterUnreachable = errors.New("router unreachable")
