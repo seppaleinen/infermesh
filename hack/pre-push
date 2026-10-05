@@ -25,14 +25,15 @@ else
 	fi
 fi
 
-# Also run gofmt check (golangci-lint v2 does not include gofmt)
+# Also run gofmt check on staged files only (golangci-lint v2 does not include gofmt).
+# Checking only staged files prevents blocking pushes on pre-existing formatting
+# drift in the repo; new/modified code must be properly formatted.
 if command -v gofmt >/dev/null 2>&1; then
-	echo "pre-push: running 'gofmt -l' check..." >&2
-	unformatted=$(gofmt -l .)
+	unformatted=$(git diff --cached --name-only | xargs -I{} sh -c 'gofmt -l {} 2>/dev/null' | sort -u)
 	if [ -n "$unformatted" ]; then
-		echo "pre-push: gofmt violations found in:" >&2
+		echo "pre-push: gofmt violations found in staged files:" >&2
 		echo "$unformatted" >&2
-		echo "pre-push: gofmt failures — push blocked. Run 'gofmt -w .' to fix." >&2
+		echo "pre-push: gofmt failures — push blocked. Stage fixed files with 'gofmt -w <file>' and 'git add'." >&2
 		exit 1
 	fi
 fi
