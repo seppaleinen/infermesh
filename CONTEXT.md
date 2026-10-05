@@ -145,3 +145,46 @@ The `app/` module is a Wails v3 desktop app (pinned `v3.0.0-beta.24`) that pairs
 - WAN/remote workers
 - CPU-only workers (can add later)
 - Windows desktop app (deferred; headless Windows binaries remain in `make build-static`)
+
+## Security & Threat Model
+
+### What InferMesh Is
+
+InferMesh is an OpenAI-compatible API proxy that routes requests to **local workers** (llama-cpp, LM Studio, Ollama, vLLM on localhost). It is a single-node inference pool — data never leaves the user's machine through infermesh.
+
+### What InferMesh Is NOT
+
+InferMesh is **not** a gateway to external/cloud providers. It does not integrate with OpenAI API, Anthropic, or any remote endpoint. The OpenAI-compatible API is a *compatibility layer*, not a provider abstraction.
+
+### The Sensitive Data Leak Threat (Issue #26)
+
+**Scenario**: A user has sensitive context loaded in an agent (Cursor, LangChain, AutoGen, etc.) — PII, secrets, proprietary code. The user switches from infermesh to an external provider (OpenAI, Anthropic, Claude, etc.) mid-conversation. The context travels with the request and leaks to the external provider.
+
+**Why infermesh can't solve this**: The leak happens at the *agent framework level*, not at the proxy level. InferMesh sees only its own requests — it has no visibility into the agent's provider-switching behavior, no session tracking across providers, and no ability to force agent frameworks to implement trust boundaries.
+
+### What InferMesh CAN Do
+
+1. **Keep local data local** — all workers are local; infermesh never routes to external endpoints. The opt-out feature (#37) ensures workers can't be forced to serve models they declined.
+2. **Document the threat model** — this section. Users must understand that context provenance is their responsibility, not infermesh's.
+3. **Provide clear failure modes** — if a request can't be routed (no workers, opt-out), the router returns a clear error. No silent data loss.
+
+### What InferMesh CANNOT Do
+
+- Prevent users from switching providers in their agent framework
+- Track context provenance across different provider connections
+- Force agent frameworks to implement trust boundaries
+- Detect or block PII in request bodies (out of scope, adds complexity)
+
+### Recommended Guidance
+
+- **Use infermesh for local-only work** — sensitive data, proprietary code, internal tools
+- **Use external providers for non-sensitive work** — general knowledge, creative writing, public data
+- **Never mix** — don't switch providers mid-conversation when context contains sensitive data
+- **Clear context before switching** — the agent framework should support context reset between providers
+
+### Security Features (Existing)
+
+- **mTLS with self-signed certs** — production mode requires mutual TLS for all router-worker communication
+- **Dev mode (no auth, localhost HTTP)** — easy local development, no network exposure
+- **API key middleware** — optional API key authentication for the router
+- **Audit logging** — request/response logging for operational visibility
