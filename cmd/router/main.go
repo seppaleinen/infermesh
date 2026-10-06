@@ -122,7 +122,7 @@ func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
 	fs.StringVar(&f.MTLSCert, "mtls-cert", "", "path to mTLS certificate file")
 	fs.StringVar(&f.MTLSKey, "mtls-key", "", "path to mTLS key file")
 	fs.StringVar(&f.CertDir, "cert-dir", "", "path to certificate directory (for CA)")
-	fs.StringVar(&f.APIKey, "api-key", "", "API key for authentication (production mode)")
+	fs.StringVar(&f.APIKey, "api-key", "", "API key for authenticating inference requests (dev and prod mode)")
 	fs.StringVar(&f.TrustedCNs, "trusted-cn", "", "comma-separated list of trusted client certificate CNs for mTLS (empty = any)")
 	fs.StringVar(&f.Addr, "addr", ":8080", "listen address (host:port) for the router HTTP server")
 	fs.StringVar(&f.RelayURL, "relay-url", "", "relay URL for outbound-only WebSocket connectivity (dev mode only)")

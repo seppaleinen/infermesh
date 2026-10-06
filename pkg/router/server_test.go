@@ -1994,14 +1994,14 @@ func TestSelectWorkerRespectsQueueDepth(t *testing.T) {
 // mockWorkerClient is a WorkerClient implementation that returns configured
 // responses for testing dispatchWithFailover.
 type mockWorkerClient struct {
-	mu       sync.Mutex
-	results  map[string]mockResult
-	calls    map[string]int
+	mu      sync.Mutex
+	results map[string]mockResult
+	calls   map[string]int
 }
 
 type mockResult struct {
-	body []byte
-	err  error
+	body  []byte
+	err   error
 	block time.Duration
 }
 
@@ -2078,7 +2078,7 @@ func mkWorker(id, model string) protocol.WorkerInfo {
 		Status: protocol.StatusAvailable, Version: "v1",
 		Capabilities: protocol.Capabilities{
 			Models: []protocol.ModelInfo{{Name: model, Quantization: "Q4_K_M", Loaded: true}},
-			VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 20480},
+			VRAM:   protocol.MemoryInfo{TotalMB: 24576, FreeMB: 20480},
 		},
 	}
 }
@@ -2108,7 +2108,7 @@ func TestDispatchWithFailover_SuccessOnFirstAttempt(t *testing.T) {
 		t.Fatalf("dispatchWithFailover failed: %v", err)
 	}
 	if !bytes.Contains(resp, []byte("success")) {
-	 t.Errorf("expected response from worker-a, got: %s", string(resp))
+		t.Errorf("expected response from worker-a, got: %s", string(resp))
 	}
 	if fc.calls["worker-a"] != 1 {
 		t.Errorf("expected 1 call to worker-a, got %d", fc.calls["worker-a"])
@@ -2307,5 +2307,72 @@ func TestRetryBudget_DeadlineEnforced(t *testing.T) {
 	}
 	if elapsed > 2*time.Second {
 		t.Errorf("budget not enforced: took %v", elapsed)
+	}
+}
+
+// TestWrapInferenceEndpointsDevModeAPIKey pins the issue #77 fix: an
+// api-key configured in dev mode must still gate the inference endpoints.
+// Previously the router only installed the API-key middleware inside the
+// prod-only block, so --dev-mode --api-key accepted any key.
+func TestWrapInferenceEndpointsDevModeAPIKey(t *testing.T) {
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+
+	// Dev mode with an api-key configured.
+	server := tr.ServerWithCfg(security.Config{DevMode: true, APIKey: "heybaby"})
+
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	})
+	wrapped := server.wrapInferenceEndpoints(next, "heybaby")
+
+	tests := []struct {
+		name           string
+		path           string
+		header         string
+		expectedStatus int
+	}{
+		{"inference endpoint missing key", "/v1/chat/completions", "", http.StatusUnauthorized},
+		{"inference endpoint wrong key", "/v1/chat/completions", "wrong", http.StatusUnauthorized},
+		{"inference endpoint valid key", "/v1/chat/completions", "heybaby", http.StatusOK},
+		{"completion endpoint valid key", "/v1/completions", "heybaby", http.StatusOK},
+		{"non-inference endpoint passes through", "/v1/models", "", http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tt.path, nil)
+			if tt.header != "" {
+				req.Header.Set("X-API-Key", tt.header)
+			}
+			w := httptest.NewRecorder()
+			wrapped.ServeHTTP(w, req)
+			if w.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d, body: %s", tt.expectedStatus, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// TestWrapInferenceEndpointsNoKeyDevMode verifies that without an api-key
+// configured, dev mode passes through unauthenticated (backward compatible).
+func TestWrapInferenceEndpointsNoKeyDevMode(t *testing.T) {
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+
+	server := tr.Server() // dev mode, no api-key
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	wrapped := server.wrapInferenceEndpoints(next, "")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	w := httptest.NewRecorder()
+	wrapped.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected pass-through 200, got %d", w.Code)
 	}
 }

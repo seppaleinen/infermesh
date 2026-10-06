@@ -462,6 +462,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	var handler http.Handler = mux
+
 	if !security.IsDevMode(s.cfg) {
 		// Prod mode: validate the TLS configuration before starting so we
 		// fail fast with a clear error instead of crashing inside
@@ -477,12 +478,13 @@ func (s *Server) Start(ctx context.Context) error {
 		// Wrap the handler with the mTLS middleware so the router enforces
 		// client-certificate verification and CN restriction at the HTTP
 		// layer. This replaces the raw tls.Config that was never enforced.
+		// The mTLS middleware handles worker-facing endpoints; the API key
+		// middleware (wrapped outside this block) handles external clients.
 		mtlsMW := security.NewMTLSMiddleware(caCertPool, true, security.SplitCNs(s.cfg.TrustedCNs)...)
 		handler = mtlsMW(mux)
 
-		// Per-endpoint API key check on inference endpoints. External
-		// clients must present a valid X-API-Key; the mTLS middleware
-		// handles worker-facing endpoints.
+		// Per-endpoint API key check on inference endpoints, wrapped
+		// outermost (after mTLS) to preserve the original prod ordering.
 		if s.cfg.APIKey != "" {
 			handler = s.wrapInferenceEndpoints(handler, s.cfg.APIKey)
 		}
@@ -508,6 +510,13 @@ func (s *Server) Start(ctx context.Context) error {
 			},
 		}
 	} else {
+		// Dev mode: no mTLS. An api-key, if configured, still gates the
+		// inference endpoints — previously dev mode ignored --api-key
+		// entirely (issue #77).
+		if s.cfg.APIKey != "" {
+			handler = s.wrapInferenceEndpoints(handler, s.cfg.APIKey)
+		}
+
 		s.server = &http.Server{
 			Addr:    s.addr,
 			Handler: handler,
@@ -543,7 +552,10 @@ func (s *Server) Addr() string {
 // (/v1/chat/completions, /v1/completions) require a valid API key while
 // other endpoints pass through unchanged.
 func (s *Server) wrapInferenceEndpoints(next http.Handler, apiKey string) http.Handler {
-	apiKeyMW := security.NewAPIKeyMiddleware(apiKey, true)
+	// required mirrors the worker's wrapInferenceEndpoints: a key is only
+	// enforced when one is actually configured. Without this, passing an
+	// empty apiKey would enforce a key against "" and reject every request.
+	apiKeyMW := security.NewAPIKeyMiddleware(apiKey, apiKey != "")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/chat/completions", "/v1/completions":
