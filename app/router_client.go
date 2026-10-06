@@ -18,10 +18,6 @@ import (
 // It is NOT persisted here — that is issue #43 (settings UI).
 const defaultRouterURL = "http://127.0.0.1:8080"
 
-// httpTimeout bounds every outbound call to the router so a dead host
-// surfaces as an error instead of hanging the UI thread.
-const httpTimeout = 5 * time.Second
-
 // WorkerView is the slim projection the desktop UI renders. It mirrors
 // router.WorkerInfo (the /v1/workers projection) but adds a friendly
 // relative "last seen" string computed client-side.
@@ -210,6 +206,78 @@ func truncateBody(b []byte) string {
 		return string(b)
 	}
 	return string(b[:maxBody]) + "..."
+}
+
+// PopularModelView is the UI projection of router.PopularModelInfo. Field
+// names mirror the router JSON tags exactly so the generated Wails binding
+// is a straight pass-through.
+type PopularModelView struct {
+	Model       string `json:"model"`
+	WorkerCount int    `json:"worker_count"`
+	CallCount   int    `json:"call_count"`
+}
+
+// popularModelsPath builds the full /meta/models/popular URL for the
+// configured base.
+func (c *RouterClient) popularModelsPath() string {
+	return c.baseURL + "/meta/models/popular"
+}
+
+// GetPopularModels fetches the sorted popular-models list from the router.
+// It returns an empty (non-nil) slice when the router is reachable but idle,
+// and a typed error when the router is unreachable or returns a bad body.
+// Mirrors GetWorkers.
+func (c *RouterClient) GetPopularModels(ctx context.Context) ([]PopularModelView, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.popularModelsPath(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("router unreachable at %s: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, fmt.Errorf("router /meta/models/popular returned %d: %s", resp.StatusCode, truncateBody(body))
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read router body: %w", err)
+	}
+
+	models, err := parsePopularModelsResponse(body)
+	if err != nil {
+		return nil, err
+	}
+	return models, nil
+}
+
+// parsePopularModelsResponse decodes a PopularModelsResponse envelope and
+// maps each router.PopularModelInfo into a PopularModelView. It is exported
+// (and pure) so the unit tests can feed canned JSON without a live router.
+func parsePopularModelsResponse(body []byte) ([]PopularModelView, error) {
+	var resp router.PopularModelsResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode popular models response: %w (body snippet: %q)", err, truncateBody(body))
+	}
+	if resp.Models == nil {
+		// JSON `null` is legal but useless; normalise to an empty slice so
+		// the UI can distinguish "reachable, idle" from "unreachable".
+		resp.Models = []router.PopularModelInfo{}
+	}
+	out := make([]PopularModelView, 0, len(resp.Models))
+	for _, m := range resp.Models {
+		out = append(out, PopularModelView{
+			Model:       m.Model,
+			WorkerCount: m.WorkerCount,
+			CallCount:   m.CallCount,
+		})
+	}
+	return out, nil
 }
 
 // ErrRouterUnreachable is the sentinel error returned when the router host

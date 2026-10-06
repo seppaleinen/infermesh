@@ -3,7 +3,10 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { Events } from '@wailsio/runtime'
 import WorkerCard from './components/WorkerCard.vue'
 import SettingsForm from './components/SettingsForm.vue'
+import PopularModelsTable from './components/PopularModelsTable.vue'
 import { useWorkers, relativeLastSeen, formatAbsolute } from './composables/useWorkers'
+import { usePopularModels } from './composables/usePopularModels'
+import { useSettings } from './composables/useSettings'
 
 const version = 'v0.1.0'
 
@@ -32,6 +35,14 @@ function scheduleStale() {
 // Connected-workers view (issue #41). Bound Go service: RouterClient.
 const workers = useWorkers()
 
+// Popular-models view (issue #79). Mirrors useWorkers — same poll cadence
+// and first-load timeout, so the table stays in step with the worker list.
+const popular = usePopularModels()
+
+// Settings view (issue #46). Loaded on mount so we can detect the local
+// worker (the one this desktop is running) and tag its card with "You".
+const settings = useSettings()
+
 // Active view: 'dashboard' (workers) or 'settings'.
 const activeView = ref<'dashboard' | 'settings'>('dashboard')
 
@@ -50,9 +61,18 @@ function onKeydown(e: KeyboardEvent): void {
 function onSettingsSaved(): void {
   activeView.value = 'dashboard'
   workers.retry() // re-fetch from new router URL immediately
+  popular.retry() // popular models depend on the same router URL
 }
 
-onMounted(() => {
+// A worker is "local" when its port matches the port this desktop app
+// supervises (settings.worker_port). Tags the card with a "You" badge so
+// the user can instantly recognise the worker they are running.
+const isLocalWorker = (w: { port: number }): boolean => {
+  if (!settings.settings.value) return false
+  return w.port === settings.settings.value.worker_port
+}
+
+onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
   unsubscribe = Events.On('time', (ev: { data: string }) => {
     heartbeatText.value = ev.data
@@ -60,6 +80,8 @@ onMounted(() => {
     scheduleStale()
   })
   workers.start()
+  popular.start()
+  await settings.load()
 })
 
 onBeforeUnmount(() => {
@@ -67,6 +89,7 @@ onBeforeUnmount(() => {
   unsubscribe?.()
   if (staleTimer !== undefined) clearTimeout(staleTimer)
   workers.stop()
+  popular.stop()
 })
 
 const workerCount = computed(() => {
@@ -181,10 +204,22 @@ const workerCount = computed(() => {
         <div class="workers-head">
           <div class="workers-title">
             <h1 class="workers-count">{{ workerCount }} worker<span v-if="workerCount !== 1">s</span></h1>
-            <p class="workers-sub">connected to <span class="mono">{{ workers.state.value.routerURL }}</span></p>
+            <p class="workers-sub">
+              connected to <span class="mono">{{ workers.state.value.routerURL }}</span>
+              <span v-if="popular.state.value.kind === 'ready' && popular.state.value.models.length">
+                · {{ popular.state.value.models.length }} model<span v-if="popular.state.value.models.length !== 1">s</span> across the pool
+              </span>
+            </p>
           </div>
           <span class="workers-live"><span class="dot flag-dot flag-live"></span> live</span>
         </div>
+
+        <!-- Popular models section (issue #79) -->
+        <PopularModelsTable
+          v-if="popular.state.value.kind === 'ready' && popular.state.value.models.length"
+          :models="popular.state.value.models"
+        />
+
         <ul class="worker-list">
           <li v-for="w in workers.state.value.workers" :key="w.id" class="worker-item">
             <WorkerCard
@@ -196,6 +231,7 @@ const workerCount = computed(() => {
               :loaded-models="w.loaded_models"
               :last-seen-rel="relativeLastSeen(w.last_seen)"
               :last-seen-absolute="formatAbsolute(w.last_seen)"
+              :is-local="isLocalWorker(w)"
             />
           </li>
         </ul>

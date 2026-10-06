@@ -17,6 +17,16 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 import * as $models from "./models.js";
 
 /**
+ * GetPopularModels fetches the sorted popular-models list from the router.
+ * It returns an empty (non-nil) slice when the router is reachable but idle,
+ * and a typed error when the router is unreachable or returns a bad body.
+ * Mirrors GetWorkers.
+ */
+export function GetPopularModels(): $CancellablePromise<$models.PopularModelView[] | null> {
+    return $Call.ByID(601255233);
+}
+
+/**
  * GetRouterURL returns the configured base URL (used by the UI to show the
  * unreachable-router error card).
  */

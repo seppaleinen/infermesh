@@ -10,6 +10,7 @@ export interface WorkerCardProps {
   loadedModels: string[] | null
   lastSeenRel: string
   lastSeenAbsolute: string
+  isLocal?: boolean
 }
 
 const props = defineProps<WorkerCardProps>()
@@ -41,6 +42,7 @@ const hasModels = computed(() => models.value.length > 0)
         <span class="worker-addr">{{ address }}</span>
       </div>
       <span class="status-pill" :class="dotClass">{{ statusLabel }}</span>
+      <span v-if="isLocal" class="local-badge">You</span>
     </div>
 
     <div class="worker-body">
@@ -158,6 +160,19 @@ const hasModels = computed(() => models.value.length > 0)
 
 .status-pill.dot-idle {
   background: var(--text-faint);
+}
+
+.local-badge {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent-strong);
+  border: 1px solid rgba(62, 207, 174, 0.28);
+  border-radius: 999px;
+  background: var(--accent-dim);
 }
 
 .worker-body {

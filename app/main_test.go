@@ -181,6 +181,118 @@ func TestRouterClientParse(t *testing.T) {
 	})
 }
 
+// TestRouterClientPopularModelsURL verifies the URL builder yields the
+// /meta/models/popular path and respects a custom base URL, including
+// trailing-slash trimming.
+func TestRouterClientPopularModelsURL(t *testing.T) {
+	cases := []struct {
+		name string
+		base string
+		want string
+	}{
+		{"default empty", "", "http://127.0.0.1:8080/meta/models/popular"},
+		{"default explicit", "http://127.0.0.1:8080", "http://127.0.0.1:8080/meta/models/popular"},
+		{"trailing slash", "http://127.0.0.1:8080/", "http://127.0.0.1:8080/meta/models/popular"},
+		{"custom", "http://router.example:9000", "http://router.example:9000/meta/models/popular"},
+		{"custom trailing slash", "http://router.example:9000/", "http://router.example:9000/meta/models/popular"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewRouterClient(tc.base)
+			if got := c.popularModelsPath(); got != tc.want {
+				t.Fatalf("popularModelsPath: got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRouterClientPopularModelsParse feeds canned JSON into the parser and
+// asserts field mapping: empty list, null normalisation, single/multi-model
+// round-trip, order preservation, malformed JSON, and unknown extra fields.
+func TestRouterClientPopularModelsParse(t *testing.T) {
+	t.Run("empty list → empty slice, no error", func(t *testing.T) {
+		models, err := parsePopularModelsResponse([]byte(`{"models":[]}`))
+		if err != nil {
+			t.Fatalf("parse failed: %v", err)
+		}
+		if len(models) != 0 {
+			t.Fatalf("expected 0 models, got %d", len(models))
+		}
+	})
+
+	t.Run("null list → empty slice", func(t *testing.T) {
+		models, err := parsePopularModelsResponse([]byte(`{"models":null}`))
+		if err != nil {
+			t.Fatalf("parse failed: %v", err)
+		}
+		if len(models) != 0 {
+			t.Fatalf("expected 0 models for null, got %d", len(models))
+		}
+	})
+
+	t.Run("single model field round-trip", func(t *testing.T) {
+		body := `{"models":[{"model":"llama-3-8b","worker_count":2,"call_count":42}]}`
+		models, err := parsePopularModelsResponse([]byte(body))
+		if err != nil {
+			t.Fatalf("parse failed: %v", err)
+		}
+		if len(models) != 1 {
+			t.Fatalf("expected 1 model, got %d", len(models))
+		}
+		m := models[0]
+		if m.Model != "llama-3-8b" {
+			t.Errorf("Model: got %q want %q", m.Model, "llama-3-8b")
+		}
+		if m.WorkerCount != 2 {
+			t.Errorf("WorkerCount: got %d want 2", m.WorkerCount)
+		}
+		if m.CallCount != 42 {
+			t.Errorf("CallCount: got %d want 42", m.CallCount)
+		}
+	})
+
+	t.Run("multi-model preserves router sort order", func(t *testing.T) {
+		// The router already sorts by worker_count descending; the parser
+		// must NOT re-sort.
+		body := `{"models":[
+			{"model":"a","worker_count":5,"call_count":1},
+			{"model":"b","worker_count":3,"call_count":2},
+			{"model":"c","worker_count":1,"call_count":3}
+		]}`
+		models, err := parsePopularModelsResponse([]byte(body))
+		if err != nil {
+			t.Fatalf("parse failed: %v", err)
+		}
+		if len(models) != 3 {
+			t.Fatalf("expected 3 models, got %d", len(models))
+		}
+		if !(models[0].WorkerCount >= models[1].WorkerCount && models[1].WorkerCount >= models[2].WorkerCount) {
+			t.Errorf("order not preserved: %+v", models)
+		}
+		if models[0].Model != "a" || models[1].Model != "b" || models[2].Model != "c" {
+			t.Errorf("model order not preserved: %+v", models)
+		}
+	})
+
+	t.Run("malformed JSON → error", func(t *testing.T) {
+		_, err := parsePopularModelsResponse([]byte(`{not json`))
+		if err == nil || !strings.Contains(err.Error(), "decode popular models response") {
+			t.Fatalf("expected decode error, got: %v", err)
+		}
+	})
+
+	t.Run("unknown extra fields ignored", func(t *testing.T) {
+		body := `{"models":[{"model":"x","worker_count":1,"call_count":0,"extra":true}]}`
+		models, err := parsePopularModelsResponse([]byte(body))
+		if err != nil {
+			t.Fatalf("parse failed: %v", err)
+		}
+		if len(models) != 1 || models[0].Model != "x" || models[0].WorkerCount != 1 || models[0].CallCount != 0 {
+			t.Errorf("unexpected parse result: %+v", models)
+		}
+	})
+}
+
 // TestSettingsRoundTrip verifies that saving and loading settings preserves
 // all fields, including unicode model paths. It also asserts that the YAML
 // output contains no "secrets" key because secrets must only exist in the
