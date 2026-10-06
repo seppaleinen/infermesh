@@ -24,9 +24,10 @@ import (
 // PopularModelInfo represents a model with popularity signals for the
 // /meta/models/popular endpoint.
 type PopularModelInfo struct {
-	Model       string `json:"model"`
-	WorkerCount int    `json:"worker_count"`
-	CallCount   int    `json:"call_count"`
+	Model             string `json:"model"`
+	WorkerCount       int    `json:"worker_count"`
+	LoadedWorkerCount int    `json:"loaded_worker_count"`
+	CallCount         int    `json:"call_count"`
 }
 
 // PopularModelsResponse is the response from the /meta/models/popular endpoint.
@@ -844,9 +845,10 @@ func (s *Server) handlePopularModels(w http.ResponseWriter, r *http.Request) {
 	// Map to accumulate counts per model
 	// Key: model name, Value: struct with counts
 	type modelStats struct {
-		model       string
-		workerCount int
-		callCount   int64
+		model        string
+		workerCount  int
+		loadedCount  int
+		callCount    int64
 	}
 	statsMap := make(map[string]*modelStats)
 
@@ -860,6 +862,9 @@ func (s *Server) handlePopularModels(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			statsMap[m.Name].workerCount++
+			if m.Loaded {
+				statsMap[m.Name].loadedCount++
+			}
 		}
 	}
 
@@ -867,9 +872,10 @@ func (s *Server) handlePopularModels(w http.ResponseWriter, r *http.Request) {
 	popularModels := make([]PopularModelInfo, 0, len(statsMap))
 	for _, stat := range statsMap {
 		popularModels = append(popularModels, PopularModelInfo{
-			Model:       stat.model,
-			WorkerCount: stat.workerCount,
-			CallCount:   int(stat.callCount),
+			Model:             stat.model,
+			WorkerCount:       stat.workerCount,
+			LoadedWorkerCount: stat.loadedCount,
+			CallCount:         int(stat.callCount),
 		})
 	}
 

@@ -96,6 +96,13 @@ const workerCount = computed(() => {
   if (workers.state.value.kind === 'ready') return workers.state.value.workers.length
   return 0
 })
+
+const loadedModelCount = computed(() => {
+  if (popular.state.value.kind === 'ready' && popular.state.value.models.length) {
+    return popular.state.value.models.filter(m => m.loaded_worker_count > 0).length
+  }
+  return 0
+})
 </script>
 
 <template>
@@ -204,12 +211,13 @@ const workerCount = computed(() => {
         <div class="workers-head">
           <div class="workers-title">
             <h1 class="workers-count">{{ workerCount }} worker<span v-if="workerCount !== 1">s</span></h1>
-            <p class="workers-sub">
-              connected to <span class="mono">{{ workers.state.value.routerURL }}</span>
-              <span v-if="popular.state.value.kind === 'ready' && popular.state.value.models.length">
-                · {{ popular.state.value.models.length }} model<span v-if="popular.state.value.models.length !== 1">s</span> across the pool
-              </span>
-            </p>
+<p class="workers-sub">
+  connected to <span class="mono">{{ workers.state.value.routerURL }}</span>
+  <span v-if="popular.state.value.kind === 'ready' && popular.state.value.models.length">
+    · {{ popular.state.value.models.length }} model<span v-if="popular.state.value.models.length !== 1">s</span> across the pool
+    <span v-if="popular.state.value.models.length">· {{ loadedModelCount }} loaded</span>
+  </span>
+</p>
           </div>
           <span class="workers-live"><span class="dot flag-dot flag-live"></span> live</span>
         </div>

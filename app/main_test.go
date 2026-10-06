@@ -291,6 +291,34 @@ func TestRouterClientPopularModelsParse(t *testing.T) {
 			t.Errorf("unexpected parse result: %+v", models)
 		}
 	})
+
+	t.Run("loaded_worker_count present", func(t *testing.T) {
+		body := `{"models":[{"model":"llama-3-8b","worker_count":2,"loaded_worker_count":1,"call_count":42}]}`
+		models, err := parsePopularModelsResponse([]byte(body))
+		if err != nil {
+			t.Fatalf("parse failed: %v", err)
+		}
+		if len(models) != 1 {
+			t.Fatalf("expected 1 model, got %d", len(models))
+		}
+		if models[0].LoadedWorkerCount != 1 {
+			t.Errorf("LoadedWorkerCount: got %d want 1", models[0].LoadedWorkerCount)
+		}
+	})
+
+	t.Run("loaded_worker_count absent defaults to 0", func(t *testing.T) {
+		body := `{"models":[{"model":"llama-3-8b","worker_count":2,"call_count":42}]}`
+		models, err := parsePopularModelsResponse([]byte(body))
+		if err != nil {
+			t.Fatalf("parse failed: %v", err)
+		}
+		if len(models) != 1 {
+			t.Fatalf("expected 1 model, got %d", len(models))
+		}
+		if models[0].LoadedWorkerCount != 0 {
+			t.Errorf("LoadedWorkerCount: got %d want 0 (backward compat)", models[0].LoadedWorkerCount)
+		}
+	})
 }
 
 // TestSettingsRoundTrip verifies that saving and loading settings preserves

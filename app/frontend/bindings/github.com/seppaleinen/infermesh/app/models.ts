@@ -9,6 +9,7 @@
 export interface PopularModelView {
     "model": string;
     "worker_count": number;
+    "loaded_worker_count": number;
     "call_count": number;
 }
 

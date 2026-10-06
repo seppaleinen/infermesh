@@ -212,9 +212,10 @@ func truncateBody(b []byte) string {
 // names mirror the router JSON tags exactly so the generated Wails binding
 // is a straight pass-through.
 type PopularModelView struct {
-	Model       string `json:"model"`
-	WorkerCount int    `json:"worker_count"`
-	CallCount   int    `json:"call_count"`
+	Model             string `json:"model"`
+	WorkerCount       int    `json:"worker_count"`
+	LoadedWorkerCount int    `json:"loaded_worker_count"`
+	CallCount         int    `json:"call_count"`
 }
 
 // popularModelsPath builds the full /meta/models/popular URL for the
@@ -272,9 +273,10 @@ func parsePopularModelsResponse(body []byte) ([]PopularModelView, error) {
 	out := make([]PopularModelView, 0, len(resp.Models))
 	for _, m := range resp.Models {
 		out = append(out, PopularModelView{
-			Model:       m.Model,
-			WorkerCount: m.WorkerCount,
-			CallCount:   m.CallCount,
+			Model:             m.Model,
+			WorkerCount:       m.WorkerCount,
+			LoadedWorkerCount: m.LoadedWorkerCount,
+			CallCount:         m.CallCount,
 		})
 	}
 	return out, nil

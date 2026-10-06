@@ -1723,6 +1723,125 @@ func TestPopularModelsMultipleWorkers(t *testing.T) {
 	}
 }
 
+// TestPopularModelsLoadedVsAdvertised tests that loaded_worker_count tracks
+// how many workers have the model currently LOADED vs merely advertising it.
+func TestPopularModelsLoadedVsAdvertised(t *testing.T) {
+	// worker-1: shared-model Loaded=true, both-loaded Loaded=true
+	worker1 := protocol.WorkerInfo{
+		ID:       "worker-1",
+		Hostname: "worker-1",
+		IP:       "127.0.0.1",
+		Port:     8081,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "shared-model", Quantization: "Q4_K_M", Loaded: true},
+				{Name: "both-loaded", Quantization: "Q4_K_M", Loaded: true},
+				{Name: "only-advertised", Quantization: "Q4_K_M", Loaded: false},
+			},
+		},
+	}
+
+	// worker-2: shared-model Loaded=false, both-loaded Loaded=true
+	worker2 := protocol.WorkerInfo{
+		ID:       "worker-2",
+		Hostname: "worker-2",
+		IP:       "127.0.0.1",
+		Port:     8082,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "shared-model", Quantization: "Q4_K_M", Loaded: false},
+				{Name: "both-loaded", Quantization: "Q4_K_M", Loaded: true},
+				{Name: "never-loaded", Quantization: "Q4_K_M", Loaded: false},
+			},
+		},
+	}
+
+	tr := testRegistry(t, []protocol.WorkerInfo{worker1, worker2})
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+	server := tr.Server()
+
+	server.cache = NewCapabilityCache(tr.reg, testLogger())
+	server.cache.Start(tr.ctx)
+	server.cache.mu.Lock()
+	server.cache.cache[worker1.ID] = worker1
+	server.cache.cache[worker2.ID] = worker2
+	server.cache.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/meta/models/popular", nil)
+	w := httptest.NewRecorder()
+	server.handlePopularModels(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	var resp PopularModelsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Build a map for easier assertion
+	modelMap := make(map[string]PopularModelInfo)
+	for _, m := range resp.Models {
+		modelMap[m.Model] = m
+	}
+
+	// shared-model: advertised by 2 workers, loaded on 1
+	if m, ok := modelMap["shared-model"]; !ok {
+		t.Fatal("shared-model not found in response")
+	} else {
+		if m.WorkerCount != 2 {
+			t.Errorf("shared-model worker_count: expected 2, got %d", m.WorkerCount)
+		}
+		if m.LoadedWorkerCount != 1 {
+			t.Errorf("shared-model loaded_worker_count: expected 1, got %d", m.LoadedWorkerCount)
+		}
+	}
+
+	// both-loaded: advertised by 2 workers, loaded on 2
+	if m, ok := modelMap["both-loaded"]; !ok {
+		t.Fatal("both-loaded not found in response")
+	} else {
+		if m.WorkerCount != 2 {
+			t.Errorf("both-loaded worker_count: expected 2, got %d", m.WorkerCount)
+		}
+		if m.LoadedWorkerCount != 2 {
+			t.Errorf("both-loaded loaded_worker_count: expected 2, got %d", m.LoadedWorkerCount)
+		}
+	}
+
+	// only-advertised: advertised by 1 worker, loaded on 0
+	if m, ok := modelMap["only-advertised"]; !ok {
+		t.Fatal("only-advertised not found in response")
+	} else {
+		if m.WorkerCount != 1 {
+			t.Errorf("only-advertised worker_count: expected 1, got %d", m.WorkerCount)
+		}
+		if m.LoadedWorkerCount != 0 {
+			t.Errorf("only-advertised loaded_worker_count: expected 0, got %d", m.LoadedWorkerCount)
+		}
+	}
+
+	// never-loaded: advertised by 1 worker, loaded on 0
+	if m, ok := modelMap["never-loaded"]; !ok {
+		t.Fatal("never-loaded not found in response")
+	} else {
+		if m.WorkerCount != 1 {
+			t.Errorf("never-loaded worker_count: expected 1, got %d", m.WorkerCount)
+		}
+		if m.LoadedWorkerCount != 0 {
+			t.Errorf("never-loaded loaded_worker_count: expected 0, got %d", m.LoadedWorkerCount)
+		}
+	}
+}
+
 // TestChatCompletionsTimeoutRecords504 verifies that when proxyStream's
 // per-dispatch timeout expires it emits a 504 and forwards it to the worker's
 // RecordTimeout hook so /v1/queue/stats surfaces a non-zero

@@ -5,25 +5,27 @@ defineProps<{ models: PopularModelView[] }>()
 </script>
 
 <template>
-  <table class="popular-table" aria-label="Popular models across the pool">
-    <thead>
-      <tr>
-        <th scope="col">Model</th>
-        <th scope="col">Workers</th>
-        <th scope="col">Calls (10m)</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr v-for="m in models" :key="m.model">
-        <td class="model-name">{{ m.model }}</td>
-        <td class="model-workers">{{ m.worker_count }}</td>
-        <td class="model-calls">{{ m.call_count }}</td>
-      </tr>
-      <tr v-if="models.length === 0">
-        <td colspan="3" class="popular-empty">No models advertised yet</td>
-      </tr>
-    </tbody>
-  </table>
+<table class="popular-table" aria-label="Popular models across the pool">
+  <thead>
+    <tr>
+      <th scope="col">Model</th>
+      <th scope="col">Workers</th>
+      <th scope="col">Loaded</th>
+      <th scope="col">Calls (10m)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr v-for="m in models" :key="m.model">
+      <td class="model-name">{{ m.model }}</td>
+      <td class="model-workers">{{ m.worker_count }}</td>
+      <td class="model-loaded" :title="`loaded on ${m.loaded_worker_count} of ${m.worker_count} workers`">{{ m.loaded_worker_count }}<span class="text-muted">/{{ m.worker_count }}</span></td>
+      <td class="model-calls">{{ m.call_count }}</td>
+    </tr>
+    <tr v-if="models.length === 0">
+      <td colspan="4" class="popular-empty">No models advertised yet</td>
+    </tr>
+  </tbody>
+</table>
 </template>
 
 <style scoped>
@@ -69,12 +71,21 @@ defineProps<{ models: PopularModelView[] }>()
 }
 
 .model-workers,
-.model-calls {
+.model-calls,
+.model-loaded {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
   color: var(--text-muted);
   text-align: right;
   white-space: nowrap;
+}
+
+.model-loaded {
+  color: var(--text);
+}
+
+.model-loaded .text-muted {
+  color: var(--text-muted);
 }
 
 .popular-empty {

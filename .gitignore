@@ -57,5 +57,11 @@ vendor/
 *.tmp1
 
 # Docker artifacts
-*.dockerfile# opencode config
+*.dockerfile
+
+# Wails/app build artifacts
+/app/build/frontend
+/frontend
+
+# opencode config
 opencode.json
