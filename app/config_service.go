@@ -17,7 +17,8 @@ var knownSecretRefs = map[string]bool{
 
 type ConfigService struct {
 	kr   Keyring
-	path string // absolute path of the settings YAML file
+	path string
+	sv   *Supervisor // absolute path of the settings YAML file
 }
 
 // NewConfigService creates a ConfigService with the provided keyring and
@@ -26,6 +27,8 @@ type ConfigService struct {
 func NewConfigService(kr Keyring, path string) *ConfigService {
 	return &ConfigService{kr: kr, path: path}
 }
+
+func (cs *ConfigService) SetSupervisor(sv *Supervisor) { cs.sv = sv }
 
 // ServiceName implements the Wails service interface for ConfigService.
 func (*ConfigService) ServiceName() string {
@@ -85,6 +88,11 @@ func (cs *ConfigService) SaveSettings(s Settings) (bool, error) {
 
 	if err := SaveTo(s, cs.path); err != nil {
 		return false, err
+	}
+	if cs.sv != nil {
+		if err := cs.sv.StartWorker(); err != nil && err.Error() != "worker is already running" {
+			return false, fmt.Errorf("start worker: %w", err)
+		}
 	}
 	return cs.kr.Available(), nil
 }

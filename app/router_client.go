@@ -41,6 +41,7 @@ type WorkerView struct {
 // that is prod-mode scope (#9/#10), not the desktop MVP.
 type RouterClient struct {
 	baseURL string
+	sv *Supervisor
 }
 
 // ServiceName implements application.ServiceName so the binding generator
@@ -68,6 +69,8 @@ func NewRouterClient(baseURL string) *RouterClient {
 func (c *RouterClient) GetRouterURL() string {
 	return c.baseURL
 }
+
+func (c *RouterClient) SetSupervisor(sv *Supervisor) { c.sv = sv }
 
 // SetRouterURL re-points the client to a new router base URL. It is safe to
 // call at any time; subsequent GetWorkers() calls use the new URL. An empty
@@ -104,6 +107,11 @@ func (c *RouterClient) GetWorkers(ctx context.Context) ([]WorkerView, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusOK && c.sv != nil {
+		if err := c.sv.StartWorker(); err != nil && err.Error() != "worker is already running" {
+			return nil, fmt.Errorf("start worker on connect: %w", err)
+		}
+	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return nil, fmt.Errorf("router /v1/workers returned %d: %s", resp.StatusCode, truncateBody(body))

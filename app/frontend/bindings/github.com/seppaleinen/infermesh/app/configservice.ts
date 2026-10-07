@@ -69,6 +69,10 @@ export function SetSecret(ref: string, value: string): $CancellablePromise<void>
     return $Call.ByID(1903009237, ref, value);
 }
 
+export function SetSupervisor(sv: $models.Supervisor | null): $CancellablePromise<void> {
+    return $Call.ByID(1294203747, sv);
+}
+
 /**
  * ValidateSecretRefs ensures that all keys present in SecretRefs are within
  * the known set of acceptable references.

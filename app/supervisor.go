@@ -113,14 +113,15 @@ type Supervisor struct {
 	routerProbe   func(ctx context.Context, st Settings) ([]WorkerView, error)
 	workerProbe   func(ctx context.Context, st Settings) (bool, error)
 
-	mu         sync.Mutex
-	router     *managedProcess
-	worker     *managedProcess
-	routerErr  error
-	workerErr  error
-	routerPID  int
-	workerPID  int
-	tempFiles  []string
+	mu             sync.Mutex
+	router         *managedProcess
+	worker         *managedProcess
+	workerStarting bool
+	routerErr      error
+	workerErr      error
+	routerPID      int
+	workerPID      int
+	tempFiles      []string
 }
 
 // NewSupervisor creates a Wails service for process supervision.
@@ -132,7 +133,7 @@ type Supervisor struct {
 //	    the current working directory when empty.
 //	logsDir:   directory for stdout/stderr capture; defaults to ~/.config/
 //	    infermesh/logs.
-func NewSupervisor(kr Keyring, settingsPath, binaryDir, logsDir string) *Supervisor {
+func NewSupervisorService(kr Keyring, settingsPath, binaryDir, logsDir string) *Supervisor {
 	if binaryDir == "" {
 		binaryDir = "."
 	}
@@ -315,6 +316,9 @@ func (s *Supervisor) buildWorkerArgs(settings Settings) ([]string, error) {
 	if isDevMode(settings) {
 		// dev-mode HTTP registration against the local router (skips mDNS).
 		args = append(args, "--router", routerURLForWorker(settings.RouterAddr))
+	} else {
+		// prod-mode mTLS registration (bypasses mDNS).
+		args = append(args, "--prod-router", routerURLForWorker(settings.RouterAddr))
 	}
 	if settings.RelayURL != "" {
 		args = append(args, "--relay-url", settings.RelayURL)
@@ -460,7 +464,7 @@ func (s *Supervisor) StartRouter() error {
 	}
 	binaryPath := s.binaryPath(settings.RouterBinaryPath, defaultRouterBinaryPath)
 	if _, err := os.Stat(binaryPath); err != nil {
-		return fmt.Errorf("%w: %s", errBinaryNotFound, binaryPath)
+		return fmt.Errorf("%w: %s (run make build)", errBinaryNotFound, binaryPath)
 	}
 
 	args, err := s.buildRouterArgs(settings)
@@ -516,14 +520,27 @@ func (s *Supervisor) StartWorker() error {
 		return err
 	}
 	s.mu.Lock()
-	mp := s.worker
-	s.mu.Unlock()
-	if mp != nil && mp.isAlive() {
+	if s.workerStarting {
+		s.mu.Unlock()
 		return errWorkerAlreadyRunning
 	}
+	mp := s.worker
+	if mp != nil && mp.isAlive() {
+		s.mu.Unlock()
+		return errWorkerAlreadyRunning
+	}
+	s.workerStarting = true
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		s.workerStarting = false
+		s.mu.Unlock()
+	}()
+
 	binaryPath := s.binaryPath(settings.WorkerBinaryPath, defaultWorkerBinaryPath)
 	if _, err := os.Stat(binaryPath); err != nil {
-		return fmt.Errorf("%w: %s", errBinaryNotFound, binaryPath)
+		return fmt.Errorf("%w: %s (run make build)", errBinaryNotFound, binaryPath)
 	}
 
 	args, err := s.buildWorkerArgs(settings)
