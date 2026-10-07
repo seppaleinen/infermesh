@@ -450,7 +450,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/workers", s.handleWorkersList)
 	mux.HandleFunc("/v1/dev/register", s.handleDevRegister)
 	mux.HandleFunc("/meta/models/popular", s.handlePopularModels)
-	mux.HandleFunc("/meta/clients/count", s.handleClientCount)
+	mux.HandleFunc("/meta/connections/count", s.handleConnectionCount)
 	mux.HandleFunc("/v1/queue/stats", s.handleQueueStats)
 
 	// Outbound WebSocket worker connectivity: workers dial ws://router:8080/v1/connect
@@ -914,20 +914,20 @@ func (s *Server) handlePopularModels(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleClientCount handles the /meta/clients/count HTTP endpoint. It reports
+// handleConnectionCount handles the /meta/connections/count HTTP endpoint. It reports
 // the number of currently active HTTP connections to the router — the count
 // of open TCP sockets, NOT a distinct-client count. A single client issuing
 // many requests over one keep-alive connection holds one connection; a
 // client behind a connection pool or proxy may hold several.
-func (s *Server) handleClientCount(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleConnectionCount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error", "method_not_allowed")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	resp := struct {
-		Clients int `json:"clients"`
-	}{Clients: int(s.connections.Load())}
+		Connections int `json:"connections"`
+	}{Connections: int(s.connections.Load())}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		s.log.Error("failed to encode client count", "error", err)
 	}

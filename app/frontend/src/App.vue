@@ -6,7 +6,7 @@ import SettingsForm from './components/SettingsForm.vue'
 import PopularModelsTable from './components/PopularModelsTable.vue'
 import { useWorkers, relativeLastSeen, formatAbsolute } from './composables/useWorkers'
 import { usePopularModels } from './composables/usePopularModels'
-import { useClientCount } from './composables/useClientCount'
+import { useConnectionCount } from './composables/useConnectionCount'
 import { useSettings } from './composables/useSettings'
 
 const version = 'v0.1.0'
@@ -43,7 +43,7 @@ const popular = usePopularModels()
 // Live client count (issue #79 v3 R1). Mirrors useWorkers — same poll cadence
 // and first-load timeout, so the connection count stays in step with the
 // worker list. Surface next to the "router online · X workers" badge.
-const clientCount = useClientCount()
+const connectionCount = useConnectionCount()
 
 // Settings view (issue #46). Loaded on mount so we can detect the local
 // worker (the one this desktop is running) and tag its card with "You".
@@ -87,7 +87,7 @@ onMounted(async () => {
   })
   workers.start()
   popular.start()
-  clientCount.start()
+  connectionCount.start()
   await settings.load()
 })
 
@@ -97,19 +97,19 @@ onBeforeUnmount(() => {
   if (staleTimer !== undefined) clearTimeout(staleTimer)
   workers.stop()
   popular.stop()
-  clientCount.stop()
+  connectionCount.stop()
 })
 
 const workerCount = computed(() => {
-  if (workers.state.value.kind === 'ready') return workers.state.value.workers.length
-  return 0
+	if (workers.state.value.kind === 'ready') return workers.state.value.data.length
+	return 0
 })
 
 const loadedModelCount = computed(() => {
-  if (popular.state.value.kind === 'ready' && popular.state.value.models.length) {
-    return popular.state.value.models.filter(m => m.loaded_worker_count > 0).length
-  }
-  return 0
+	if (popular.state.value.kind === 'ready' && popular.state.value.data.length) {
+		return popular.state.value.data.filter(m => m.loaded_worker_count > 0).length
+	}
+	return 0
 })
 </script>
 
@@ -221,13 +221,13 @@ const loadedModelCount = computed(() => {
             <h1 class="workers-count">{{ workerCount }} worker<span v-if="workerCount !== 1">s</span></h1>
 <p class="workers-sub">
   connected to <span class="mono">{{ workers.state.value.routerURL }}</span>
-  <span v-if="popular.state.value.kind === 'ready' && popular.state.value.models.length">
-    · {{ popular.state.value.models.length }} model<span v-if="popular.state.value.models.length !== 1">s</span> across the pool
-    <span v-if="popular.state.value.models.length">· {{ loadedModelCount }} loaded</span>
-  </span>
-  <span v-if="clientCount.state.value.kind === 'ready'">
-    · {{ clientCount.state.value.count }} connection<span v-if="clientCount.state.value.count !== 1">s</span>
-  </span>
+<span v-if="popular.state.value.kind === 'ready' && popular.state.value.data.length">
+	· {{ popular.state.value.data.length }} model<span v-if="popular.state.value.data.length !== 1">s</span> across the pool
+	<span v-if="popular.state.value.data.length">· {{ loadedModelCount }} loaded</span>
+</span>
+<span v-if="connectionCount.state.value.kind === 'ready'">
+	· {{ connectionCount.state.value.data }} connection<span v-if="connectionCount.state.value.data !== 1">s</span>
+</span>
 </p>
           </div>
           <span class="workers-live"><span class="dot flag-dot flag-live"></span> live</span>
@@ -235,13 +235,13 @@ const loadedModelCount = computed(() => {
 
         <!-- Popular models section (issue #79) -->
         <PopularModelsTable
-          v-if="popular.state.value.kind === 'ready' && popular.state.value.models.length"
-          :models="popular.state.value.models"
+          v-if="popular.state.value.kind === 'ready' && popular.state.value.data.length"
+          :models="popular.state.value.data"
         />
 
-        <ul class="worker-list">
-          <li v-for="w in workers.state.value.workers" :key="w.id" class="worker-item">
-            <WorkerCard
+<ul class="worker-list">
+	<li v-for="w in workers.state.value.data" :key="w.id" class="worker-item">
+		<WorkerCard
               :id="w.id"
               :address="w.address"
               :hostname="w.hostname"

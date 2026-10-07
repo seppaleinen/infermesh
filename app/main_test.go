@@ -321,37 +321,37 @@ func TestRouterClientPopularModelsParse(t *testing.T) {
 	})
 }
 
-// TestRouterClientClientCountURL verifies the URL builder yields the
-// /meta/clients/count path and respects a custom base URL, including
+// TestRouterClientConnectionCountURL verifies the URL builder yields the
+// /meta/connections/count path and respects a custom base URL, including
 // trailing-slash trimming.
-func TestRouterClientClientCountURL(t *testing.T) {
+func TestRouterClientConnectionCountURL(t *testing.T) {
 	cases := []struct {
 		name string
 		base string
 		want string
 	}{
-		{"default empty", "", "http://127.0.0.1:8080/meta/clients/count"},
-		{"default explicit", "http://127.0.0.1:8080", "http://127.0.0.1:8080/meta/clients/count"},
-		{"trailing slash", "http://127.0.0.1:8080/", "http://127.0.0.1:8080/meta/clients/count"},
-		{"custom", "http://router.example:9000", "http://router.example:9000/meta/clients/count"},
-		{"custom trailing slash", "http://router.example:9000/", "http://router.example:9000/meta/clients/count"},
+		{"default empty", "", "http://127.0.0.1:8080/meta/connections/count"},
+		{"default explicit", "http://127.0.0.1:8080", "http://127.0.0.1:8080/meta/connections/count"},
+		{"trailing slash", "http://127.0.0.1:8080/", "http://127.0.0.1:8080/meta/connections/count"},
+		{"custom", "http://router.example:9000", "http://router.example:9000/meta/connections/count"},
+		{"custom trailing slash", "http://router.example:9000/", "http://router.example:9000/meta/connections/count"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			c := NewRouterClient(tc.base)
-			if got := c.clientCountPath(); got != tc.want {
-				t.Fatalf("clientCountPath: got %q want %q", got, tc.want)
+			if got := c.connectionCountPath(); got != tc.want {
+				t.Fatalf("connectionCountPath: got %q want %q", got, tc.want)
 			}
 		})
 	}
 }
 
-// TestRouterClientClientCountParse feeds canned JSON into the parser and
+// TestRouterClientConnectionCountParse feeds canned JSON into the parser and
 // asserts field mapping: zero count, positive count, malformed JSON, and
 // unknown extra fields ignored.
-func TestRouterClientClientCountParse(t *testing.T) {
+func TestRouterClientConnectionCountParse(t *testing.T) {
 	t.Run("zero count", func(t *testing.T) {
-		count, err := parseClientCountResponse([]byte(`{"clients":0}`))
+		count, err := parseConnectionCountResponse([]byte(`{"connections":0}`))
 		if err != nil {
 			t.Fatalf("parse failed: %v", err)
 		}
@@ -361,7 +361,7 @@ func TestRouterClientClientCountParse(t *testing.T) {
 	})
 
 	t.Run("positive count", func(t *testing.T) {
-		count, err := parseClientCountResponse([]byte(`{"clients":7}`))
+		count, err := parseConnectionCountResponse([]byte(`{"connections":7}`))
 		if err != nil {
 			t.Fatalf("parse failed: %v", err)
 		}
@@ -371,14 +371,14 @@ func TestRouterClientClientCountParse(t *testing.T) {
 	})
 
 	t.Run("malformed JSON → error", func(t *testing.T) {
-		_, err := parseClientCountResponse([]byte(`{not json`))
+		_, err := parseConnectionCountResponse([]byte(`{not json`))
 		if err == nil || !strings.Contains(err.Error(), "decode client count response") {
 			t.Fatalf("expected decode error, got: %v", err)
 		}
 	})
 
 	t.Run("unknown extra fields ignored", func(t *testing.T) {
-		count, err := parseClientCountResponse([]byte(`{"clients":3,"extra":true}`))
+		count, err := parseConnectionCountResponse([]byte(`{"connections":3,"extra":true}`))
 		if err != nil {
 			t.Fatalf("parse failed: %v", err)
 		}

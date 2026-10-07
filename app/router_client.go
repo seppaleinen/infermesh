@@ -286,18 +286,18 @@ func parsePopularModelsResponse(body []byte) ([]PopularModelView, error) {
 // cannot be dialed. The UI keys off the error message text.
 var ErrRouterUnreachable = errors.New("router unreachable")
 
-// clientCountPath builds the full /meta/clients/count URL for the
+// connectionCountPath builds the full /meta/connections/count URL for the
 // configured base.
-func (c *RouterClient) clientCountPath() string {
-	return c.baseURL + "/meta/clients/count"
+func (c *RouterClient) connectionCountPath() string {
+	return c.baseURL + "/meta/connections/count"
 }
 
-// GetClientCount fetches the number of currently active HTTP connections
-// to the router from /meta/clients/count. It returns 0 when the router is
+// GetConnectionCount fetches the number of currently active HTTP connections
+// to the router from /meta/connections/count. It returns 0 when the router is
 // reachable but idle, and a typed error when the router is unreachable or
 // returns a bad body. Mirrors GetWorkers / GetPopularModels.
-func (c *RouterClient) GetClientCount(ctx context.Context) (int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.clientCountPath(), nil)
+func (c *RouterClient) GetConnectionCount(ctx context.Context) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.connectionCountPath(), nil)
 	if err != nil {
 		return 0, fmt.Errorf("build request: %w", err)
 	}
@@ -310,7 +310,7 @@ func (c *RouterClient) GetClientCount(ctx context.Context) (int, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return 0, fmt.Errorf("router /meta/clients/count returned %d: %s", resp.StatusCode, truncateBody(body))
+		return 0, fmt.Errorf("router /meta/connections/count returned %d: %s", resp.StatusCode, truncateBody(body))
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -318,18 +318,18 @@ func (c *RouterClient) GetClientCount(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("read router body: %w", err)
 	}
 
-	return parseClientCountResponse(body)
+	return parseConnectionCountResponse(body)
 }
 
-// parseClientCountResponse decodes the {"clients": int} envelope returned
-// by /meta/clients/count. It is exported (and pure) so the unit tests can
+// parseConnectionCountResponse decodes the {"connections": int} envelope returned
+// by /meta/connections/count. It is exported (and pure) so the unit tests can
 // feed canned JSON without a live router.
-func parseClientCountResponse(body []byte) (int, error) {
+func parseConnectionCountResponse(body []byte) (int, error) {
 	var resp struct {
-		Clients int `json:"clients"`
+		Connections int `json:"connections"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return 0, fmt.Errorf("decode client count response: %w (body snippet: %q)", err, truncateBody(body))
 	}
-	return resp.Clients, nil
+	return resp.Connections, nil
 }

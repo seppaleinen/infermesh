@@ -2551,11 +2551,11 @@ func TestConnStateCounter(t *testing.T) {
 	}
 }
 
-// TestClientCountEndpointIntegration verifies GET /meta/clients/count works
+// TestConnectionCountEndpointIntegration verifies GET /meta/connections/count works
 // end-to-end through a real HTTP server and that the ConnState counter tracks
-// live TCP connections. It uses the production handleClientCount handler and
+// live TCP connections. It uses the production handleConnectionCount handler and
 // the production ConnState hook.
-func TestClientCountEndpointIntegration(t *testing.T) {
+func TestConnectionCountEndpointIntegration(t *testing.T) {
 	tr := testRegistry(t, nil)
 	defer tr.cancel()
 	defer func() { _ = tr.reg.Stop() }()
@@ -2566,7 +2566,7 @@ func TestClientCountEndpointIntegration(t *testing.T) {
 	// mode-only in this test, so a plain mux mirrors the behaviour exercised
 	// by the real server.
 	mux := http.NewServeMux()
-	mux.HandleFunc("/meta/clients/count", server.handleClientCount)
+	mux.HandleFunc("/meta/connections/count", server.handleConnectionCount)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -2588,7 +2588,7 @@ func TestClientCountEndpointIntegration(t *testing.T) {
 	defer func() { _ = server.server.Close() }()
 
 	addr := ln.Addr().String()
-	url := "http://" + addr + "/meta/clients/count"
+	url := "http://" + addr + "/meta/connections/count"
 
 	if got := server.connections.Load(); got != 0 {
 		t.Errorf("expected initial connection count 0, got %d", got)
@@ -2597,9 +2597,9 @@ func TestClientCountEndpointIntegration(t *testing.T) {
 	// GET should return 200 with JSON payload "clients": >=0.
 	resp, err := http.Get(url)
 	if err != nil {
-		t.Fatalf("GET /meta/clients/count: %v", err)
+		t.Fatalf("GET /meta/connections/count: %v", err)
 	}
-	var body struct{ Clients int `json:"clients"` }
+	var body struct{ Connections int `json:"connections"` }
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -2608,8 +2608,8 @@ func TestClientCountEndpointIntegration(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)
 	}
-	if body.Clients < 0 {
-		t.Errorf("expected clients >= 0, got %d", body.Clients)
+	if body.Connections < 0 {
+		t.Errorf("expected connections >= 0, got %d", body.Connections)
 	}
 
 	// After a request with keep-alive the server should have an idle connection.
@@ -2624,7 +2624,7 @@ func TestClientCountEndpointIntegration(t *testing.T) {
 	}
 	resp2, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("POST /meta/clients/count: %v", err)
+		t.Fatalf("POST /meta/connections/count: %v", err)
 	}
 	_ = resp2.Body.Close()
 	if resp2.StatusCode != http.StatusMethodNotAllowed {

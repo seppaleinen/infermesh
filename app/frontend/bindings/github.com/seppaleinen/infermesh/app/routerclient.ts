@@ -17,13 +17,13 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 import * as $models from "./models.js";
 
 /**
- * GetClientCount fetches the number of currently active HTTP connections
- * to the router from /meta/clients/count. It returns 0 when the router is
+ * GetConnectionCount fetches the number of currently active HTTP connections
+ * to the router from /meta/connections/count. It returns 0 when the router is
  * reachable but idle, and a typed error when the router is unreachable or
  * returns a bad body. Mirrors GetWorkers / GetPopularModels.
  */
-export function GetClientCount(): $CancellablePromise<number> {
-    return $Call.ByID(4099876528);
+export function GetConnectionCount(): $CancellablePromise<number> {
+    return $Call.ByID(207629005);
 }
 
 /**
