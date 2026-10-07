@@ -321,6 +321,73 @@ func TestRouterClientPopularModelsParse(t *testing.T) {
 	})
 }
 
+// TestRouterClientClientCountURL verifies the URL builder yields the
+// /meta/clients/count path and respects a custom base URL, including
+// trailing-slash trimming.
+func TestRouterClientClientCountURL(t *testing.T) {
+	cases := []struct {
+		name string
+		base string
+		want string
+	}{
+		{"default empty", "", "http://127.0.0.1:8080/meta/clients/count"},
+		{"default explicit", "http://127.0.0.1:8080", "http://127.0.0.1:8080/meta/clients/count"},
+		{"trailing slash", "http://127.0.0.1:8080/", "http://127.0.0.1:8080/meta/clients/count"},
+		{"custom", "http://router.example:9000", "http://router.example:9000/meta/clients/count"},
+		{"custom trailing slash", "http://router.example:9000/", "http://router.example:9000/meta/clients/count"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewRouterClient(tc.base)
+			if got := c.clientCountPath(); got != tc.want {
+				t.Fatalf("clientCountPath: got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRouterClientClientCountParse feeds canned JSON into the parser and
+// asserts field mapping: zero count, positive count, malformed JSON, and
+// unknown extra fields ignored.
+func TestRouterClientClientCountParse(t *testing.T) {
+	t.Run("zero count", func(t *testing.T) {
+		count, err := parseClientCountResponse([]byte(`{"clients":0}`))
+		if err != nil {
+			t.Fatalf("parse failed: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("expected 0, got %d", count)
+		}
+	})
+
+	t.Run("positive count", func(t *testing.T) {
+		count, err := parseClientCountResponse([]byte(`{"clients":7}`))
+		if err != nil {
+			t.Fatalf("parse failed: %v", err)
+		}
+		if count != 7 {
+			t.Errorf("expected 7, got %d", count)
+		}
+	})
+
+	t.Run("malformed JSON → error", func(t *testing.T) {
+		_, err := parseClientCountResponse([]byte(`{not json`))
+		if err == nil || !strings.Contains(err.Error(), "decode client count response") {
+			t.Fatalf("expected decode error, got: %v", err)
+		}
+	})
+
+	t.Run("unknown extra fields ignored", func(t *testing.T) {
+		count, err := parseClientCountResponse([]byte(`{"clients":3,"extra":true}`))
+		if err != nil {
+			t.Fatalf("parse failed: %v", err)
+		}
+		if count != 3 {
+			t.Errorf("expected 3, got %d", count)
+		}
+	})
+}
+
 // TestSettingsRoundTrip verifies that saving and loading settings preserves
 // all fields, including unicode model paths. It also asserts that the YAML
 // output contains no "secrets" key because secrets must only exist in the

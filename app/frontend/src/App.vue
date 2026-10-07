@@ -6,6 +6,7 @@ import SettingsForm from './components/SettingsForm.vue'
 import PopularModelsTable from './components/PopularModelsTable.vue'
 import { useWorkers, relativeLastSeen, formatAbsolute } from './composables/useWorkers'
 import { usePopularModels } from './composables/usePopularModels'
+import { useClientCount } from './composables/useClientCount'
 import { useSettings } from './composables/useSettings'
 
 const version = 'v0.1.0'
@@ -38,6 +39,11 @@ const workers = useWorkers()
 // Popular-models view (issue #79). Mirrors useWorkers — same poll cadence
 // and first-load timeout, so the table stays in step with the worker list.
 const popular = usePopularModels()
+
+// Live client count (issue #79 v3 R1). Mirrors useWorkers — same poll cadence
+// and first-load timeout, so the connection count stays in step with the
+// worker list. Surface next to the "router online · X workers" badge.
+const clientCount = useClientCount()
 
 // Settings view (issue #46). Loaded on mount so we can detect the local
 // worker (the one this desktop is running) and tag its card with "You".
@@ -81,6 +87,7 @@ onMounted(async () => {
   })
   workers.start()
   popular.start()
+  clientCount.start()
   await settings.load()
 })
 
@@ -90,6 +97,7 @@ onBeforeUnmount(() => {
   if (staleTimer !== undefined) clearTimeout(staleTimer)
   workers.stop()
   popular.stop()
+  clientCount.stop()
 })
 
 const workerCount = computed(() => {
@@ -216,6 +224,9 @@ const loadedModelCount = computed(() => {
   <span v-if="popular.state.value.kind === 'ready' && popular.state.value.models.length">
     · {{ popular.state.value.models.length }} model<span v-if="popular.state.value.models.length !== 1">s</span> across the pool
     <span v-if="popular.state.value.models.length">· {{ loadedModelCount }} loaded</span>
+  </span>
+  <span v-if="clientCount.state.value.kind === 'ready'">
+    · {{ clientCount.state.value.count }} connection<span v-if="clientCount.state.value.count !== 1">s</span>
   </span>
 </p>
           </div>

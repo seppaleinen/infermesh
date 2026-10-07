@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
@@ -169,6 +170,16 @@ type Server struct {
 	// requests with model="auto" are classified by prompt complexity and
 	// rewritten to a tiered concrete model before worker selection.
 	autoRouting *AutoRoutingConfig
+
+	// connections is the count of currently active HTTP connections to the
+	// router. It is the number of open TCP connections, NOT a distinct-client
+	// count: a single client using HTTP keep-alive holds one connection while
+	// issuing many requests, and a client behind a connection pool or proxy
+	// may hold several. Incremented on http.StateNew, decremented on
+	// http.StateClosed. Kept alive across keep-alive (StateIdle) and hijacked
+	// (StateHijacked) connections so the count reflects live sockets, not
+	// in-flight requests.
+	connections atomic.Int64
 }
 
 // ChatMessage represents a single message in a chat conversation.
@@ -439,6 +450,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/workers", s.handleWorkersList)
 	mux.HandleFunc("/v1/dev/register", s.handleDevRegister)
 	mux.HandleFunc("/meta/models/popular", s.handlePopularModels)
+	mux.HandleFunc("/meta/clients/count", s.handleClientCount)
 	mux.HandleFunc("/v1/queue/stats", s.handleQueueStats)
 
 	// Outbound WebSocket worker connectivity: workers dial ws://router:8080/v1/connect
@@ -521,6 +533,19 @@ func (s *Server) Start(ctx context.Context) error {
 		s.server = &http.Server{
 			Addr:    s.addr,
 			Handler: handler,
+		}
+	}
+
+	// Attach the ConnState hook so the active-connection counter tracks
+	// live sockets. StateNew increments, StateClosed decrements. Keep-alive
+	// (StateIdle) and hijacked (StateHijacked) connections are NOT
+	// decremented: they remain open sockets and must continue to count.
+	s.server.ConnState = func(conn net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			s.connections.Add(1)
+		case http.StateClosed:
+			s.connections.Add(-1)
 		}
 	}
 
@@ -886,6 +911,25 @@ func (s *Server) handlePopularModels(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewEncoder(w).Encode(PopularModelsResponse{Models: popularModels}); err != nil {
 		s.log.Error("failed to encode popular models", "error", err)
+	}
+}
+
+// handleClientCount handles the /meta/clients/count HTTP endpoint. It reports
+// the number of currently active HTTP connections to the router — the count
+// of open TCP sockets, NOT a distinct-client count. A single client issuing
+// many requests over one keep-alive connection holds one connection; a
+// client behind a connection pool or proxy may hold several.
+func (s *Server) handleClientCount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error", "method_not_allowed")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	resp := struct {
+		Clients int `json:"clients"`
+	}{Clients: int(s.connections.Load())}
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		s.log.Error("failed to encode client count", "error", err)
 	}
 }
 

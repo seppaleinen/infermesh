@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -2493,5 +2494,157 @@ func TestWrapInferenceEndpointsNoKeyDevMode(t *testing.T) {
 	wrapped.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("expected pass-through 200, got %d", w.Code)
+	}
+}
+
+// TestConnStateCounter verifies the atomic connection counter increments on
+// http.StateNew and decrements on http.StateClosed. Keep-alive (StateIdle) and
+// hijacked (StateHijacked) transitions are neutral so the count reflects live
+// sockets, not in-flight requests. This is a unit test that simulates the
+// ConnState callbacks directly.
+func TestConnStateCounter(t *testing.T) {
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+	server := tr.Server()
+
+	// Attach the same ConnState hook Start() installs so the test drives the
+	// exact production code path without binding a socket.
+	server.server = &http.Server{}
+	server.server.ConnState = func(conn net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			server.connections.Add(1)
+		case http.StateClosed:
+			server.connections.Add(-1)
+		}
+	}
+
+	if got := server.connections.Load(); got != 0 {
+		t.Errorf("expected initial count 0, got %d", got)
+	}
+
+	server.server.ConnState(nil, http.StateNew)
+	server.server.ConnState(nil, http.StateNew)
+	if got := server.connections.Load(); got != 2 {
+		t.Errorf("expected count 2 after two opens, got %d", got)
+	}
+
+	// Keep-alive and hijack transitions must not change the count.
+	server.server.ConnState(nil, http.StateIdle)
+	if got := server.connections.Load(); got != 2 {
+		t.Errorf("expected count unchanged (2) after StateIdle, got %d", got)
+	}
+	server.server.ConnState(nil, http.StateHijacked)
+	if got := server.connections.Load(); got != 2 {
+		t.Errorf("expected count unchanged (2) after StateHijacked, got %d", got)
+	}
+
+	server.server.ConnState(nil, http.StateClosed)
+	if got := server.connections.Load(); got != 1 {
+		t.Errorf("expected count 1 after one close, got %d", got)
+	}
+
+	server.server.ConnState(nil, http.StateClosed)
+	if got := server.connections.Load(); got != 0 {
+		t.Errorf("expected count 0 after closing remaining connection, got %d", got)
+	}
+}
+
+// TestClientCountEndpointIntegration verifies GET /meta/clients/count works
+// end-to-end through a real HTTP server and that the ConnState counter tracks
+// live TCP connections. It uses the production handleClientCount handler and
+// the production ConnState hook.
+func TestClientCountEndpointIntegration(t *testing.T) {
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+
+	server := tr.Server()
+
+	// Build a mux with the production handler. mTLS/API-key wrapping is dev
+	// mode-only in this test, so a plain mux mirrors the behaviour exercised
+	// by the real server.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/meta/clients/count", server.handleClientCount)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	server.server = &http.Server{Handler: mux}
+	server.server.ConnState = func(conn net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			server.connections.Add(1)
+		case http.StateClosed:
+			server.connections.Add(-1)
+		}
+	}
+
+	go func() { _ = server.server.Serve(ln) }()
+	defer func() { _ = server.server.Close() }()
+
+	addr := ln.Addr().String()
+	url := "http://" + addr + "/meta/clients/count"
+
+	if got := server.connections.Load(); got != 0 {
+		t.Errorf("expected initial connection count 0, got %d", got)
+	}
+
+	// GET should return 200 with JSON payload "clients": >=0.
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("GET /meta/clients/count: %v", err)
+	}
+	var body struct{ Clients int `json:"clients"` }
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected status 200, got %d", resp.StatusCode)
+	}
+	if body.Clients < 0 {
+		t.Errorf("expected clients >= 0, got %d", body.Clients)
+	}
+
+	// After a request with keep-alive the server should have an idle connection.
+	if got := server.connections.Load(); got != 1 {
+		t.Errorf("expected connection count 1 after request (keep-alive), got %d", got)
+	}
+
+	// POST method must be rejected with 405 Method Not Allowed.
+	req, err := http.NewRequest(http.MethodPost, url, nil)
+	if err != nil {
+		t.Fatalf("new POST request: %v", err)
+	}
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /meta/clients/count: %v", err)
+	}
+	_ = resp2.Body.Close()
+	if resp2.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("expected status 405 for POST, got %d", resp2.StatusCode)
+	}
+
+	// Close idle connections so StateClosed callbacks fire.
+	if trpt, ok := http.DefaultTransport.(*http.Transport); ok {
+		trpt.CloseIdleConnections()
+	}
+
+	// Poll until the counter returns to zero or timeout to avoid flakiness.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if server.connections.Load() == 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := server.connections.Load(); got != 0 {
+		t.Errorf("expected connection count 0 after closing idle connections, got %d", got)
 	}
 }

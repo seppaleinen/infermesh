@@ -285,3 +285,51 @@ func parsePopularModelsResponse(body []byte) ([]PopularModelView, error) {
 // ErrRouterUnreachable is the sentinel error returned when the router host
 // cannot be dialed. The UI keys off the error message text.
 var ErrRouterUnreachable = errors.New("router unreachable")
+
+// clientCountPath builds the full /meta/clients/count URL for the
+// configured base.
+func (c *RouterClient) clientCountPath() string {
+	return c.baseURL + "/meta/clients/count"
+}
+
+// GetClientCount fetches the number of currently active HTTP connections
+// to the router from /meta/clients/count. It returns 0 when the router is
+// reachable but idle, and a typed error when the router is unreachable or
+// returns a bad body. Mirrors GetWorkers / GetPopularModels.
+func (c *RouterClient) GetClientCount(ctx context.Context) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.clientCountPath(), nil)
+	if err != nil {
+		return 0, fmt.Errorf("build request: %w", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("router unreachable at %s: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return 0, fmt.Errorf("router /meta/clients/count returned %d: %s", resp.StatusCode, truncateBody(body))
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, fmt.Errorf("read router body: %w", err)
+	}
+
+	return parseClientCountResponse(body)
+}
+
+// parseClientCountResponse decodes the {"clients": int} envelope returned
+// by /meta/clients/count. It is exported (and pure) so the unit tests can
+// feed canned JSON without a live router.
+func parseClientCountResponse(body []byte) (int, error) {
+	var resp struct {
+		Clients int `json:"clients"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return 0, fmt.Errorf("decode client count response: %w (body snippet: %q)", err, truncateBody(body))
+	}
+	return resp.Clients, nil
+}
