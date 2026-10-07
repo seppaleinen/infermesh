@@ -8,6 +8,7 @@ import { useWorkers, relativeLastSeen, formatAbsolute } from './composables/useW
 import { usePopularModels } from './composables/usePopularModels'
 import { useConnectionCount } from './composables/useConnectionCount'
 import { useSettings } from './composables/useSettings'
+import { useSupervisor } from './composables/useSupervisor'
 
 const version = 'v0.1.0'
 
@@ -77,6 +78,8 @@ const isLocalWorker = (w: { port: number }): boolean => {
   if (!settings.settings.value) return false
   return w.port === settings.settings.value.worker_port
 }
+
+const supervisorStatus = useSupervisor()
 
 onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
@@ -181,8 +184,16 @@ const loadedModelCount = computed(() => {
             <path d="M7 11l9.5-3.5M7 13l9.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.6" />
           </svg>
         </div>
-        <h1 id="status-title" class="status-title">No workers connected</h1>
-        <p class="status-copy">Router is reachable at <span class="mono">{{ workers.state.value.routerURL }}</span>, but no worker has registered yet. Start a worker to join the pool.</p>
+        <h1 id="status-title" class="status-title">{{ supervisorStatus.value && supervisorStatus.value.worker && supervisorStatus.value.worker.state === 'running' && !supervisorStatus.value.worker.registered ? 'Worker enrolling…' : 'No workers connected' }}</h1>
+        <p class="status-copy">
+          Router is reachable at <span class="mono">{{ workers.state.value.routerURL }}</span>,
+          <template v-if="supervisorStatus.value && supervisorStatus.value.worker && supervisorStatus.value.worker.state === 'running' && !supervisorStatus.value.worker.registered">
+            but the worker is enrolling and hasn't registered yet.
+          </template>
+          <template v-else>
+            but no worker has registered yet. Start a worker to join the pool.
+          </template>
+        </p>
         <span class="status-tag">pool dashboard — issue #41</span>
         <div class="status-flag" role="status">
           <span class="dot flag-dot flag-live"></span>

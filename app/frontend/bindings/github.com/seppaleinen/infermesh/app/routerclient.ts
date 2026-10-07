@@ -62,3 +62,7 @@ export function GetWorkers(): $CancellablePromise<$models.WorkerView[] | null> {
 export function SetRouterURL(url: string): $CancellablePromise<void> {
     return $Call.ByID(1269668880, url);
 }
+
+export function SetSupervisor(sv: $models.Supervisor | null): $CancellablePromise<void> {
+    return $Call.ByID(4066847928, sv);
+}

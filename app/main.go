@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -88,21 +89,34 @@ func main() {
 		log.Fatalf("failed to resolve settings path: %v", err)
 	}
 
+	var exePath string
+	exePath, err = os.Executable()
+	if err != nil {
+		log.Printf("cannot resolve app executable path, auto-start registration will warn: %v", err)
+		exePath = ""
+	}
+
+	binaryDir := ""
+	if exePath != "" {
+		if root, err := filepath.Abs(filepath.Join(filepath.Dir(exePath), "..", "..", "..", "..", "..")); err == nil {
+			binaryDir = root
+		} else if root, err := filepath.Abs(filepath.Join(filepath.Dir(exePath), "..", "..", "..", "..")); err == nil {
+			binaryDir = root
+		} else if root, err := filepath.Abs(filepath.Join(filepath.Dir(exePath), "..", "..", "..")); err == nil {
+			binaryDir = root
+		}
+	}
+
 	// Build the Supervisor ONCE, before application.New: the same instance is
 	// registered as a Wails service AND used by OnShutdown, so StopAll() on
 	// shutdown actually sees the children that were started. (A second
 	// instance would own none of them and StopAll would be a no-op.)
-	supervisor := NewSupervisor(newProdKeyring(), settingsPath, "", "")
+	supervisor := NewSupervisorService(newProdKeyring(), settingsPath, binaryDir, "")
 
 	// Auto-start backend registers this very binary as a login item. If the
 	// executable path cannot be resolved, fall back to an empty path — the
 	// backend then fails at registration time as a user-visible warning
 	// instead of crashing the app at startup.
-	exePath, err := os.Executable()
-	if err != nil {
-		log.Printf("cannot resolve app executable path, auto-start registration will warn: %v", err)
-		exePath = ""
-	}
 	autoStartSvc := NewAutoStartService(newPlatformAutostart(execRunner{}, exePath))
 
 	app := application.New(application.Options{
@@ -119,8 +133,16 @@ func main() {
 		// AutoStartService registers/removes the OS login item (issue #45); it
 		// must stay in this list so `wails3 generate bindings` discovers it.
 		Services: []application.Service{
-			application.NewService(NewRouterClient(settings.RouterAddr)),
-			application.NewService(NewConfigService(newProdKeyring(), settingsPath)),
+			application.NewService(func() *RouterClient {
+				r := NewRouterClient(settings.RouterAddr)
+				r.SetSupervisor(supervisor)
+				return r
+			}()),
+			application.NewService(func() *ConfigService {
+				c := NewConfigService(newProdKeyring(), settingsPath)
+				c.SetSupervisor(supervisor)
+				return c
+			}()),
 			application.NewService(supervisor),
 			application.NewService(autoStartSvc),
 		},

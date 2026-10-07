@@ -82,6 +82,21 @@ export interface Settings {
 }
 
 /**
+ * Supervisor is a Wails service that launches and manages the headless
+ * router/worker binaries on behalf of the desktop app (issue #44).
+ * 
+ * Wails-bound methods: StartRouter / StopRouter / StartWorker / StopWorker
+ * / Status / RestartRouter / RestartWorker.
+ * 
+ * Secrets: the supervisor never holds secret values directly. When building
+ * child process args it resolves secrets from the keyring (router/apikey for
+ * --api-key, mtls/cert + mtls/key for --mtls-cert/--mtls-key) and never logs
+ * them. Dev mode (the default) requires no secrets.
+ */
+export interface Supervisor {
+}
+
+/**
  * SupervisorStatus is the full status returned by Supervisor.Status().
  */
 export interface SupervisorStatus {

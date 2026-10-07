@@ -127,7 +127,7 @@ func NewAPIKeyMiddleware(apiKey string, required bool) func(http.Handler) http.H
 				return
 			}
 			if key != apiKey {
-				logAudit(r.Context(), "API key denied: invalid key", r)
+				logAudit(r.Context(), "API key denied: invalid key (faulty/expired)", r)
 				http.Error(w, "invalid API key", http.StatusUnauthorized)
 				return
 			}

@@ -193,6 +193,7 @@ tasks:
       - frontend/bindings/**/*
     cmds:
       - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true{{if eq .OBFUSCATED "true"}} -obfuscated{{end}} -ts -i
+      - sh -c 'sed -i "" "23d" frontend/bindings/github.com/seppaleinen/infermesh/app/index.ts || sed -i "23d" frontend/bindings/github.com/seppaleinen/infermesh/app/index.ts || true'
 
   generate:icons:
     summary: Generates Windows `.ico` and Mac `.icns` from an image; on macOS, `-iconcomposerinput appicon.icon -macassetdir darwin` also produces `Assets.car` from a `.icon` file (skipped on other platforms).

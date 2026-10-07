@@ -272,7 +272,7 @@ func newTestSupervisor(t *testing.T) *supervisorFixture {
 	fx.settings.RouterBinaryPath = writeDummyBinary(t, binDir, "infermesh-router")
 	fx.settings.WorkerBinaryPath = writeDummyBinary(t, binDir, "infermesh-worker")
 
-	s := NewSupervisor(fx.kr, fx.settingsPath, binDir, logsDir)
+	s := NewSupervisorService(fx.kr, fx.settingsPath, binDir, logsDir)
 	fx.builder = newFakeCmdBuilder()
 	s.cmdBuilder = fx.builder.build
 	// Replace the real HTTP probes with stubs that fail loudly if a test
