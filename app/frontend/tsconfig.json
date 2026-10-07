@@ -4,6 +4,10 @@
     "useDefineForClassFields": true,
     "module": "ESNext",
     "moduleResolution": "Node",
+    "baseUrl": ".",
+    "paths": {
+      "@bindings/*": ["bindings/*"]
+    },
     "strict": true,
     "noUnusedParameters": false,
     "noImplicitAny": false,

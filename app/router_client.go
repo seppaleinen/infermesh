@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -38,10 +39,11 @@ type WorkerView struct {
 
 // RouterClient is a Wails service bound to the frontend. It talks to the
 // router's HTTP API over plain HTTP (dev mode). No auth, no mTLS here —
-// that is prod-mode scope (#9/#10), not the desktop MVP.
+ // that is prod-mode scope (#9/#10), not the desktop MVP.
 type RouterClient struct {
-	baseURL string
-	sv *Supervisor
+	baseURL       string
+	localHostname string
+	sv            *Supervisor
 }
 
 // ServiceName implements application.ServiceName so the binding generator
@@ -61,7 +63,8 @@ func NewRouterClient(baseURL string) *RouterClient {
 	if !strings.Contains(baseURL, "://") {
 		baseURL = "http://" + baseURL
 	}
-	return &RouterClient{baseURL: baseURL}
+	hostname, _ := os.Hostname()
+	return &RouterClient{baseURL: baseURL, localHostname: hostname}
 }
 
 // GetRouterURL returns the configured base URL (used by the UI to show the
@@ -71,6 +74,22 @@ func (c *RouterClient) GetRouterURL() string {
 }
 
 func (c *RouterClient) SetSupervisor(sv *Supervisor) { c.sv = sv }
+
+// IsLocalWorker reports whether the worker identified by hostname/port is the
+// one this desktop app supervises. Used by the UI to tag the local worker
+// card with a "You" badge (issue #90). Hostname match is primary; port match
+// is the fallback when hostname is unavailable on either side.
+func (c *RouterClient) IsLocalWorker(workerPort int, hostname string, port int) bool {
+	return IsLocalWorker(c.localHostname, hostname, port, workerPort)
+}
+
+// GetHostname returns the hostname of the machine running this desktop app.
+// It is used by the UI to identify the local worker by hostname instead of
+// relying solely on port matching, which fails when multiple hosts use the
+// same worker port (issue #90).
+func (c *RouterClient) GetHostname() string {
+	return c.localHostname
+}
 
 // SetRouterURL re-points the client to a new router base URL. It is safe to
 // call at any time; subsequent GetWorkers() calls use the new URL. An empty

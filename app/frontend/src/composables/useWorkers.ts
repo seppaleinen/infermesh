@@ -1,11 +1,10 @@
 import { onBeforeUnmount, ref } from 'vue'
-import { RouterClient } from '../../bindings/github.com/seppaleinen/infermesh/app'
-import type { WorkerView } from '../../bindings/github.com/seppaleinen/infermesh/app/models'
+import { RouterClient } from '@bindings/github.com/seppaleinen/infermesh/app'
+import type { WorkerView } from '@bindings/github.com/seppaleinen/infermesh/app/models'
 import { useRouterPoll } from './useRouterPoll'
 
 export function useWorkers() {
 	const { state, routerURL, start, stop, retry } = useRouterPoll<WorkerView[]>(
-		// @ts-expect-error RouterClient methods are bound via Wails
 		(_) => RouterClient.GetWorkers()
 	)
 	return { state, routerURL, start, stop, retry }

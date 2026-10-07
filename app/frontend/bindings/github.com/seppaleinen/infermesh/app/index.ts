@@ -13,13 +13,11 @@ export {
 };
 
 export {
-    ProcessState
-} from "./models.js";
-
-export type {
     PopularModelView,
+    ProcessState,
     ProcessStatus,
     Settings,
+    Supervisor as SupervisorModel,
     SupervisorStatus,
     WorkerView
 } from "./models.js";

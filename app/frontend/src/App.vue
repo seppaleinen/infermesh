@@ -9,6 +9,7 @@ import { usePopularModels } from './composables/usePopularModels'
 import { useConnectionCount } from './composables/useConnectionCount'
 import { useSettings } from './composables/useSettings'
 import { useSupervisor } from './composables/useSupervisor'
+import { RouterClient } from '@bindings/github.com/seppaleinen/infermesh/app'
 
 const version = 'v0.1.0'
 
@@ -50,6 +51,10 @@ const connectionCount = useConnectionCount()
 // worker (the one this desktop is running) and tag its card with "You".
 const settings = useSettings()
 
+// Own hostname for local-worker identification (issue #90). Matches workers
+// by hostname first, falls back to port when hostname is unavailable.
+const localHostname = ref<string | null>(null)
+
 // Active view: 'dashboard' (workers) or 'settings'.
 const activeView = ref<'dashboard' | 'settings'>('dashboard')
 
@@ -71,12 +76,19 @@ function onSettingsSaved(): void {
   popular.retry() // popular models depend on the same router URL
 }
 
-// A worker is "local" when its port matches the port this desktop app
-// supervises (settings.worker_port). Tags the card with a "You" badge so
-// the user can instantly recognise the worker they are running.
-const isLocalWorker = (w: { port: number }): boolean => {
+// A worker is "local" when its hostname matches this desktop's hostname;
+// falls back to port match when hostname is unavailable (issue #90).
+// Tags the card with a "You" badge so the user can instantly recognise the
+// worker they are running.
+const isLocalWorker = (w: { hostname?: string | null; port: number | null }): boolean => {
   if (!settings.settings.value) return false
-  return w.port === settings.settings.value.worker_port
+  const ownPort = settings.settings.value.worker_port
+  if (localHostname.value && w.hostname) {
+    // Primary match: hostname (case-insensitive)
+    return w.hostname.toLowerCase() === localHostname.value.toLowerCase()
+  }
+  // Fallback: port match when hostname detection is unavailable
+  return w.port === ownPort
 }
 
 const supervisorStatus = useSupervisor()
@@ -92,6 +104,12 @@ onMounted(async () => {
   popular.start()
   connectionCount.start()
   await settings.load()
+  // Detect own hostname for local-worker identification (issue #90)
+  try {
+    localHostname.value = await RouterClient.GetHostname()
+  } catch {
+    localHostname.value = null
+  }
 })
 
 onBeforeUnmount(() => {

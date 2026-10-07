@@ -1,5 +1,5 @@
 import { onBeforeUnmount, ref } from 'vue'
-import { Supervisor } from '../../bindings/github.com/seppaleinen/infermesh/app'
+import { Supervisor } from '@bindings/github.com/seppaleinen/infermesh/app'
 
 export function useSupervisor() {
   const status = ref<any>(null)

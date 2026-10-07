@@ -3,7 +3,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
+import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -46,7 +46,9 @@ export function IsKeyringAvailable(): $CancellablePromise<boolean> {
  * LoadSettings loads the configuration from disk and merges defaults.
  */
 export function LoadSettings(): $CancellablePromise<$models.Settings> {
-    return $Call.ByID(3950522526);
+    return $Call.ByID(3950522526).then(($result: any) => {
+        return $$createType0($result);
+    });
 }
 
 /**
@@ -80,3 +82,6 @@ export function SetSupervisor(sv: $models.Supervisor | null): $CancellablePromis
 export function ValidateSecretRefs(s: $models.Settings): $CancellablePromise<void> {
     return $Call.ByID(1128019623, s);
 }
+
+// Private type creation functions
+const $$createType0 = $models.Settings.createFrom;

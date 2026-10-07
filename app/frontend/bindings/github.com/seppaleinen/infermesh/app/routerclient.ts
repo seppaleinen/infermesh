@@ -10,7 +10,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
+import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -27,13 +27,25 @@ export function GetConnectionCount(): $CancellablePromise<number> {
 }
 
 /**
+ * GetHostname returns the hostname of the machine running this desktop app.
+ * It is used by the UI to identify the local worker by hostname instead of
+ * relying solely on port matching, which fails when multiple hosts use the
+ * same worker port (issue #90).
+ */
+export function GetHostname(): $CancellablePromise<string> {
+    return $Call.ByID(2556879855);
+}
+
+/**
  * GetPopularModels fetches the sorted popular-models list from the router.
  * It returns an empty (non-nil) slice when the router is reachable but idle,
  * and a typed error when the router is unreachable or returns a bad body.
  * Mirrors GetWorkers.
  */
-export function GetPopularModels(): $CancellablePromise<$models.PopularModelView[] | null> {
-    return $Call.ByID(601255233);
+export function GetPopularModels(): $CancellablePromise<$models.PopularModelView[]> {
+    return $Call.ByID(601255233).then(($result: any) => {
+        return $$createType1($result);
+    });
 }
 
 /**
@@ -49,8 +61,20 @@ export function GetRouterURL(): $CancellablePromise<string> {
  * an empty (non-nil) slice when the router is reachable but idle, and a
  * typed error when the router is unreachable or returns a bad body.
  */
-export function GetWorkers(): $CancellablePromise<$models.WorkerView[] | null> {
-    return $Call.ByID(207224501);
+export function GetWorkers(): $CancellablePromise<$models.WorkerView[]> {
+    return $Call.ByID(207224501).then(($result: any) => {
+        return $$createType3($result);
+    });
+}
+
+/**
+ * IsLocalWorker reports whether the worker identified by hostname/port is the
+ * one this desktop app supervises. Used by the UI to tag the local worker
+ * card with a "You" badge (issue #90). Hostname match is primary; port match
+ * is the fallback when hostname is unavailable on either side.
+ */
+export function IsLocalWorker(workerPort: number, hostname: string, port: number): $CancellablePromise<boolean> {
+    return $Call.ByID(3475487091, workerPort, hostname, port);
 }
 
 /**
@@ -66,3 +90,9 @@ export function SetRouterURL(url: string): $CancellablePromise<void> {
 export function SetSupervisor(sv: $models.Supervisor | null): $CancellablePromise<void> {
     return $Call.ByID(4066847928, sv);
 }
+
+// Private type creation functions
+const $$createType0 = $models.PopularModelView.createFrom;
+const $$createType1 = $Create.Array($$createType0);
+const $$createType2 = $models.WorkerView.createFrom;
+const $$createType3 = $Create.Array($$createType2);

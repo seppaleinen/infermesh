@@ -1,5 +1,5 @@
 import { onBeforeUnmount, ref } from 'vue'
-import { RouterClient } from '../../bindings/github.com/seppaleinen/infermesh/app'
+import { RouterClient } from '@bindings/github.com/seppaleinen/infermesh/app'
 import { useRouterPoll } from './useRouterPoll'
 
 export function useConnectionCount() {

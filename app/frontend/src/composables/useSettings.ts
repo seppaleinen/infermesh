@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import { ConfigService, type Settings } from '../../bindings/github.com/seppaleinen/infermesh/app'
+import { ConfigService, type Settings } from '@bindings/github.com/seppaleinen/infermesh/app'
 
 /**
  * Secret reference mapping from config_service.go knownSecretRefs.

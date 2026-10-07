@@ -1,5 +1,5 @@
 import { onBeforeUnmount, ref } from 'vue'
-import { RouterClient } from '../../bindings/github.com/seppaleinen/infermesh/app'
+import { RouterClient } from '@bindings/github.com/seppaleinen/infermesh/app'
 
 // Poll cadence mirrors the router's heartbeat window (5s) so the data
 // refreshes in step with other polling composables. First-load timeout is shorter
