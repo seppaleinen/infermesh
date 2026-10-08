@@ -907,18 +907,13 @@ func (s *Server) handlePopularModels(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Sort by a total order so repeated polls never shuffle equal-ranked
-	// models (the accumulator is a Go map with randomized iteration order).
+	// Sort by loaded first, then model name (alphabetical).
+	// Stable: loaded_worker_count is the only thing that changes
+	// the order, so a refresh updates contents without reordering.
 	sort.SliceStable(popularModels, func(i, j int) bool {
 		a, b := popularModels[i], popularModels[j]
 		if a.LoadedWorkerCount != b.LoadedWorkerCount {
 			return a.LoadedWorkerCount > b.LoadedWorkerCount
-		}
-		if a.WorkerCount != b.WorkerCount {
-			return a.WorkerCount > b.WorkerCount
-		}
-		if a.CallCount != b.CallCount {
-			return a.CallCount > b.CallCount
 		}
 		return a.Model < b.Model
 	})
