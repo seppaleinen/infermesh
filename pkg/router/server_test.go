@@ -1617,11 +1617,10 @@ func TestPopularModelsHandler(t *testing.T) {
 					t.Errorf("expected 3 models, got %d", len(resp.Models))
 				}
 
-				// Verify sorted by the total order: loaded_worker_count desc,
-				// then worker_count desc, then call_count desc, then name asc.
-				// llama-3-8b and mistral-7b are both loaded (count 1) with
-				// worker_count 1; llama-3-8b has more calls (2 vs 1) so it
-				// comes first. qwen-72b is not loaded (count 0) so it is last.
+// Verify sorted by loaded_worker_count desc, then model name asc.
+// llama-3-8b and mistral-7b are both loaded (count 1) with
+// worker_count 1; llama-3-8b comes first alphabetically. qwen-72b is not
+// loaded (count 0) so it is last.
 				if len(resp.Models) < 3 || resp.Models[0].Model != "llama-3-8b" {
 					t.Errorf("expected llama-3-8b first, got order: %+v", resp.Models)
 				}
@@ -1659,6 +1658,69 @@ func TestPopularModelsHandler(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestPopularModelsRepeatedCallsSameOrder is the real regression guard for
+// issue #89: a 5s poll that re-sorts by call_count would shuffle rows between
+// polls. Here we call the endpoint 10 times and assert the order is identical
+// on every call — not just that each call is internally sorted.
+func TestPopularModelsRepeatedCallsSameOrder(t *testing.T) {
+	worker := protocol.WorkerInfo{
+		ID:       "worker-1",
+		Hostname: "worker-1",
+		IP:       "127.0.0.1",
+		Port:     8081,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "zeta-9b", Quantization: "Q4_K_M", Loaded: true},
+				{Name: "alpha-9b", Quantization: "Q4_K_M", Loaded: true},
+				{Name: "mid-9b", Quantization: "Q4_K_M", Loaded: false},
+				{Name: "beta-9b", Quantization: "Q4_K_M", Loaded: false},
+			},
+			VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 20480},
+		},
+	}
+
+	tr := testRegistry(t, []protocol.WorkerInfo{worker})
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+	server := tr.Server()
+
+	server.cache = NewCapabilityCache(tr.reg, testLogger())
+	server.cache.Start(tr.ctx)
+	server.cache.mu.Lock()
+	server.cache.cache[worker.ID] = worker
+	server.cache.mu.Unlock()
+
+	var first []string
+	for n := 0; n < 10; n++ {
+		req := httptest.NewRequest(http.MethodGet, "/meta/models/popular", nil)
+		w := httptest.NewRecorder()
+		server.handlePopularModels(w, req)
+
+		var resp PopularModelsResponse
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("iteration %d: failed to decode response: %v", n, err)
+		}
+		if len(resp.Models) != 4 {
+			t.Fatalf("iteration %d: expected 4 models, got %d", n, len(resp.Models))
+		}
+		if n == 0 {
+			for _, m := range resp.Models {
+				first = append(first, m.Model)
+			}
+		} else {
+			for i, m := range resp.Models {
+				if m.Model != first[i] {
+					t.Fatalf("iteration %d: position %d: expected %s (from iteration 0), got %s (full order: %+v)",
+						n, i, first[i], m.Model, resp.Models)
+				}
+			}
+		}
 	}
 }
 
