@@ -46,7 +46,7 @@ Decision: per-subcommand FlagSets, not one combined FlagSet (avoids ambiguous fl
   - explicit non-loopback host preserved: `myhost:8080` → `http://myhost:8080`
   - scheme always `http` (dev-only mode).
   - Rejected alternative: a new `--worker-router` flag — duplicates data already in `--addr` and creates a disagreement failure mode.
-- **API key:** `--api-key` is currently stored in `security.Config` but not enforced by any router middleware, so self-registration needs no auth wiring. Document this; do not add auth in this issue.
+- **API key:** `--api-key` is stored in `security.Config` and enforced by the router's API-key middleware (in both dev and prod mode) — see issue #77. It gates the inference endpoints (`/v1/chat/completions`, `/v1/completions`); self-registration (`/v1/dev/register`) is unauthenticated. Do not add auth wiring for self-registration in this issue.
 - **Startup order:**
   1. Parse flags; run fail-fast validation (below).
   2. Build and serve the router (dev mode: plain HTTP; routes `/v1/dev/register`, `/v1/workers`, `/v1/models`).

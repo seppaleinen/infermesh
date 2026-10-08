@@ -129,7 +129,7 @@ infermesh/
 - **Single GPU per worker**: most machines are single-GPU
 - **Manual model declaration** in MVP: auto-discovery is a future feature
 - **mTLS with self-signed certs**: production security without PKI complexity
-- **Dev mode (no auth, localhost HTTP)**: easy local development
+- **Dev mode (localhost HTTP; optional API key via --api-key)**: easy local development
 - **Mono-repo**: simpler than multi-repo for MVP
 
 ## Desktop App (MVP north star)
@@ -185,6 +185,6 @@ InferMesh is **not** a gateway to external/cloud providers. It does not integrat
 ### Security Features (Existing)
 
 - **mTLS with self-signed certs** — production mode requires mutual TLS for all router-worker communication
-- **Dev mode (no auth, localhost HTTP)** — easy local development, no network exposure
+- **Dev mode (localhost HTTP; optional API key via --api-key)** — easy local development, no network exposure
 - **API key middleware** — optional API key authentication for the router
 - **Audit logging** — request/response logging for operational visibility
