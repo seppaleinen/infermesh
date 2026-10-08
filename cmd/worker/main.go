@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/worker"
 )
@@ -33,6 +34,9 @@ type WorkerFlags struct {
 	EnableHealthChecks bool
 	AllowedModels      string
 	ExcludedModels     string
+	// ModelRefreshInterval is the cadence for re-querying the backend's
+	// model catalogue (0 uses the default 10s).
+	ModelRefreshInterval time.Duration
 }
 
 // parseWorkerFlags parses args into WorkerFlags. It uses ContinueOnError so
@@ -64,6 +68,7 @@ func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	fs.BoolVar(&f.EnableHealthChecks, "enable-health-checks", true, "enable periodic backend health checks")
 	fs.StringVar(&f.AllowedModels, "allowed-models", "", "comma-separated list of models this worker is WILLING to serve (whitelist); empty = all")
 	fs.StringVar(&f.ExcludedModels, "excluded-models", "", "comma-separated list of models this worker is NOT WILLING to serve (blacklist); applies only when --allowed-models is empty")
+	fs.DurationVar(&f.ModelRefreshInterval, "model-refresh-interval", 0, "cadence for re-querying the backend's model catalogue; 0 uses the default 10s")
 }
 
 // workerFlagUsage prints the worker flag help to w.
@@ -109,21 +114,22 @@ func runWorker(args []string) int {
 
 	// Start worker (RunWorker selects the backend adapter internally).
 	h, err := worker.RunWorker(ctx, worker.RunConfig{
-		ModelPath:          f.ModelPath,
-		Backend:            f.Backend,
-		BackendURL:         f.BackendURL,
-		Port:               f.Port,
-		DevMode:            isDevMode,
-		MTLSCert:           f.MTLSCert,
-		MTLSKey:            f.MTLSKey,
-		CertDir:            f.CertDir,
-		TrustedCNs:         f.TrustedCNs,
-		RouterBase:         f.Router,
-		ProdRouter:         f.ProdRouter,
-		RelayURL:           f.RelayURL,
-		EnableHealthChecks: f.EnableHealthChecks,
-		AllowedModels:      f.AllowedModels,
-		ExcludedModels:     f.ExcludedModels,
+		ModelPath:            f.ModelPath,
+		Backend:              f.Backend,
+		BackendURL:           f.BackendURL,
+		Port:                 f.Port,
+		DevMode:              isDevMode,
+		MTLSCert:             f.MTLSCert,
+		MTLSKey:              f.MTLSKey,
+		CertDir:              f.CertDir,
+		TrustedCNs:           f.TrustedCNs,
+		RouterBase:           f.Router,
+		ProdRouter:           f.ProdRouter,
+		RelayURL:             f.RelayURL,
+		EnableHealthChecks:   f.EnableHealthChecks,
+		AllowedModels:        f.AllowedModels,
+		ExcludedModels:       f.ExcludedModels,
+		ModelRefreshInterval: f.ModelRefreshInterval,
 	})
 	if err != nil {
 		if errors.Is(err, worker.ErrMissingModelPath) {

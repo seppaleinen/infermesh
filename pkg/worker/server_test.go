@@ -41,11 +41,17 @@ func (m *mockBackend) SetHealthCheckError(err error) {
 	m.healthCheck = err
 }
 
-func (m *mockBackend) Name() string { return "mock" }
-func (m *mockBackend) LoadModel(path string) (bool, error) { return true, nil }
-func (m *mockBackend) UnloadModel() error { return nil }
+// SetMockModels replaces the catalogue the mock advertises on the next
+// ListModels() call. Used to simulate a backend that starts after the worker.
+func (m *mockBackend) SetMockModels(models []protocol.ModelInfo) {
+	m.models = models
+}
+
+func (m *mockBackend) Name() string                              { return "mock" }
+func (m *mockBackend) LoadModel(path string) (bool, error)       { return true, nil }
+func (m *mockBackend) UnloadModel() error                        { return nil }
 func (m *mockBackend) ListModels() ([]protocol.ModelInfo, error) { return m.models, nil }
-func (m *mockBackend) GetMetrics() (Metrics, error) { return Metrics{}, nil }
+func (m *mockBackend) GetMetrics() (Metrics, error)              { return Metrics{}, nil }
 func (m *mockBackend) CompleteChat(ctx context.Context, model string, req ChatRequest) (ChatResponse, error) {
 	return ChatResponse{
 		ID:      "chatcmpl-test",
@@ -74,12 +80,16 @@ func (m *mockBackend) CompleteCompletions(ctx context.Context, model string, req
 		},
 	}, nil
 }
+
 // IsHealthy implements the Backend interface.
 func (m *mockBackend) IsHealthy() bool { return true }
+
 // HealthCheck implements the Backend interface.
 func (m *mockBackend) HealthCheck() error { return m.healthCheck }
+
 // GetCircuitState implements the Backend interface.
 func (m *mockBackend) GetCircuitState() CircuitState { return CircuitClosed }
+
 // StreamChat implements the Backend interface.
 func (m *mockBackend) StreamChat(ctx context.Context, model string, req ChatRequest) (<-chan ChatChunk, <-chan error) {
 	chatCh := make(chan ChatChunk, 100)
@@ -103,6 +113,7 @@ func (m *mockBackend) StreamChat(ctx context.Context, model string, req ChatRequ
 	}()
 	return chatCh, errCh
 }
+
 // StreamCompletions implements the Backend interface.
 func (m *mockBackend) StreamCompletions(ctx context.Context, model string, req CompletionRequest) (<-chan CompletionChunk, <-chan error) {
 	compCh := make(chan CompletionChunk, 100)
@@ -376,9 +387,9 @@ func TestChatCompletionsHandler(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			chatReq := ChatRequest{
-				Model: "gpt-4",
+				Model:    "gpt-4",
 				Messages: []ChatMessage{{Role: "user", Content: "Hello"}},
-				Stream: true,
+				Stream:   true,
 			}
 
 			body, err := json.Marshal(chatReq)
@@ -938,9 +949,9 @@ func TestServer_HealthCheckLoop_Cancel(t *testing.T) {
 // health tracker with the correct Enabled state based on config.
 func TestServer_NewServer_HealthTrackerInit(t *testing.T) {
 	tests := []struct {
-		name          string
-		enabled       bool
-		expected      bool
+		name     string
+		enabled  bool
+		expected bool
 	}{
 		{
 			name:     "enabled by default",
@@ -972,8 +983,8 @@ func TestServer_NewServer_HealthTrackerInit(t *testing.T) {
 // clear error when the TLS configuration is incomplete in production mode.
 func TestServer_ProdModeRejectsInvalidTLS(t *testing.T) {
 	tests := []struct {
-		name   string
-		cfg    security.Config
+		name string
+		cfg  security.Config
 	}{
 		{"missing cert", security.Config{DevMode: false, MTLSCert: "", MTLSKey: "", CertDir: ""}},
 		{"missing key", security.Config{DevMode: false, MTLSCert: "/nonexistent/cert.pem", MTLSKey: "", CertDir: ""}},
@@ -1022,12 +1033,12 @@ func TestServer_ProdModeEnforcesMTLS(t *testing.T) {
 	// Start the worker server in prod mode on a free port.
 	port := freeTestPort(t)
 	cfg := security.Config{
-		DevMode:     false,
-		MTLSCert:    workerCertPath,
-		MTLSKey:     workerKeyPath,
-		CertDir:     caDir,
-		APIKey:      "test-api-key",
-		TrustedCNs:  "router-1",
+		DevMode:    false,
+		MTLSCert:   workerCertPath,
+		MTLSKey:    workerKeyPath,
+		CertDir:    caDir,
+		APIKey:     "test-api-key",
+		TrustedCNs: "router-1",
 	}
 	server := NewServer(testLogger(), fmt.Sprintf("127.0.0.1:%d", port), cfg)
 	server.SetBackend(newMockBackend(), "test-model")
@@ -1125,4 +1136,81 @@ func TestServer_ProdModeEnforcesMTLS(t *testing.T) {
 
 	cancel()
 	<-errChan
+}
+
+// TestRefreshModels_DiscoveryAfterStart verifies that refreshModels surfaces
+// models a backend advertises only after the worker started (issue #88 part 1):
+// the initial SetModels call happens once at startup, so a backend that comes
+// up later stays invisible until the refresh goroutine re-queries it.
+func TestRefreshModels_DiscoveryAfterStart(t *testing.T) {
+	server := NewServer(testLogger(), "", security.Config{DevMode: true, EnableHealthChecks: false})
+	backend := newMockBackend()
+	server.SetBackend(backend, "test-model")
+
+	// Initially the backend advertises nothing.
+	if got := len(server.GetModels()); got != 0 {
+		t.Fatalf("expected 0 models at startup, got %d", got)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go refreshModels(ctx, server, backend, 10*time.Millisecond)
+
+	// Simulate the backend starting after the worker: advertise a model.
+	backend.SetMockModels([]protocol.ModelInfo{
+		{Name: "llama-3-8b", Quantization: "Q4_K_M", Loaded: true},
+	})
+
+	waitFor(t, 2*time.Second, func() bool { return len(server.GetModels()) == 1 })
+
+	if got := server.GetModels()[0].Name; got != "llama-3-8b" {
+		t.Errorf("expected llama-3-8b, got %s", got)
+	}
+
+	// The backend advertises a second model; the refresh merges it rather
+	// than replacing the catalogue.
+	backend.SetMockModels([]protocol.ModelInfo{
+		{Name: "llama-3-8b", Quantization: "Q4_K_M", Loaded: true},
+		{Name: "mistral-7b", Quantization: "Q5_K_M", Loaded: true},
+	})
+
+	waitFor(t, 2*time.Second, func() bool { return len(server.GetModels()) == 2 })
+}
+
+// TestRefreshModelsNilBackend verifies refreshModels is a no-op when no
+// backend is configured (e.g. the worker started with --backend unknown).
+func TestRefreshModelsNilBackend(t *testing.T) {
+	server := NewServer(testLogger(), "", security.Config{DevMode: true, EnableHealthChecks: false})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	go func() {
+		refreshModels(ctx, server, nil, 10*time.Millisecond)
+		close(done)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refreshModels with nil backend did not exit after cancellation")
+	}
+}
+
+// TestEffectiveModelRefreshInterval verifies the default fallback.
+func TestEffectiveModelRefreshInterval(t *testing.T) {
+	if got := effectiveModelRefreshInterval(0); got != DefaultModelRefreshInterval {
+		t.Errorf("zero interval: expected %v, got %v", DefaultModelRefreshInterval, got)
+	}
+	if got := effectiveModelRefreshInterval(-time.Second); got != DefaultModelRefreshInterval {
+		t.Errorf("negative interval: expected %v, got %v", DefaultModelRefreshInterval, got)
+	}
+	const custom = 5 * time.Minute
+	if got := effectiveModelRefreshInterval(custom); got != custom {
+		t.Errorf("custom interval: expected %v, got %v", custom, got)
+	}
 }

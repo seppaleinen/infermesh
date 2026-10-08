@@ -55,7 +55,7 @@ const hasModels = computed(() => models.value.length > 0)
         <span class="worker-v worker-mono">{{ version || '—' }}</span>
       </div>
       <div class="worker-row">
-        <span class="worker-k">loaded models</span>
+        <span class="worker-k">available models</span>
         <span class="worker-v">
           <template v-if="hasModels">
             <span v-for="m in models" :key="m" class="model-chip">{{ m }}</span>

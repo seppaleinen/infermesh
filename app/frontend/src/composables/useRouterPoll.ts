@@ -28,7 +28,7 @@ export function isNetworkError(message: string): boolean {
  * @returns an object with `state`, `routerURL`, `start`, `stop`, `retry`
  */
 export function useRouterPoll<T>(
-	fetchFn: (ctx: unknown) => Promise<T>
+	fetchFn: (ctx: unknown) => Promise<T | null>
 ) {
 	const state = ref<
 		| { kind: 'loading' }

@@ -1585,7 +1585,7 @@ func TestPopularModelsHandler(t *testing.T) {
 		expectedStatus int
 	}{
 		{
-			name:           "GET returns popular models sorted by worker_count desc",
+			name:           "GET returns popular models sorted by loaded_worker_count desc",
 			method:         http.MethodGet,
 			expectedStatus: http.StatusOK,
 		},
@@ -1617,7 +1617,20 @@ func TestPopularModelsHandler(t *testing.T) {
 					t.Errorf("expected 3 models, got %d", len(resp.Models))
 				}
 
-				// Verify sorted by worker_count desc (all have 1 worker)
+				// Verify sorted by the total order: loaded_worker_count desc,
+				// then worker_count desc, then call_count desc, then name asc.
+				// llama-3-8b and mistral-7b are both loaded (count 1) with
+				// worker_count 1; llama-3-8b has more calls (2 vs 1) so it
+				// comes first. qwen-72b is not loaded (count 0) so it is last.
+				if len(resp.Models) < 3 || resp.Models[0].Model != "llama-3-8b" {
+					t.Errorf("expected llama-3-8b first, got order: %+v", resp.Models)
+				}
+				if resp.Models[1].Model != "mistral-7b" {
+					t.Errorf("expected mistral-7b second, got order: %+v", resp.Models)
+				}
+				if resp.Models[2].Model != "qwen-72b" {
+					t.Errorf("expected qwen-72b last, got order: %+v", resp.Models)
+				}
 				// Verify call counts
 				for _, m := range resp.Models {
 					switch m.Model {
@@ -1711,16 +1724,82 @@ func TestPopularModelsMultipleWorkers(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	// llama-3-8b has 2 workers, qwen-72b and mistral-7b have 1 each
-	// Should be sorted by worker_count desc
+	// llama-3-8b has 2 workers (both loaded), qwen-72b and mistral-7b have 1
+	// each (not loaded). Sorted by the total order: loaded_worker_count desc
+	// puts llama-3-8b first.
 	if len(resp.Models) != 3 {
 		t.Errorf("expected 3 models, got %d", len(resp.Models))
 	}
 	if resp.Models[0].Model != "llama-3-8b" || resp.Models[0].WorkerCount != 2 {
 		t.Errorf("expected llama-3-8b first with worker_count=2, got %s worker_count=%d", resp.Models[0].Model, resp.Models[0].WorkerCount)
 	}
+	if resp.Models[0].LoadedWorkerCount != 2 {
+		t.Errorf("expected llama-3-8b loaded_worker_count=2, got %d", resp.Models[0].LoadedWorkerCount)
+	}
 	if resp.Models[0].CallCount != 1 {
 		t.Errorf("llama-3-8b call count: expected 1, got %d", resp.Models[0].CallCount)
+	}
+}
+
+// TestPopularModelsDeterministicSort verifies that repeated calls to
+// handlePopularModels return the same order even though the accumulator is a
+// Go map (randomized iteration order). This guards against the visible
+// re-sorting every poll (issue #89).
+func TestPopularModelsDeterministicSort(t *testing.T) {
+	worker := protocol.WorkerInfo{
+		ID:       "worker-1",
+		Hostname: "worker-1",
+		IP:       "127.0.0.1",
+		Port:     8081,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "zeta-9b", Quantization: "Q4_K_M", Loaded: true},
+				{Name: "alpha-9b", Quantization: "Q4_K_M", Loaded: true},
+				{Name: "mid-9b", Quantization: "Q4_K_M", Loaded: false},
+				{Name: "beta-9b", Quantization: "Q4_K_M", Loaded: false},
+			},
+			VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 20480},
+		},
+	}
+
+	tr := testRegistry(t, []protocol.WorkerInfo{worker})
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+	server := tr.Server()
+
+	server.cache = NewCapabilityCache(tr.reg, testLogger())
+	server.cache.Start(tr.ctx)
+	server.cache.mu.Lock()
+	server.cache.cache[worker.ID] = worker
+	server.cache.mu.Unlock()
+
+	// All four models share worker_count=1 and call_count=0, so the only
+	// meaningful key is LoadedWorkerCount (1 vs 0) and the model-name tiebreak.
+	// Expected: loaded models first (alpha, zeta — alphabetical), then
+	// unloaded (beta, mid — alphabetical).
+	want := []string{"alpha-9b", "zeta-9b", "beta-9b", "mid-9b"}
+
+	for n := 0; n < 5; n++ {
+		req := httptest.NewRequest(http.MethodGet, "/meta/models/popular", nil)
+		w := httptest.NewRecorder()
+		server.handlePopularModels(w, req)
+
+		var resp PopularModelsResponse
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("iteration %d: failed to decode response: %v", n, err)
+		}
+		if len(resp.Models) != len(want) {
+			t.Fatalf("iteration %d: expected %d models, got %d", n, len(want), len(resp.Models))
+		}
+		for i, m := range resp.Models {
+			if m.Model != want[i] {
+				t.Fatalf("iteration %d: position %d: expected %s, got %s (full order: %+v)",
+					n, i, want[i], m.Model, resp.Models)
+			}
+		}
 	}
 }
 
@@ -2599,7 +2678,9 @@ func TestConnectionCountEndpointIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /meta/connections/count: %v", err)
 	}
-	var body struct{ Connections int `json:"connections"` }
+	var body struct {
+		Connections int `json:"connections"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}

@@ -110,7 +110,7 @@ Dependencies are intentionally minimal: stdlib + `hashicorp/mdns` + `yaml.v3`. K
 - mDNS discovery first, pluggable for a centralized registry later
 - Single router (no HA), in-memory registry (no DB), deterministic scoring
 - One GPU per worker; manual model declaration in MVP
-- Dev mode = no auth, localhost; prod mode = mTLS with self-signed certs + API keys
+- Dev mode = localhost (no auth by default; optional API key via --api-key); prod mode = mTLS with self-signed certs + API keys
 - Platforms: headless binaries ship Linux/macOS/Windows (`make build-static` includes windows-amd64); the desktop app builds natively on macOS (CGO/cocoa, primary verification) and Linux (webkit2gtk build deps — docs/CI note only, no Linux build attempted on this mac); Windows desktop build deferred (webview2 note only).
 
 **Out of scope (MVP)**: Kubernetes/Docker, distributed (model-parallel) inference, automatic model discovery/downloading, multi-router HA, WAN workers, CPU-only workers, LiteLLM, enterprise auth beyond mTLS.

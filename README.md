@@ -13,7 +13,7 @@ Not: Kubernetes, LiteLLM, or distributed model inference.
 # The relay broker is built separately with `make relay`.
 make build
 
-# Run router in dev mode (no auth, localhost)
+# Run router in dev mode (localhost; optional --api-key)
 ./bin/infermesh-router --dev-mode
 
 # Run a worker (also dev mode, auto-discovers router via mDNS)

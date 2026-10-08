@@ -10,7 +10,7 @@ defineProps<{ models: PopularModelView[] }>()
     <tr>
       <th scope="col">Model</th>
       <th scope="col">Workers</th>
-      <th scope="col">Loaded</th>
+      <th scope="col">Available</th>
       <th scope="col">Calls (10m)</th>
     </tr>
   </thead>
@@ -18,7 +18,7 @@ defineProps<{ models: PopularModelView[] }>()
     <tr v-for="m in models" :key="m.model">
       <td class="model-name">{{ m.model }}</td>
       <td class="model-workers">{{ m.worker_count }}</td>
-      <td class="model-loaded" :title="`loaded on ${m.loaded_worker_count} of ${m.worker_count} workers`">{{ m.loaded_worker_count }}<span class="text-muted">/{{ m.worker_count }}</span></td>
+      <td class="model-loaded" :title="`available on ${m.loaded_worker_count} of ${m.worker_count} workers`">{{ m.loaded_worker_count }}<span class="text-muted">/{{ m.worker_count }}</span></td>
       <td class="model-calls">{{ m.call_count }}</td>
     </tr>
     <tr v-if="models.length === 0">

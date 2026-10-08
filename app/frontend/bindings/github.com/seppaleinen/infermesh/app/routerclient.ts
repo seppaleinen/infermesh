@@ -10,7 +10,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Create } from "@wailsio/runtime";
+import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -42,10 +42,8 @@ export function GetHostname(): $CancellablePromise<string> {
  * and a typed error when the router is unreachable or returns a bad body.
  * Mirrors GetWorkers.
  */
-export function GetPopularModels(): $CancellablePromise<$models.PopularModelView[]> {
-    return $Call.ByID(601255233).then(($result: any) => {
-        return $$createType1($result);
-    });
+export function GetPopularModels(): $CancellablePromise<$models.PopularModelView[] | null> {
+    return $Call.ByID(601255233);
 }
 
 /**
@@ -61,10 +59,8 @@ export function GetRouterURL(): $CancellablePromise<string> {
  * an empty (non-nil) slice when the router is reachable but idle, and a
  * typed error when the router is unreachable or returns a bad body.
  */
-export function GetWorkers(): $CancellablePromise<$models.WorkerView[]> {
-    return $Call.ByID(207224501).then(($result: any) => {
-        return $$createType3($result);
-    });
+export function GetWorkers(): $CancellablePromise<$models.WorkerView[] | null> {
+    return $Call.ByID(207224501);
 }
 
 /**
@@ -90,9 +86,3 @@ export function SetRouterURL(url: string): $CancellablePromise<void> {
 export function SetSupervisor(sv: $models.Supervisor | null): $CancellablePromise<void> {
     return $Call.ByID(4066847928, sv);
 }
-
-// Private type creation functions
-const $$createType0 = $models.PopularModelView.createFrom;
-const $$createType1 = $Create.Array($$createType0);
-const $$createType2 = $models.WorkerView.createFrom;
-const $$createType3 = $Create.Array($$createType2);

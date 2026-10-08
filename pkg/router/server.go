@@ -858,7 +858,10 @@ func (s *Server) handlePopularModels(w http.ResponseWriter, r *http.Request) {
 	// 1. Aggregate worker_count from capability cache (model appears in
 	//    Capabilities.Models regardless of Loaded).
 	// 2. Merge call_count from s.counter.Snapshot().
-	// 3. Sort by worker_count descending.
+	// 3. Sort by a total order (no ties) so repeated polls do not shuffle
+	//    equal-ranked models: loaded_worker_count desc, worker_count desc,
+	//    call_count desc, model name asc. SliceStable is belt-and-suspenders;
+	//    the comparator is already a total order.
 	// 4. Encode PopularModelsResponse.
 
 	// Get capabilities from cache
@@ -870,10 +873,10 @@ func (s *Server) handlePopularModels(w http.ResponseWriter, r *http.Request) {
 	// Map to accumulate counts per model
 	// Key: model name, Value: struct with counts
 	type modelStats struct {
-		model        string
-		workerCount  int
-		loadedCount  int
-		callCount    int64
+		model       string
+		workerCount int
+		loadedCount int
+		callCount   int64
 	}
 	statsMap := make(map[string]*modelStats)
 
@@ -904,9 +907,20 @@ func (s *Server) handlePopularModels(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Sort by workerCount descending
-	sort.Slice(popularModels, func(i, j int) bool {
-		return popularModels[i].WorkerCount > popularModels[j].WorkerCount
+	// Sort by a total order so repeated polls never shuffle equal-ranked
+	// models (the accumulator is a Go map with randomized iteration order).
+	sort.SliceStable(popularModels, func(i, j int) bool {
+		a, b := popularModels[i], popularModels[j]
+		if a.LoadedWorkerCount != b.LoadedWorkerCount {
+			return a.LoadedWorkerCount > b.LoadedWorkerCount
+		}
+		if a.WorkerCount != b.WorkerCount {
+			return a.WorkerCount > b.WorkerCount
+		}
+		if a.CallCount != b.CallCount {
+			return a.CallCount > b.CallCount
+		}
+		return a.Model < b.Model
 	})
 
 	if err := json.NewEncoder(w).Encode(PopularModelsResponse{Models: popularModels}); err != nil {

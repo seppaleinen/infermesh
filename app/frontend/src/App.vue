@@ -126,7 +126,7 @@ const workerCount = computed(() => {
 	return 0
 })
 
-const loadedModelCount = computed(() => {
+const availableModelCount = computed(() => {
 	if (popular.state.value.kind === 'ready' && popular.state.value.data.length) {
 		return popular.state.value.data.filter(m => m.loaded_worker_count > 0).length
 	}
@@ -252,7 +252,7 @@ const loadedModelCount = computed(() => {
   connected to <span class="mono">{{ workers.state.value.routerURL }}</span>
 <span v-if="popular.state.value.kind === 'ready' && popular.state.value.data.length">
 	· {{ popular.state.value.data.length }} model<span v-if="popular.state.value.data.length !== 1">s</span> across the pool
-	<span v-if="popular.state.value.data.length">· {{ loadedModelCount }} loaded</span>
+	<span v-if="popular.state.value.data.length">· {{ availableModelCount }} available</span>
 </span>
 <span v-if="connectionCount.state.value.kind === 'ready'">
 	· {{ connectionCount.state.value.data }} connection<span v-if="connectionCount.state.value.data !== 1">s</span>

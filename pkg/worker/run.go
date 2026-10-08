@@ -59,6 +59,11 @@ type RunConfig struct {
 	RelayURL string
 	// EnableHealthChecks toggles periodic backend health checks.
 	EnableHealthChecks bool
+	// ModelRefreshInterval is the cadence for re-querying the backend's
+	// ListModels() so models that start after the worker (e.g. LM Studio,
+	// Ollama, vLLM) surface without a restart. 0 uses the default (10s).
+	// The user is expected to raise this to 5min once the pool is stable.
+	ModelRefreshInterval time.Duration
 	// AllowedModels is a comma-separated whitelist of models this worker is
 	// WILLING to serve. When non-empty the router only schedules requests for
 	// models in this list on this worker. Empty means "serve all".
@@ -203,14 +208,21 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 				// anyway. Models will be discovered on the next capability refresh
 				// cycle (aggregator Detect() re-reads model config, or restart the
 				// worker after starting the backend).
-				log.Warn("worker started with no models — auto-discovery failed; "+
-					"start the backend (LM Studio, Ollama, vLLM) and restart the "+
+				log.Warn("worker started with no models — auto-discovery failed; " +
+					"start the backend (LM Studio, Ollama, vLLM) and restart the " +
 					"worker, or use --model-path to manually specify a model")
 			}
 		}
 
 		// Start the health check loop (uses DefaultHealthCheckInterval)
 		go srv.StartHealthCheckLoop(wctx, DefaultHealthCheckInterval)
+
+		// Periodically re-query the backend for its model catalogue. The
+		// initial discovery above is one-shot: a backend (LM Studio, Ollama,
+		// vLLM) that starts after the worker would otherwise stay invisible
+		// until the worker is restarted. This goroutine closes that gap by
+		// re-discovering on every tick and merging into srv.models.
+		go refreshModels(wctx, srv, backendImpl, effectiveModelRefreshInterval(cfg.ModelRefreshInterval))
 	}
 
 	// Start worker server
@@ -297,23 +309,23 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 			// so without refresh the router sees zero models and selection
 			// fails with no_workers even though the worker logs success.
 			baseInfo := info
-go RegisterLoopWithRefresh(wctx, cfg.RouterBase, func() protocol.WorkerInfo {
-			current := baseInfo
-			current.Capabilities = caps
-			models := srv.GetModels()
-			if cfg.DevMode {
-				for i := range models {
-					// Dev backends (LM Studio etc.) serve whatever they list;
-					// treat catalogue entries as routable.
-					if models[i].Name != "" {
-						models[i].Loaded = true
+			go RegisterLoopWithRefresh(wctx, cfg.RouterBase, func() protocol.WorkerInfo {
+				current := baseInfo
+				current.Capabilities = caps
+				models := srv.GetModels()
+				if cfg.DevMode {
+					for i := range models {
+						// Dev backends (LM Studio etc.) serve whatever they list;
+						// treat catalogue entries as routable.
+						if models[i].Name != "" {
+							models[i].Loaded = true
+						}
 					}
 				}
-			}
-			current.Capabilities.Models = models
-			srv.ApplyModelFilters(&current.Capabilities)
-			return current
-		}, DefaultRegisterInterval, log)
+				current.Capabilities.Models = models
+				srv.ApplyModelFilters(&current.Capabilities)
+				return current
+			}, DefaultRegisterInterval, log)
 			return h, nil
 		}
 		// Prod mode with --router: warn and fall through to mDNS
@@ -613,6 +625,67 @@ func ValidateCombinedFlags(prodMode, workerMode bool, routerPort, workerPort int
 		return fmt.Errorf("worker port %d collides with the %s backend's hardcoded port %d; choose a different --port", workerPort, backend, bp)
 	}
 	return nil
+}
+
+// DefaultModelRefreshInterval is the default cadence for re-querying the
+// backend's model catalogue. It is intentionally short (10s) so a backend
+// that starts after the worker surfaces quickly; users are expected to raise
+// it to 5min once the pool is stable.
+const DefaultModelRefreshInterval = 10 * time.Second
+
+// effectiveModelRefreshInterval resolves the configured refresh interval,
+// falling back to DefaultModelRefreshInterval when zero or negative.
+func effectiveModelRefreshInterval(d time.Duration) time.Duration {
+	if d <= 0 {
+		return DefaultModelRefreshInterval
+	}
+	return d
+}
+
+// refreshModels periodically re-queries the backend's ListModels() and merges
+// the discovered catalogue into srv.models. It is bounded by ctx: when the
+// worker shuts down the goroutine exits. It closes the gap where a backend
+// (LM Studio, Ollama, vLLM) starts after the worker and would otherwise stay
+// invisible until restart.
+//
+// The write to s.models is intentionally unsynchronized, matching the existing
+// pattern used by SetModels/GetModels; contention is low because the only
+// other writers are startup (SetModels) and the registration refresh closure
+// (GetModels reads a snapshot).
+func refreshModels(ctx context.Context, srv *Server, backend Backend, interval time.Duration) {
+	if backend == nil {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			models, err := backend.ListModels()
+			if err != nil {
+				srv.log.Warn("model refresh: backend ListModels failed", "error", err)
+				continue
+			}
+			if len(models) == 0 {
+				// The backend is up but advertises nothing right now
+				// (e.g. LM Studio with no project loaded). Leave the
+				// existing catalogue untouched: models declared via
+				// --model-path must survive, and a transient empty
+				// result must not wipe models the backend previously
+				// reported. The next tick retries.
+				srv.log.Debug("model refresh: backend advertised no models this tick")
+				continue
+			}
+			// Merge on top of any models declared via --model-path so a
+			// manually declared model survives a refresh that discovers
+			// nothing new.
+			srv.SetModels(mergeModels(srv.GetModels(), models))
+			srv.log.Debug("model refresh: discovered models", "count", len(models))
+		}
+	}
 }
 
 // backendPort returns the default port of the named backend's HTTP server.

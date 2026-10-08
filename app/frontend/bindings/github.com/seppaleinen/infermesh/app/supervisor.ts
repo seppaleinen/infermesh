@@ -17,7 +17,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Create } from "@wailsio/runtime";
+import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -72,9 +72,7 @@ export function StartWorker(): $CancellablePromise<void> {
  * list). It never errors: an unreachable router simply reads as unhealthy.
  */
 export function Status(): $CancellablePromise<$models.SupervisorStatus> {
-    return $Call.ByID(3064718224).then(($result: any) => {
-        return $$createType0($result);
-    });
+    return $Call.ByID(3064718224);
 }
 
 /**
@@ -99,6 +97,3 @@ export function StopRouter(): $CancellablePromise<void> {
 export function StopWorker(): $CancellablePromise<void> {
     return $Call.ByID(2057410952);
 }
-
-// Private type creation functions
-const $$createType0 = $models.SupervisorStatus.createFrom;
