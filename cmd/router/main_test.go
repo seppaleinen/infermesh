@@ -7,6 +7,39 @@ import (
 // TestParseRouterFlags verifies the router flag set parses correctly, including
 // the --max-in-flight/--max-connections caps (issue #54) and the --scorer-*
 // weighted-scorer flags (issue #62).
+func TestBuildModelAliasConfig_FlagEmpty(t *testing.T) {
+	f := RouterFlags{ModelAlias: ""}
+	cfg := f.buildModelAliasConfig()
+	if cfg != nil {
+		t.Errorf("expected nil for empty flag, got %v", cfg)
+	}
+}
+
+func TestBuildModelAliasConfig_FlagSet(t *testing.T) {
+	f := RouterFlags{ModelAlias: "gemma-4-12b=google/gemma-4-12b"}
+	cfg := f.buildModelAliasConfig()
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
+	}
+	if len(cfg.Aliases) != 1 {
+		t.Fatalf("expected 1 alias, got %d", len(cfg.Aliases))
+	}
+	if cfg.Aliases["gemma-4-12b"].Canonical != "google/gemma-4-12b" {
+		t.Errorf("unexpected canonical: %s", cfg.Aliases["gemma-4-12b"].Canonical)
+	}
+}
+
+func TestBuildModelAliasConfig_IntegratedWithRunRouter(t *testing.T) {
+	f, err := parseRouterFlags([]string{"--model-alias", "gemma-4-12b=google/gemma-4-12b"})
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	cfg := f.buildModelAliasConfig()
+	if cfg == nil || cfg.Aliases["gemma-4-12b"].Canonical != "google/gemma-4-12b" {
+		t.Errorf("model alias not built correctly from flags")
+	}
+}
+
 func TestParseRouterFlags(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -103,13 +136,13 @@ func TestParseRouterFlags(t *testing.T) {
 				"--auto-reasoning-keywords", "think,reason,step by step",
 			},
 			want: RouterFlags{
-				DevMode:             true,
-				Addr:                ":8080",
-				AutoTierSimple:      "small-model",
-				AutoTierMedium:      "medium-model",
-				AutoTierComplex:     "large-model",
-				AutoSimpleMaxTokens: 100,
-				AutoMediumMaxTokens: 500,
+				DevMode:               true,
+				Addr:                  ":8080",
+				AutoTierSimple:        "small-model",
+				AutoTierMedium:        "medium-model",
+				AutoTierComplex:       "large-model",
+				AutoSimpleMaxTokens:   100,
+				AutoMediumMaxTokens:   500,
 				AutoReasoningKeywords: "think,reason,step by step",
 			},
 		},

@@ -35,6 +35,7 @@ export function emptySettings(): Settings {
     auto_start_on_login: null,
     secrets: {},
     secret_refs: {},
+    model_aliases: {},
   }
 }
 

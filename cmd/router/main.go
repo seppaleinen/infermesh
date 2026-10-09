@@ -56,6 +56,12 @@ type RouterFlags struct {
 	AutoSimpleMaxTokens   int
 	AutoMediumMaxTokens   int
 	AutoReasoningKeywords string
+
+	// Model aliases: comma-separated "alias=canonical" pairs. Empty
+	// disables alias resolution (backward compatible). Canonical names are
+	// kept verbatim, so a canonical may contain "=" — only the first "=" in
+	// each pair is treated as the separator.
+	ModelAlias string
 }
 
 // parseRouterFlags parses args into RouterFlags. It uses ContinueOnError so
@@ -95,6 +101,13 @@ func (f *RouterFlags) buildAutoRoutingConfig() *router.AutoRoutingConfig {
 		}
 	}
 	return &cfg
+}
+
+// buildModelAliasConfig constructs a ModelAliasConfig from the parsed
+// --model-alias flag. Returns nil when no alias is configured, so alias
+// resolution stays disabled by default (backward compatible).
+func (f *RouterFlags) buildModelAliasConfig() *router.ModelAliasConfig {
+	return router.ParseModelAliases(f.ModelAlias)
 }
 
 // splitCSV splits a comma-separated string into trimmed, non-empty tokens.
@@ -144,6 +157,12 @@ func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
 	fs.IntVar(&f.AutoSimpleMaxTokens, "auto-simple-max-tokens", 0, "estimated-token threshold below which prompts are classified simple (0 = default 200)")
 	fs.IntVar(&f.AutoMediumMaxTokens, "auto-medium-max-tokens", 0, "estimated-token threshold below which prompts are classified medium (0 = default 600)")
 	fs.StringVar(&f.AutoReasoningKeywords, "auto-reasoning-keywords", "", "comma-separated substrings whose presence in a prompt bumps it one complexity tier (reasoning signal)")
+
+	// Model aliases: comma-separated "alias=canonical" pairs. An empty value
+	// disables alias resolution (backward compatible). Use this to expose
+	// short, stable names that map to the canonical model the pool actually
+	// serves — e.g. "gpt-4o=qwen2.5-coder-7b-instruct-mlx@4bit".
+	fs.StringVar(&f.ModelAlias, "model-alias", "", "comma-separated alias=canonical model pairs (empty = aliasing disabled)")
 }
 
 func main() {
@@ -268,6 +287,11 @@ func runRouter(args []string) int {
 	// Configure the model="auto" alias (disabled by default).
 	if autoCfg := f.buildAutoRoutingConfig(); autoCfg != nil {
 		srv.SetAutoRouting(autoCfg)
+	}
+
+	// Configure user-facing model aliases (disabled by default).
+	if aliasCfg := f.buildModelAliasConfig(); aliasCfg != nil {
+		srv.SetModelAliases(aliasCfg)
 	}
 
 	if f.RelayURL != "" {

@@ -38,13 +38,13 @@ const defaultRouterAddr = "127.0.0.1:8080"
 // refs mirror knownSecretRefs in config_service.go so the YAML only ever holds
 // references; values come from the keyring at process-launch time.
 const (
-	secretRefRouterAPIKey    = "router/apikey"
+	secretRefRouterAPIKey     = "router/apikey"
 	secretRefWorkerCustomAuth = "worker/customauth"
-	secretRefMTLSCert        = "mtls/cert"
-	secretRefMTLSKey         = "mtls/key"
-	envWorkerCustomAuth      = "INFERMESH_WORKER_CUSTOM_AUTH"
-	roleRouter               = "router"
-	roleWorker               = "worker"
+	secretRefMTLSCert         = "mtls/cert"
+	secretRefMTLSKey          = "mtls/key"
+	envWorkerCustomAuth       = "INFERMESH_WORKER_CUSTOM_AUTH"
+	roleRouter                = "router"
+	roleWorker                = "worker"
 )
 
 // ProcessState is the lifecycle state of a supervised child process.
@@ -105,13 +105,13 @@ var (
 // --api-key, mtls/cert + mtls/key for --mtls-cert/--mtls-key) and never logs
 // them. Dev mode (the default) requires no secrets.
 type Supervisor struct {
-	kr            Keyring
-	settingsPath  string
-	binaryDir     string
-	logsDir       string
-	cmdBuilder    cmdBuilder // seam for tests; defaults to realCmdBuilder
-	routerProbe   func(ctx context.Context, st Settings) ([]WorkerView, error)
-	workerProbe   func(ctx context.Context, st Settings) (bool, error)
+	kr           Keyring
+	settingsPath string
+	binaryDir    string
+	logsDir      string
+	cmdBuilder   cmdBuilder // seam for tests; defaults to realCmdBuilder
+	routerProbe  func(ctx context.Context, st Settings) ([]WorkerView, error)
+	workerProbe  func(ctx context.Context, st Settings) (bool, error)
 
 	mu             sync.Mutex
 	router         *managedProcess
@@ -141,11 +141,11 @@ func NewSupervisorService(kr Keyring, settingsPath, binaryDir, logsDir string) *
 		logsDir = appLogsDir()
 	}
 	s := &Supervisor{
-		kr:            kr,
-		settingsPath:  settingsPath,
-		binaryDir:     binaryDir,
-		logsDir:       logsDir,
-		cmdBuilder:    realCmdBuilder,
+		kr:           kr,
+		settingsPath: settingsPath,
+		binaryDir:    binaryDir,
+		logsDir:      logsDir,
+		cmdBuilder:   realCmdBuilder,
 	}
 	s.routerProbe = s.defaultRouterProbe()
 	s.workerProbe = s.defaultWorkerProbe()
@@ -273,6 +273,21 @@ func (s *Supervisor) buildRouterArgs(settings Settings) ([]string, error) {
 	}
 	if settings.RelayURL != "" {
 		args = append(args, "--relay-url", settings.RelayURL)
+	}
+	// Model aliases: convert the map to the CLI's comma-separated
+	// "alias=canonical[@quant]" format. Empty map → flag omitted
+	// (feature disabled, matching the nil-default contract).
+	if len(settings.ModelAliases) > 0 {
+		parts := make([]string, 0, len(settings.ModelAliases))
+		for alias, canonical := range settings.ModelAliases {
+			if alias == "" || canonical == "" {
+				continue
+			}
+			parts = append(parts, alias+"="+canonical)
+		}
+		if len(parts) > 0 {
+			args = append(args, "--model-alias", strings.Join(parts, ","))
+		}
 	}
 	if !isDevMode(settings) {
 		apiKey, err := s.resolveSecret(secretRefRouterAPIKey)

@@ -43,6 +43,23 @@ const showWorkerCustomAuth = ref(false)
 const showWorkerMTLSCert = ref(false)
 const showWorkerMTLSKey = ref(false)
 
+// Model alias textarea — two‑way bound to settings.model_aliases
+// via a computed that formats/parses the comma/newline‑separated form.
+// This keeps settings.model_aliases up‑to‑date on every input,
+// so dirty tracking works correctly.
+const aliasMapText = computed(() => {
+  if (!settings.value) return ''
+  const raw = settings.value.model_aliases
+  if (raw == null) return ''
+  const clean: Record<string, string> = {}
+  for (const [key, value] of Object.entries(raw)) {
+    if (value !== undefined) {
+      clean[key] = value
+    }
+  }
+  return formatModelAliases(clean)
+})
+
 // mTLS fields are only relevant when dev mode is explicitly off (see
 // settingsGroups.ts). dev_mode === null counts as dev-mode ON → hidden.
 const showMTLS = computed(() => isMTLSVisible(settings.value?.dev_mode ?? null))
@@ -52,6 +69,7 @@ const openSections = ref({
   connection: true,
   worker: true,
   security: true,
+  modelAliases: false,
   app: true,
 })
 
@@ -78,6 +96,9 @@ async function loadSettings(): Promise<void> {
         // keep persisted value
       }
       takeSnapshot(s)
+       // Populate the model-alias textarea from the persisted map
+       // (order-independent; sort keys for display stability).
+       // No op: bound via computed aliasMapText
       // Fetch service name for the keyring banner
       try {
         keyringServiceName.value = await ConfigService.GetKeyringServiceName()
@@ -143,6 +164,7 @@ const dirty = computed(() => {
     'dev_mode',
     'worker_enable_health_checks',
     'auto_start_on_login',
+    'model_aliases',
   ]
 
   for (const k of keys) {
@@ -157,6 +179,49 @@ const dirty = computed(() => {
 
   return false
 })
+
+// parseModelAliasesText mirrors pkg/router/classifier.go ParseModelAliases
+// edge-case behavior exactly:
+//   - Split on newlines (one alias per line), trim each line, skip blanks.
+//   - Split each line on the FIRST "=" only, so a canonical containing "="
+//     (e.g. "foo=bar=baz") is preserved verbatim.
+//   - Trim key and canonical; skip the line if either is empty.
+//   - Duplicate keys: last write wins (plain object assignment).
+//
+// The canonical string is kept verbatim — it may contain "@quant" or "/"
+// or "." which are not valid in an alias key, so splitting on first "=" is
+// load-bearing. Returns an empty map when nothing survives parsing.
+// formatModelAliases is the inverse of parseModelAliasesText: joins the map
+// entries as "alias=canonical" lines, one per line, with keys sorted for
+// display stability. The canonical string is emitted verbatim (including any
+// "@quant" suffix), so the round-trip through parseModelAliasesText is exact.
+function formatModelAliases(map: Record<string, string> | undefined): string {
+  if (!map || Object.keys(map).length === 0) return ''
+  const keys = Object.keys(map).sort()
+  return keys.map((k) => `${k}=${map[k]}`).join('\n')
+}
+
+function parseModelAliasesText(text: string): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const raw of text.split('\n')) {
+    const line = raw.trim()
+    if (line === '') {
+      continue
+    }
+    const idx = line.indexOf('=')
+    if (idx < 0) {
+      // No "=": skip — an alias without a canonical is not usable.
+      continue
+    }
+    const key = line.slice(0, idx).trim()
+    const canonical = line.slice(idx + 1).trim()
+    if (key === '' || canonical === '') {
+      continue
+    }
+    result[key] = canonical
+  }
+  return result
+}
 
 async function handleSave(): Promise<void> {
   if (!settings.value) return
@@ -180,6 +245,10 @@ async function handleSave(): Promise<void> {
   if (workerCustomAuth.value) secrets['worker/customauth'] = workerCustomAuth.value
   if (workerMTLSCert.value) secrets['mtls/cert'] = workerMTLSCert.value
   if (workerMTLSKey.value) secrets['mtls/key'] = workerMTLSKey.value
+
+   // Parse the textarea into the map before persisting. Empty textarea →
+   // empty map (feature off), matching the nil-default contract.
+   // No op: bound via computed aliasMapText
 
   const s: Settings = { ...settings.value, secrets }
 
@@ -639,6 +708,38 @@ onMounted(() => {
                 </template>
               </button>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="form-section">
+        <h2>
+          <button
+            type="button"
+            class="section-toggle"
+            :aria-expanded="openSections.modelAliases"
+            @click="openSections.modelAliases = !openSections.modelAliases"
+          >
+            <span class="chevron" aria-hidden="true">{{ openSections.modelAliases ? '▾' : '▸' }}</span>
+            Model aliases
+          </button>
+        </h2>
+        <div class="section-body" v-show="openSections.modelAliases">
+          <div class="field">
+            <label for="model_aliases">Alias map</label>
+             <textarea
+               id="model_aliases"
+               v-model="aliasMapText"
+               rows="6"
+               placeholder="gemma-4-12b=google/gemma-4-12b
+qwen-coder-7b=qwen2.5-coder-7b-instruct-mlx@4bit"
+               :disabled="saving"
+             ></textarea>
+            <span class="field-help"
+              >Requests for the alias name are routed to the canonical model.
+              Quantization is pinned by including <code>@quant</code> in the
+              canonical string.</span
+            >
           </div>
         </div>
       </section>

@@ -29,6 +29,7 @@ type Settings struct {
 	WorkerMTLSCert           string            `json:"worker_mtls_cert" yaml:"worker_mtls_cert"`
 	WorkerMTLSKey            string            `json:"worker_mtls_key" yaml:"worker_mtls_key"`
 	RelayURL                 string            `json:"relay_url" yaml:"relay_url"`
+	ModelAliases             map[string]string `json:"model_aliases" yaml:"model_aliases"`
 	DevMode                  *bool             `json:"dev_mode" yaml:"dev_mode"`
 	AutoStartOnLogin         *bool             `json:"auto_start_on_login" yaml:"auto_start_on_login"`
 	Secrets                  map[string]string `json:"secrets" yaml:"-"`
@@ -102,6 +103,9 @@ func LoadFrom(path string) (Settings, error) {
 	}
 	if s.SecretRefs == nil {
 		s.SecretRefs = make(map[string]string)
+	}
+	if s.ModelAliases == nil {
+		s.ModelAliases = make(map[string]string)
 	}
 	return s, nil
 }
@@ -242,6 +246,9 @@ func mergeDefaults(s Settings) Settings {
 	}
 	if s.SecretRefs == nil {
 		s.SecretRefs = make(map[string]string)
+	}
+	if s.ModelAliases == nil {
+		s.ModelAliases = make(map[string]string)
 	}
 	return s
 }

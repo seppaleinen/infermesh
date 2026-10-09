@@ -171,6 +171,13 @@ type Server struct {
 	// rewritten to a tiered concrete model before worker selection.
 	autoRouting *AutoRoutingConfig
 
+	// modelAliases maps user-facing model aliases to canonical model names.
+	// When nil or empty, alias resolution is disabled and requests are
+	// routed with the literal model name the client sent (backward
+	// compatible). When active, any request model that is an alias key is
+	// rewritten to its Canonical before worker selection.
+	modelAliases *ModelAliasConfig
+
 	// connections is the count of currently active HTTP connections to the
 	// router. It is the number of open TCP connections, NOT a distinct-client
 	// count: a single client using HTTP keep-alive holds one connection while
@@ -383,6 +390,44 @@ func (s *Server) resolveAutoModelCompletion(req *CompletionRequest) (string, err
 	}
 	s.log.Debug("auto-routed completion request", "tier", tier, "model", model, "tokens", estimateTokens(req.Prompt))
 	return model, nil
+}
+
+// SetModelAliases configures user-facing model aliases. When cfg is nil or
+// has no aliases with a non-empty Canonical, alias resolution is disabled
+// and requests are routed with the literal model name the client sent
+// (backward compatible).
+//
+// The alias intercepts requests before worker selection: any request model
+// that is an alias key is rewritten to its Canonical so the rest of the
+// pipeline sees the concrete model name and requires no changes.
+func (s *Server) SetModelAliases(cfg *ModelAliasConfig) {
+	s.modelAliases = cfg
+}
+
+// modelAliasesActive reports whether alias resolution is enabled and at
+// least one alias has a non-empty Canonical.
+func (s *Server) modelAliasesActive() bool {
+	return modelAliasesActive(s.modelAliases)
+}
+
+// resolveAliasModel rewrites a request's model field when it matches a
+// configured alias key. It returns the Canonical name when active and the
+// model is a key with a non-empty Canonical; otherwise it returns the model
+// unchanged. It never errors — an unresolvable alias is simply passed
+// through so the scheduler surfaces its usual no_workers error.
+//
+// This is called after the model="auto" resolution and before marshal &
+// dispatch so the rest of the pipeline sees the canonical model name.
+func (s *Server) resolveAliasModel(model string) string {
+	if !s.modelAliasesActive() {
+		return model
+	}
+	target, ok := s.modelAliases.Aliases[model]
+	if !ok || target.Canonical == "" {
+		return model
+	}
+	s.log.Debug("resolved model alias", "alias", model, "canonical", target.Canonical)
+	return target.Canonical
 }
 
 // schedulerWeights holds the configurable weighted-scorer settings exposed via
@@ -625,6 +670,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		req.Model = model
 	}
 
+	// Resolve any user-facing model alias to its canonical name after the
+	// "auto" alias so aliases can target tiered models too.
+	req.Model = s.resolveAliasModel(req.Model)
+
 	// Marshal the request body once for dispatch.
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -700,6 +749,10 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	} else {
 		req.Model = model
 	}
+
+	// Resolve any user-facing model alias to its canonical name after the
+	// "auto" alias so aliases can target tiered models too.
+	req.Model = s.resolveAliasModel(req.Model)
 
 	// Marshal the request body once for dispatch.
 	body, err := json.Marshal(req)
@@ -838,6 +891,25 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 			MaxTokens: 0,
 			Loaded:    true,
 		})
+	}
+
+	// Advertise configured user-facing aliases so clients can request them
+	// by their short name and have the router rewrite them to the canonical
+	// model before worker selection. Only aliases with a non-empty Canonical
+	// are advertised — a dangling alias key would advertise a model that
+	// resolves to nothing.
+	if s.modelAliasesActive() {
+		for alias, target := range s.modelAliases.Aliases {
+			if target.Canonical == "" {
+				continue
+			}
+			models = append(models, protocol.ModelInfo{
+				Name:      alias,
+				Backend:   "alias",
+				MaxTokens: 0,
+				Loaded:    true,
+			})
+		}
 	}
 
 	response := ModelsResponse{Object: "list", Data: models}

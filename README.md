@@ -118,6 +118,38 @@ Worker A  Worker B  Worker C
 | API | OpenAI-compatible |
 | Platforms | Linux (Ubuntu/Debian), macOS (Apple Silicon M1/M2/M4) |
 
+## Router CLI flags
+
+The router binary accepts the following flags:
+
+| Flag | Description |
+|------|-------------|
+| `--dev-mode` | Run in development mode (no auth, loopback only)
+| `--prod-mode` | Run in production mode (mTLS required)
+| `--mtls-cert <path>` | Path to mTLS certificate file
+| `--mtls-key <path>` | Path to mTLS key file
+| `--cert-dir <path>` | Path to certificate directory (for CA)
+| `--api-key <key>` | API key for authenticating inference requests (dev and prod mode)
+| `--trusted-cn <list>` | Comma-separated list of trusted client certificate CNs for mTLS (empty = any)
+| `--addr <address>` | Listen address (host:port) for the router HTTP server (default `:8080`)
+| `--relay-url <url>` | Relay URL for outbound-only WebSocket connectivity (dev mode only)
+| `--max-in-flight <N>` | Max concurrent in-flight calls per worker (0 = default of 4); rejects excess with HTTP 429
+| `--max-connections <N>` | Max concurrent worker WebSocket connections (0 = default of 256); rejects excess with a protocol error frame
+| `--max-attempts <N>` | Max dispatch attempts per non-streaming request (1 disables failover)
+| `--retry-budget <duration>` | Global deadline across all failover attempts for a non-streaming request (default `60s`)
+| `--scorer-quant-match <weight>` | Weight for quantization match in weighted scoring (0 = keep default of 0.40)
+| `--scorer-vram-free <weight>` | Weight for free VRAM ratio in weighted scoring (0 = keep default of 0.25)
+| `--scorer-gpu-util <weight>` | Weight for GPU utilization in weighted scoring (0 = keep default of 0.15)
+| `--scorer-queue-depth <weight>` | Weight for queue depth in weighted scoring (0 = keep default of 0.10)
+| `--scorer-latency <weight>` | Weight for latency in weighted scoring (0 = keep default of 0.10)
+| `--scorer-max-queue-depth <N>` | Queue depth treated as fully loaded when normalizing queue depth score (0 = default of 10)
+| `--auto-tier-simple <model>` | Model name to route simple prompts to when `model="auto"` (empty = alias disabled)
+| `--auto-tier-medium <model>` | Model name to route medium-complexity prompts to when `model="auto"`
+| `--auto-tier-complex <model>` | Model name to route complex prompts to when `model="auto"`
+| `--auto-simple-max-tokens <N>` | Estimated-token threshold below which prompts are classified simple (0 = default 200)
+| `--auto-medium-max-tokens <N>` | Estimated-token threshold below which prompts are classified medium (0 = default 600)
+| `--auto-reasoning-keywords <list>` | Comma-separated substrings whose presence in a prompt bumps it one complexity tier (reasoning signal)
+| `--model-alias <list>` | Comma-separated model aliases as `alias=canonical[@quant]` (e.g. `"gemma-4-12b=google/gemma-4-12b,qwen-coder-7b=qwen2.5-coder-7b-instruct-mlx@4bit"`); empty disables
 ## Worker Protocol
 
 Workers expose a small, standardized HTTP interface:

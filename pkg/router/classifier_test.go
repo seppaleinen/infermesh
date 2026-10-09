@@ -236,3 +236,133 @@ func TestEstimateTokens(t *testing.T) {
 		})
 	}
 }
+
+func TestParseModelAliases_EmptyReturnsNil(t *testing.T) {
+	if cfg := ParseModelAliases(""); cfg != nil {
+		t.Errorf("expected nil for empty string")
+	}
+	if cfg := ParseModelAliases("   "); cfg != nil {
+		t.Errorf("expected nil for whitespace string")
+	}
+}
+
+func TestParseModelAliases_SingleEntry(t *testing.T) {
+	cfg := ParseModelAliases("gemma-4-12b=google/gemma-4-12b")
+	if cfg == nil || len(cfg.Aliases) != 1 {
+		t.Fatalf("expected 1 entry, got %v", cfg)
+	}
+	if cfg.Aliases["gemma-4-12b"].Canonical != "google/gemma-4-12b" {
+		t.Errorf("unexpected canonical: %s", cfg.Aliases["gemma-4-12b"].Canonical)
+	}
+}
+
+func TestParseModelAliases_MultipleEntries(t *testing.T) {
+	cfg := ParseModelAliases("a=b,c=d")
+	if cfg == nil || len(cfg.Aliases) != 2 {
+		t.Fatalf("expected 2 entries, got %v", cfg)
+	}
+	if cfg.Aliases["a"].Canonical != "b" || cfg.Aliases["c"].Canonical != "d" {
+		t.Errorf("unexpected entries: %v", cfg.Aliases)
+	}
+}
+
+func TestParseModelAliases_EmptyPartSkipped(t *testing.T) {
+	cfg := ParseModelAliases("a=b,,c=d")
+	if cfg == nil || len(cfg.Aliases) != 2 {
+		t.Fatalf("expected 2 entries after skipping empty, got %v", cfg)
+	}
+}
+
+func TestParseModelAliases_WhitespaceTrimmed(t *testing.T) {
+	cfg := ParseModelAliases(" a = b , c = d ")
+	if cfg == nil || len(cfg.Aliases) != 2 {
+		t.Fatalf("expected 2 entries, got %v", cfg)
+	}
+	if cfg.Aliases["a"].Canonical != "b" || cfg.Aliases["c"].Canonical != "d" {
+		t.Errorf("whitespace not trimmed correctly: %v", cfg.Aliases)
+	}
+}
+
+func TestParseModelAliases_ExtraEqualsPreserved(t *testing.T) {
+	cfg := ParseModelAliases("a=b=c")
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
+	}
+	if cfg.Aliases["a"].Canonical != "b=c" {
+		t.Errorf("expected canonical 'b=c', got %s", cfg.Aliases["a"].Canonical)
+	}
+}
+
+func TestParseModelAliases_EmptyKeyDropped(t *testing.T) {
+	cfg := ParseModelAliases("=b")
+	if cfg != nil {
+		t.Errorf("expected nil when key empty, got %v", cfg)
+	}
+}
+
+func TestParseModelAliases_EmptyCanonicalDropped(t *testing.T) {
+	cfg := ParseModelAliases("a=")
+	if cfg != nil {
+		t.Errorf("expected nil when canonical empty, got %v", cfg)
+	}
+}
+
+func TestParseModelAliases_DuplicateKeyLastWins(t *testing.T) {
+	cfg := ParseModelAliases("a=b,a=c")
+	if cfg == nil {
+		t.Fatal("expected non-nil config")
+	}
+	if cfg.Aliases["a"].Canonical != "c" {
+		t.Errorf("expected last wins 'c', got %s", cfg.Aliases["a"].Canonical)
+	}
+}
+
+func TestParseModelAliases_QuantPinPreserved(t *testing.T) {
+	cfg := ParseModelAliases("qwen-coder-7b=qwen2.5-coder-7b-instruct-mlx@4bit")
+	if cfg == nil {
+		t.Fatal("expected non-nil")
+	}
+	if cfg.Aliases["qwen-coder-7b"].Canonical != "qwen2.5-coder-7b-instruct-mlx@4bit" {
+		t.Errorf("canonical not preserved: %s", cfg.Aliases["qwen-coder-7b"].Canonical)
+	}
+}
+
+func TestParseModelAliases_MixedQuantAndPlain(t *testing.T) {
+	cfg := ParseModelAliases("a=b@c,d=e@f")
+	if cfg == nil || len(cfg.Aliases) != 2 {
+		t.Fatalf("expected 2 entries, got %v", cfg)
+	}
+	if cfg.Aliases["a"].Canonical != "b@c" {
+		t.Errorf("expected a->b@c, got %s", cfg.Aliases["a"].Canonical)
+	}
+	if cfg.Aliases["d"].Canonical != "e@f" {
+		t.Errorf("expected d->e@f, got %s", cfg.Aliases["d"].Canonical)
+	}
+}
+
+func TestModelAliasesActive_NilConfig(t *testing.T) {
+	if modelAliasesActive(nil) {
+		t.Errorf("expected false for nil config")
+	}
+}
+
+func TestModelAliasesActive_EmptyMap(t *testing.T) {
+	cfg := &ModelAliasConfig{Aliases: map[string]AliasTarget{}}
+	if modelAliasesActive(cfg) {
+		t.Errorf("expected false for empty map")
+	}
+}
+
+func TestModelAliasesActive_EmptyCanonical(t *testing.T) {
+	cfg := &ModelAliasConfig{Aliases: map[string]AliasTarget{"a": {Canonical: ""}}}
+	if modelAliasesActive(cfg) {
+		t.Errorf("expected false for empty canonical")
+	}
+}
+
+func TestModelAliasesActive_NonEmpty(t *testing.T) {
+	cfg := &ModelAliasConfig{Aliases: map[string]AliasTarget{"a": {Canonical: "b"}}}
+	if !modelAliasesActive(cfg) {
+		t.Errorf("expected true for non-empty canonical")
+	}
+}
