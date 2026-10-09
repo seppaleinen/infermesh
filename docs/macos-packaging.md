@@ -108,3 +108,115 @@ flags=0x10002(adhoc,runtime)   # ad-hoc + hardened runtime
 Signature=adhoc
 TeamIdentifier=not set
 ```
+
+## Troubleshooting: app won't open / launch error -600
+
+Opening the app can fail in two related ways:
+
+1. A shell prints:
+
+   ```
+   _LSOpenURLsWithCompletionHandler() failed with error -600
+   ```
+
+2. Or — more common — double-clicking `InferMesh.app` in Finder just bounces the
+   Dock icon and no window ever appears, with **no** error message.
+
+Error `-600` is `procNotFound`: Launch Services could not find or start a valid
+process for the bundle. **The bundle is usually fine** — a freshly built
+`bin/app/InferMesh.app` verifies cleanly (`codesign --verify --deep --strict`,
+`flags=adhoc,runtime`, arm64, no quarantine). Work through the causes below in
+order.
+
+### 1. Launching from a non-GUI (`Background`) session — most common
+
+macOS suspends GUI apps launched through Launch Services from a process in a
+`Background` launchd domain (an SSH session, CI, an agent harness, or some
+terminal integrations). The process starts but is immediately stopped
+(`SIGSTOP`, `ps` state `T`) and never creates its window — the Dock icon
+bounces, then nothing. This affects **every** GUI app, not just InferMesh.
+
+Diagnose:
+
+```bash
+launchctl managername              # "Background" => this shell cannot present GUI apps
+ps -o pid,stat,command -p <pid>    # T = suspended
+```
+
+Confirm it is the environment and not InferMesh, using a built-in app:
+
+```bash
+open -n -a Calculator && sleep 1 && pgrep -x Calculator | xargs -I{} ps -o stat= -p {}
+```
+
+If Calculator also ends up in state `T`, the launching session is the cause.
+
+> **`open -n <path>` is not a fix.** It exits 0 even when it leaves the app
+> suspended, and that suspended process is exactly what causes problem 2.
+
+### 2. A suspended instance holds the single-instance lock — why a later Finder double-click also fails
+
+The app takes an exclusive `flock` at
+`$TMPDIR/infermesh-desktop-<uid>.lock` for its whole lifetime
+(`app/instance_lock.go`). A suspended instance left behind by an earlier `open`
+keeps holding that lock, so the next launch hits `ErrAlreadyRunning`, logs to
+stderr and exits with status 0 (`app/main.go:71-75`) — bouncing Dock icon, no
+window, no error.
+
+**Fix:** clear the zombie instance(s), then launch from Finder:
+
+```bash
+pkill -f 'InferMesh.app/Contents/MacOS/InferMesh'
+lsof "$TMPDIR/infermesh-desktop-$(id -u).lock"    # should print nothing afterwards
+```
+
+Then open `InferMesh.app` from **Finder**. If a terminal is required, use one in
+the GUI login session (Terminal.app on the desktop) — never SSH / CI / an agent
+background shell.
+
+When the whole GUI session is wedged, **reboot**: it clears the suspended
+instances (releasing the lock) and resets Launch Services state. A reboot is
+what resolved the reported incident.
+
+### 3. Corrupted bundle
+
+A signature that fails verification makes Launch Services refuse the bundle with
+`-600`. A common case is a copy whose bundle root contains a nested
+`InferMesh.app`; `codesign` reports `unsealed contents present in the bundle
+root`.
+
+Diagnose:
+
+```bash
+codesign --verify --deep --strict <path>/InferMesh.app
+spctl --assess --type execute <path>/InferMesh.app
+```
+
+**Fix:** replace the copy with a freshly built, valid `.app`. A nested-bundle
+copy cannot be repaired by re-copying itself — copy the **good** bundle.
+
+### 4. Duplicate or stale Launch Services registrations
+
+Several registrations of the same bundle id `io.infermesh.desktop` (ejected DMG
+volumes, `~/Downloads`, `bin/app`) can make `open -b io.infermesh.desktop`
+resolve to a stale path and return `-600`.
+
+Inspect the registrations:
+
+```bash
+LSREG=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+$LSREG -dump | grep -B6 "identifier: *io.infermesh.desktop"
+```
+
+**Fix:** unregister the stale paths, then re-register the good one:
+
+```bash
+$LSREG -u <stale-path>/InferMesh.app
+$LSREG -f <good-path>/InferMesh.app
+```
+
+As a heavier reset (affects **all** apps):
+
+```bash
+$LSREG -kill -r -domain local -domain system -domain user
+```
