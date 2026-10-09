@@ -682,9 +682,8 @@ func (s *Server) modelsList(w http.ResponseWriter, r *http.Request) {
 	data := make([]protocol.ModelInfo, len(s.models))
 	copy(data, s.models)
 	s.modelsMu.Unlock()
-	if data == nil {
-		data = []protocol.ModelInfo{}
-	}
+	// make([]T, n) is never nil, so no nil-guard is needed here; an empty
+	// s.models yields an empty (non-nil) slice, which JSON encodes as [].
 	response := ModelsResponse{Object: "list", Data: data}
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		s.log.Error("failed to encode models", "error", err)
