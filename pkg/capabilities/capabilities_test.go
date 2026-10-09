@@ -16,6 +16,21 @@ func testConfig() Config {
 	}
 }
 
+// waitForUpdate polls the predicate until it returns true or the timeout
+// elapses. Detect() performs full GPU/engine/system discovery and can take
+// well over 100 ms, so a fixed sleep is unreliable on slow CI machines.
+func waitForUpdate(t *testing.T, timeout time.Duration, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("predicate not satisfied within %v", timeout)
+}
+
 func TestDetectGPU_NoSysfs(t *testing.T) {
 	gpu, err := DetectGPU()
 	if err != nil {
@@ -200,14 +215,15 @@ func TestAggregator_StartRefresh(t *testing.T) {
 	cfg.RefreshInterval = 10 * time.Millisecond
 	agg := NewAggregator(cfg, nil)
 
+	// Detect() performs full GPU/engine/system discovery and can take well
+	// over 100 ms, so polling for the timestamp rather than sleeping a
+	// fixed 20 ms keeps this test deterministic on slow CI machines.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	go agg.StartRefresh(ctx)
 
-	time.Sleep(20 * time.Millisecond)
-
-	cancel()
+	waitForUpdate(t, 5*time.Second, func() bool { return !agg.GetLastUpdate().IsZero() })
 
 	lastUpdate := agg.GetLastUpdate()
 	if lastUpdate.IsZero() {
