@@ -325,7 +325,7 @@ async function handleSave(): Promise<void> {
       }
     }
 
-    // Clear local secret refs after success
+     // Clear local secret refs after success
     routerApikey.value = ''
     workerCustomAuth.value = ''
     workerMTLSCert.value = ''
@@ -336,6 +336,8 @@ async function handleSave(): Promise<void> {
     const snap = { ...s, secrets: {} }
     takeSnapshot(snap)
     emit('saved')
+    // Reload settings from disk to reflect any server-side transformations
+    await loadSettings()
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
     saveError.value = msg
