@@ -140,7 +140,7 @@ test-e2e:
 	@if [ -d ./tests/e2e ]; then go test ./tests/e2e/...; else echo "No ./tests/e2e directory; skipping"; fi
 
 # Run all tests: unit + integration + e2e
-test: test-unit test-integration test-e2e
+test: vet-app test-unit test-integration test-e2e
 
 # Platform-aware tests: run on current platform
 test-platform: test test-integration test-e2e
@@ -153,6 +153,10 @@ test-all-platforms: test-platform
 # Linting (golangci-lint)
 lint:
 	golangci-lint run
+
+vet-app:
+	@echo "⟶ Running TypeScript type check on the Wails app…"
+	cd app/frontend && ./node_modules/.bin/tsc --noEmit
 
 # Install git hooks (pre-push runs `make lint` before every push)
 install-hooks:
