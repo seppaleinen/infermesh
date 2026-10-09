@@ -25,9 +25,19 @@ jobs:
       uses: golangci/golangci-lint-action@v9
       with:
         version: v2.13.2
+        install-mode: goinstall
         # v1.57.2 cannot run on Go ≥1.25 (export-data "unsupported version" /
         # bogus typecheck errors even on trivial modules); v2.13.2 is also
         # what `make lint` runs locally (see README Contributing).
+        #
+        # install-mode: goinstall is REQUIRED because the pinned prebuilt
+        # golangci-lint 2.13.2 binary is built with go1.27.0 and supports
+        # export-data only up to version 4; setup-go resolves '1.27' to Go
+        # 1.27.2 which emits export-data version 5. Bumping the action
+        # version to v2.14.0 does NOT fix this — v2.14.0 is also built with
+        # go1.27.0. goinstall compiles golangci-lint from source against the
+        # runner's Go 1.27.2, so the tool matches the compiler. Do NOT revert
+        # to the default `binary` install-mode.
 
     - name: Check formatting
       run: |
