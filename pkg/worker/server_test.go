@@ -29,6 +29,7 @@ func testLogger() *slog.Logger {
 
 // mockBackend is a test implementation of the Backend interface.
 type mockBackend struct {
+	mu          sync.Mutex
 	models      []protocol.ModelInfo
 	healthCheck error
 }
@@ -38,19 +39,29 @@ func newMockBackend() *mockBackend {
 }
 
 func (m *mockBackend) SetHealthCheckError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.healthCheck = err
 }
 
 // SetMockModels replaces the catalogue the mock advertises on the next
 // ListModels() call. Used to simulate a backend that starts after the worker.
 func (m *mockBackend) SetMockModels(models []protocol.ModelInfo) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.models = models
 }
 
 func (m *mockBackend) Name() string                              { return "mock" }
 func (m *mockBackend) LoadModel(path string) (bool, error)       { return true, nil }
 func (m *mockBackend) UnloadModel() error                        { return nil }
-func (m *mockBackend) ListModels() ([]protocol.ModelInfo, error) { return m.models, nil }
+func (m *mockBackend) ListModels() ([]protocol.ModelInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]protocol.ModelInfo, len(m.models))
+	copy(out, m.models)
+	return out, nil
+}
 func (m *mockBackend) GetMetrics() (Metrics, error)              { return Metrics{}, nil }
 func (m *mockBackend) CompleteChat(ctx context.Context, model string, req ChatRequest) (ChatResponse, error) {
 	return ChatResponse{
@@ -85,7 +96,11 @@ func (m *mockBackend) CompleteCompletions(ctx context.Context, model string, req
 func (m *mockBackend) IsHealthy() bool { return true }
 
 // HealthCheck implements the Backend interface.
-func (m *mockBackend) HealthCheck() error { return m.healthCheck }
+func (m *mockBackend) HealthCheck() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.healthCheck
+}
 
 // GetCircuitState implements the Backend interface.
 func (m *mockBackend) GetCircuitState() CircuitState { return CircuitClosed }
@@ -549,6 +564,11 @@ func TestServer_BindsTcp4(t *testing.T) {
 
 	errChan := make(chan error, 1)
 	go func() { errChan <- server.Start(ctx) }()
+
+	// Wait for the server to begin accepting connections before probing.
+	if !waitForHTTP(t, "http://"+addr+"/health", 5*time.Second) {
+		t.Fatalf("worker did not start on %s", addr)
+	}
 
 	// The server must answer on the exact tcp4 address it was given.
 	resp, err := http.Get("http://" + addr + "/health")
@@ -1276,4 +1296,21 @@ func TestEffectiveModelRefreshInterval(t *testing.T) {
 	if got := effectiveModelRefreshInterval(custom); got != custom {
 		t.Errorf("custom interval: expected %v, got %v", custom, got)
 	}
+}
+
+// waitForHTTP polls an HTTP URL until it responds or the timeout elapses.
+// It is used by tests that start the server in a background goroutine, where
+// an immediate GET can race with the server's startup.
+func waitForHTTP(t *testing.T, url string, timeout time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url)
+		if err == nil {
+			_ = resp.Body.Close()
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
 }

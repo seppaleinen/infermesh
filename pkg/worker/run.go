@@ -648,10 +648,9 @@ func effectiveModelRefreshInterval(d time.Duration) time.Duration {
 // (LM Studio, Ollama, vLLM) starts after the worker and would otherwise stay
 // invisible until restart.
 //
-// The write to s.models is intentionally unsynchronized, matching the existing
-// pattern used by SetModels/GetModels; contention is low because the only
-// other writers are startup (SetModels) and the registration refresh closure
-// (GetModels reads a snapshot).
+// The write to s.models is now synchronized via SetModels and GetModels,
+// which use modelsMu to protect concurrent access from the refresh goroutine
+// and HTTP handlers.
 func refreshModels(ctx context.Context, srv *Server, backend Backend, interval time.Duration) {
 	if backend == nil {
 		return
