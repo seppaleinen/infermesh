@@ -23,23 +23,23 @@ type ScoringAlgorithm interface {
 
 // ModelRequest represents a request for a model from the router.
 type ModelRequest struct {
-	Model         string // e.g., "llama3-8b"
-	Quantization  string // e.g., "Q4", "Q8", "" (any)
-	MaxVRAMMB     int    // Optional VRAM constraint in MB
-	MinVRAMMB     int    // Optional VRAM constraint in MB
+	Model        string // e.g., "llama3-8b"
+	Quantization string // e.g., "Q4", "Q8", "" (any)
+	MaxVRAMMB    int    // Optional VRAM constraint in MB
+	MinVRAMMB    int    // Optional VRAM constraint in MB
 }
 
 // WorkerInfo represents a worker with the fields needed for scoring.
 // This is a subset of protocol.WorkerInfo to avoid coupling.
 type WorkerInfo struct {
-	ID           string
-	Addr         string
-	Models       []protocol.ModelInfo
-	VRAMTotalMB  int
-	VRAMFreeMB   int
-	GPUUtilPct   float64 // 0-100
-	QueueDepth   int
-	AvgLatencyMS float64 // Moving average
+	ID            string
+	Addr          string
+	Models        []protocol.ModelInfo
+	VRAMTotalMB   int
+	VRAMFreeMB    int
+	GPUUtilPct    float64 // 0-100
+	QueueDepth    int
+	AvgLatencyMS  float64 // Moving average
 	LastHeartbeat time.Time
 
 	// AllowedModels is a whitelist of models this worker is WILLING to serve.
@@ -54,16 +54,16 @@ type WorkerInfo struct {
 // SelectedWorker represents the chosen worker along with its score.
 type SelectedWorker struct {
 	WorkerInfo
-	Score       float64
-	Reason      string // e.g., "best score: 0.87"
+	Score  float64
+	Reason string // e.g., "best score: 0.87"
 }
 
 // Errors
 var (
-	ErrNoMatchingWorkers   = errors.New("no worker has the requested model")
+	ErrNoMatchingWorkers     = errors.New("no worker has the requested model")
 	ErrAllWorkersUnavailable = errors.New("workers found but all are unhealthy")
-	ErrNoCapacity          = errors.New("workers have model but insufficient VRAM")
-	ErrWorkerUnavailable   = errors.New("worker is unavailable or stale")
+	ErrNoCapacity            = errors.New("workers have model but insufficient VRAM")
+	ErrWorkerUnavailable     = errors.New("worker is unavailable or stale")
 )
 
 // defaultUnavailableTTL is how long since last heartbeat before a worker is considered unavailable.

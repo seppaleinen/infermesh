@@ -13,13 +13,13 @@ import (
 func testWorker(id string) WorkerInfo {
 	now := time.Now()
 	return WorkerInfo{
-		ID:           id,
-		Addr:         "127.0.0.1:8080",
-		VRAMTotalMB:  24576, // 24 GB
-		VRAMFreeMB:   16384, // 16 GB free
-		GPUUtilPct:   10.0,
-		QueueDepth:   0,
-		AvgLatencyMS: 50.0,
+		ID:            id,
+		Addr:          "127.0.0.1:8080",
+		VRAMTotalMB:   24576, // 24 GB
+		VRAMFreeMB:    16384, // 16 GB free
+		GPUUtilPct:    10.0,
+		QueueDepth:    0,
+		AvgLatencyMS:  50.0,
 		LastHeartbeat: now,
 		Models: []protocol.ModelInfo{
 			{Name: "llama3-8b", Quantization: "Q4", Size: 4660000000, Loaded: true},
@@ -62,10 +62,10 @@ func TestWeightedScorerName(t *testing.T) {
 // TestIsQuantizationCompatible tests the quantization compatibility logic.
 func TestIsQuantizationCompatible(t *testing.T) {
 	tests := []struct {
-		name     string
+		name      string
 		requested string
 		actual    string
-		want     bool
+		want      bool
 	}{
 		{"exact match Q4", "Q4", "Q4", true},
 		{"exact match FP16", "FP16", "FP16", true},
@@ -129,11 +129,11 @@ func TestWeightedScorerScore(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name        string
-		request     ModelRequest
-		worker      WorkerInfo
-		wantErr     bool
-		wantScore   float64 // approximate expected score
+		name           string
+		request        ModelRequest
+		worker         WorkerInfo
+		wantErr        bool
+		wantScore      float64 // approximate expected score
 		scoreTolerance float64
 	}{
 		{
@@ -142,7 +142,7 @@ func TestWeightedScorerScore(t *testing.T) {
 				Model:        "llama3-8b",
 				Quantization: "Q4",
 			},
-			worker: testWorker("worker-1"),
+			worker:  testWorker("worker-1"),
 			wantErr: false,
 			// Score components:
 			// quantMatch=1.0 (exact), vramFree=16384/24576≈0.667, gpuUtil=1.0-0.1=0.9, queue=1.0, latency=1.0-0.05=0.95
@@ -157,8 +157,8 @@ func TestWeightedScorerScore(t *testing.T) {
 				Model:        "llama3-8b",
 				Quantization: "",
 			},
-			worker: testWorker("worker-1"),
-			wantErr: false,
+			worker:         testWorker("worker-1"),
+			wantErr:        false,
 			wantScore:      0.90,
 			scoreTolerance: 0.05,
 		},
@@ -169,13 +169,13 @@ func TestWeightedScorerScore(t *testing.T) {
 				Quantization: "Q4",
 			},
 			worker: WorkerInfo{
-				ID:           "worker-1",
-				Addr:         "127.0.0.1:8080",
-				VRAMTotalMB:  24576,
-				VRAMFreeMB:   16384,
-				GPUUtilPct:   10.0,
-				QueueDepth:   0,
-				AvgLatencyMS: 50.0,
+				ID:            "worker-1",
+				Addr:          "127.0.0.1:8080",
+				VRAMTotalMB:   24576,
+				VRAMFreeMB:    16384,
+				GPUUtilPct:    10.0,
+				QueueDepth:    0,
+				AvgLatencyMS:  50.0,
 				LastHeartbeat: time.Now(),
 				Models: []protocol.ModelInfo{
 					{Name: "llama3-8b", Quantization: "Q8", Size: 8000000000, Loaded: true},
@@ -194,7 +194,7 @@ func TestWeightedScorerScore(t *testing.T) {
 				Model:        "llama3-8b",
 				Quantization: "Q8",
 			},
-			worker: testWorker("worker-1"),
+			worker:  testWorker("worker-1"),
 			wantErr: true,
 		},
 		{
@@ -204,13 +204,13 @@ func TestWeightedScorerScore(t *testing.T) {
 				Quantization: "Q4",
 			},
 			worker: WorkerInfo{
-				ID:           "worker-1",
-				Addr:         "127.0.0.1:8080",
-				VRAMTotalMB:  24576,
-				VRAMFreeMB:   16384,
-				GPUUtilPct:   10.0,
-				QueueDepth:   0,
-				AvgLatencyMS: 50.0,
+				ID:            "worker-1",
+				Addr:          "127.0.0.1:8080",
+				VRAMTotalMB:   24576,
+				VRAMFreeMB:    16384,
+				GPUUtilPct:    10.0,
+				QueueDepth:    0,
+				AvgLatencyMS:  50.0,
 				LastHeartbeat: time.Now(),
 				Models: []protocol.ModelInfo{
 					{Name: "llama3-8b", Quantization: "Q4", Size: 4660000000, Loaded: false},
@@ -224,7 +224,7 @@ func TestWeightedScorerScore(t *testing.T) {
 				Model:        "llama3-70b",
 				Quantization: "Q4",
 			},
-			worker: testWorker("worker-1"),
+			worker:  testWorker("worker-1"),
 			wantErr: true,
 		},
 		{
@@ -234,13 +234,13 @@ func TestWeightedScorerScore(t *testing.T) {
 				Quantization: "Q4",
 			},
 			worker: WorkerInfo{
-				ID:           "worker-1",
-				Addr:         "127.0.0.1:8080",
-				VRAMTotalMB:  24576,
-				VRAMFreeMB:   16384,
-				GPUUtilPct:   10.0,
-				QueueDepth:   0,
-				AvgLatencyMS: 50.0,
+				ID:            "worker-1",
+				Addr:          "127.0.0.1:8080",
+				VRAMTotalMB:   24576,
+				VRAMFreeMB:    16384,
+				GPUUtilPct:    10.0,
+				QueueDepth:    0,
+				AvgLatencyMS:  50.0,
 				LastHeartbeat: time.Now().Add(-40 * time.Second), // older than default 30s TTL
 				Models: []protocol.ModelInfo{
 					{Name: "llama3-8b", Quantization: "Q4", Size: 4660000000, Loaded: true},
@@ -255,7 +255,7 @@ func TestWeightedScorerScore(t *testing.T) {
 				Quantization: "Q4",
 				MaxVRAMMB:    20000, // need 20 GB free
 			},
-			worker: testWorker("worker-1"), // has 16 GB free
+			worker:  testWorker("worker-1"), // has 16 GB free
 			wantErr: true,
 		},
 		{
@@ -265,7 +265,7 @@ func TestWeightedScorerScore(t *testing.T) {
 				Quantization: "Q4",
 				MinVRAMMB:    20000, // need at least 20 GB free
 			},
-			worker: testWorker("worker-1"), // has 16 GB free
+			worker:  testWorker("worker-1"), // has 16 GB free
 			wantErr: true,
 		},
 		{
@@ -275,13 +275,13 @@ func TestWeightedScorerScore(t *testing.T) {
 				Quantization: "Q4",
 			},
 			worker: WorkerInfo{
-				ID:           "worker-1",
-				Addr:         "127.0.0.1:8080",
-				VRAMTotalMB:  24576,
-				VRAMFreeMB:   16384,
-				GPUUtilPct:   90.0, // very high utilization
-				QueueDepth:   0,
-				AvgLatencyMS: 50.0,
+				ID:            "worker-1",
+				Addr:          "127.0.0.1:8080",
+				VRAMTotalMB:   24576,
+				VRAMFreeMB:    16384,
+				GPUUtilPct:    90.0, // very high utilization
+				QueueDepth:    0,
+				AvgLatencyMS:  50.0,
 				LastHeartbeat: time.Now(),
 				Models: []protocol.ModelInfo{
 					{Name: "llama3-8b", Quantization: "Q4", Size: 4660000000, Loaded: true},
@@ -301,13 +301,13 @@ func TestWeightedScorerScore(t *testing.T) {
 				Quantization: "Q4",
 			},
 			worker: WorkerInfo{
-				ID:           "worker-1",
-				Addr:         "127.0.0.1:8080",
-				VRAMTotalMB:  24576,
-				VRAMFreeMB:   16384,
-				GPUUtilPct:   10.0,
-				QueueDepth:   10, // high queue depth
-				AvgLatencyMS: 50.0,
+				ID:            "worker-1",
+				Addr:          "127.0.0.1:8080",
+				VRAMTotalMB:   24576,
+				VRAMFreeMB:    16384,
+				GPUUtilPct:    10.0,
+				QueueDepth:    10, // high queue depth
+				AvgLatencyMS:  50.0,
 				LastHeartbeat: time.Now(),
 				Models: []protocol.ModelInfo{
 					{Name: "llama3-8b", Quantization: "Q4", Size: 4660000000, Loaded: true},
@@ -327,13 +327,13 @@ func TestWeightedScorerScore(t *testing.T) {
 				Quantization: "Q4",
 			},
 			worker: WorkerInfo{
-				ID:           "worker-1",
-				Addr:         "127.0.0.1:8080",
-				VRAMTotalMB:  24576,
-				VRAMFreeMB:   16384,
-				GPUUtilPct:   10.0,
-				QueueDepth:   0,
-				AvgLatencyMS: 1000.0, // high latency
+				ID:            "worker-1",
+				Addr:          "127.0.0.1:8080",
+				VRAMTotalMB:   24576,
+				VRAMFreeMB:    16384,
+				GPUUtilPct:    10.0,
+				QueueDepth:    0,
+				AvgLatencyMS:  1000.0, // high latency
 				LastHeartbeat: time.Now(),
 				Models: []protocol.ModelInfo{
 					{Name: "llama3-8b", Quantization: "Q4", Size: 4660000000, Loaded: true},
@@ -353,13 +353,13 @@ func TestWeightedScorerScore(t *testing.T) {
 				Quantization: "Q4",
 			},
 			worker: WorkerInfo{
-				ID:           "worker-1",
-				Addr:         "127.0.0.1:8080",
-				VRAMTotalMB:  24576,
-				VRAMFreeMB:   16384,
-				GPUUtilPct:   -1.0, // unknown
-				QueueDepth:   0,
-				AvgLatencyMS: 50.0,
+				ID:            "worker-1",
+				Addr:          "127.0.0.1:8080",
+				VRAMTotalMB:   24576,
+				VRAMFreeMB:    16384,
+				GPUUtilPct:    -1.0, // unknown
+				QueueDepth:    0,
+				AvgLatencyMS:  50.0,
 				LastHeartbeat: time.Now(),
 				Models: []protocol.ModelInfo{
 					{Name: "llama3-8b", Quantization: "Q4", Size: 4660000000, Loaded: true},
@@ -379,13 +379,13 @@ func TestWeightedScorerScore(t *testing.T) {
 				Quantization: "Q4",
 			},
 			worker: WorkerInfo{
-				ID:           "worker-1",
-				Addr:         "127.0.0.1:8080",
-				VRAMTotalMB:  24576,
-				VRAMFreeMB:   16384,
-				GPUUtilPct:   10.0,
-				QueueDepth:   -1, // unknown
-				AvgLatencyMS: 50.0,
+				ID:            "worker-1",
+				Addr:          "127.0.0.1:8080",
+				VRAMTotalMB:   24576,
+				VRAMFreeMB:    16384,
+				GPUUtilPct:    10.0,
+				QueueDepth:    -1, // unknown
+				AvgLatencyMS:  50.0,
 				LastHeartbeat: time.Now(),
 				Models: []protocol.ModelInfo{
 					{Name: "llama3-8b", Quantization: "Q4", Size: 4660000000, Loaded: true},
@@ -405,13 +405,13 @@ func TestWeightedScorerScore(t *testing.T) {
 				Quantization: "Q4",
 			},
 			worker: WorkerInfo{
-				ID:           "worker-1",
-				Addr:         "127.0.0.1:8080",
-				VRAMTotalMB:  24576,
-				VRAMFreeMB:   16384,
-				GPUUtilPct:   10.0,
-				QueueDepth:   0,
-				AvgLatencyMS: -1.0, // unknown
+				ID:            "worker-1",
+				Addr:          "127.0.0.1:8080",
+				VRAMTotalMB:   24576,
+				VRAMFreeMB:    16384,
+				GPUUtilPct:    10.0,
+				QueueDepth:    0,
+				AvgLatencyMS:  -1.0, // unknown
 				LastHeartbeat: time.Now(),
 				Models: []protocol.ModelInfo{
 					{Name: "llama3-8b", Quantization: "Q4", Size: 4660000000, Loaded: true},
@@ -566,39 +566,39 @@ func TestSelectWorker(t *testing.T) {
 
 	workers := []WorkerInfo{
 		{
-			ID:           "worker-1",
-			Addr:         "127.0.0.1:8080",
-			VRAMTotalMB:  24576,
-			VRAMFreeMB:   16384,
-			GPUUtilPct:   10.0,
-			QueueDepth:   0,
-			AvgLatencyMS: 50.0,
+			ID:            "worker-1",
+			Addr:          "127.0.0.1:8080",
+			VRAMTotalMB:   24576,
+			VRAMFreeMB:    16384,
+			GPUUtilPct:    10.0,
+			QueueDepth:    0,
+			AvgLatencyMS:  50.0,
 			LastHeartbeat: time.Now(),
 			Models: []protocol.ModelInfo{
 				{Name: "llama3-8b", Quantization: "Q4", Size: 4660000000, Loaded: true},
 			},
 		},
 		{
-			ID:           "worker-2",
-			Addr:         "127.0.0.1:8081",
-			VRAMTotalMB:  24576,
-			VRAMFreeMB:   20480, // more free VRAM
-			GPUUtilPct:   5.0,   // lower utilization
-			QueueDepth:   0,
-			AvgLatencyMS: 40.0,  // lower latency
+			ID:            "worker-2",
+			Addr:          "127.0.0.1:8081",
+			VRAMTotalMB:   24576,
+			VRAMFreeMB:    20480, // more free VRAM
+			GPUUtilPct:    5.0,   // lower utilization
+			QueueDepth:    0,
+			AvgLatencyMS:  40.0, // lower latency
 			LastHeartbeat: time.Now(),
 			Models: []protocol.ModelInfo{
 				{Name: "llama3-8b", Quantization: "Q4", Size: 4660000000, Loaded: true},
 			},
 		},
 		{
-			ID:           "worker-3",
-			Addr:         "127.0.0.1:8082",
-			VRAMTotalMB:  16384,
-			VRAMFreeMB:   4096,  // less free VRAM
-			GPUUtilPct:   80.0,  // high utilization
-			QueueDepth:   5,     // queue depth
-			AvgLatencyMS: 200.0, // higher latency
+			ID:            "worker-3",
+			Addr:          "127.0.0.1:8082",
+			VRAMTotalMB:   16384,
+			VRAMFreeMB:    4096,  // less free VRAM
+			GPUUtilPct:    80.0,  // high utilization
+			QueueDepth:    5,     // queue depth
+			AvgLatencyMS:  200.0, // higher latency
 			LastHeartbeat: time.Now(),
 			Models: []protocol.ModelInfo{
 				{Name: "llama3-8b", Quantization: "Q4", Size: 4660000000, Loaded: true},
@@ -676,10 +676,10 @@ func TestFilterByAllowedModels(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		request  ModelRequest
-		workers  []WorkerInfo
-		wantIDs  []string // expected worker IDs in result (order-insensitive)
+		name    string
+		request ModelRequest
+		workers []WorkerInfo
+		wantIDs []string // expected worker IDs in result (order-insensitive)
 	}{
 		{
 			name:    "whitelist match",
@@ -797,26 +797,26 @@ func TestSelectWorkerDeterminism(t *testing.T) {
 
 	workers := []WorkerInfo{
 		{
-			ID:           "worker-1",
-			Addr:         "127.0.0.1:8080",
-			VRAMTotalMB:  24576,
-			VRAMFreeMB:   16384,
-			GPUUtilPct:   10.0,
-			QueueDepth:   0,
-			AvgLatencyMS: 50.0,
+			ID:            "worker-1",
+			Addr:          "127.0.0.1:8080",
+			VRAMTotalMB:   24576,
+			VRAMFreeMB:    16384,
+			GPUUtilPct:    10.0,
+			QueueDepth:    0,
+			AvgLatencyMS:  50.0,
 			LastHeartbeat: time.Now(),
 			Models: []protocol.ModelInfo{
 				{Name: "llama3-8b", Quantization: "Q4", Size: 4660000000, Loaded: true},
 			},
 		},
 		{
-			ID:           "worker-2",
-			Addr:         "127.0.0.1:8081",
-			VRAMTotalMB:  24576,
-			VRAMFreeMB:   16384,
-			GPUUtilPct:   10.0,
-			QueueDepth:   0,
-			AvgLatencyMS: 50.0,
+			ID:            "worker-2",
+			Addr:          "127.0.0.1:8081",
+			VRAMTotalMB:   24576,
+			VRAMFreeMB:    16384,
+			GPUUtilPct:    10.0,
+			QueueDepth:    0,
+			AvgLatencyMS:  50.0,
 			LastHeartbeat: time.Now(),
 			Models: []protocol.ModelInfo{
 				{Name: "llama3-8b", Quantization: "Q4", Size: 4660000000, Loaded: true},
@@ -949,13 +949,13 @@ func TestScoreEdgeCases(t *testing.T) {
 
 	// Test with zero VRAM total (unknown)
 	worker := WorkerInfo{
-		ID:           "worker-1",
-		Addr:         "127.0.0.1:8080",
-		VRAMTotalMB:  0,
-		VRAMFreeMB:   0,
-		GPUUtilPct:   10.0,
-		QueueDepth:   0,
-		AvgLatencyMS: 50.0,
+		ID:            "worker-1",
+		Addr:          "127.0.0.1:8080",
+		VRAMTotalMB:   0,
+		VRAMFreeMB:    0,
+		GPUUtilPct:    10.0,
+		QueueDepth:    0,
+		AvgLatencyMS:  50.0,
 		LastHeartbeat: time.Now(),
 		Models: []protocol.ModelInfo{
 			{Name: "llama3-8b", Quantization: "Q4", Size: 4660000000, Loaded: true},

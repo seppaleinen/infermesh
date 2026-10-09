@@ -369,12 +369,12 @@ func TestSerializeWorkerInfoComplex(t *testing.T) {
 	info := sampleWorkerInfo()
 	info.Capabilities.Models = []protocol.ModelInfo{
 		{
-			Name:        "llama-3-8b",
-			Size:        1073741824,
+			Name:         "llama-3-8b",
+			Size:         1073741824,
 			Quantization: "Q4_K_M",
-			MaxTokens:   8192,
-			Backend:     "llama-cpp",
-			Loaded:      true,
+			MaxTokens:    8192,
+			Backend:      "llama-cpp",
+			Loaded:       true,
 		},
 	}
 

@@ -254,7 +254,7 @@ func TestDevModeWithoutAuth(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			response := map[string]interface{}{
 				"object": "list",
-				"data":  []interface{}{},
+				"data":   []interface{}{},
 			}
 			_ = json.NewEncoder(w).Encode(response)
 			return

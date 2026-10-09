@@ -39,7 +39,7 @@ type WorkerView struct {
 
 // RouterClient is a Wails service bound to the frontend. It talks to the
 // router's HTTP API over plain HTTP (dev mode). No auth, no mTLS here —
- // that is prod-mode scope (#9/#10), not the desktop MVP.
+// that is prod-mode scope (#9/#10), not the desktop MVP.
 type RouterClient struct {
 	baseURL       string
 	localHostname string

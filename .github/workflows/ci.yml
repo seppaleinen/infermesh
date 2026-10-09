@@ -16,7 +16,15 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.27'
+        # Pinned to 1.27.1 (NOT '1.27'): setup-go resolves '1.27' to the latest
+        # 1.27.x (currently 1.27.2), whose stdlib emits export-data version 5.
+        # Every golangci-lint release (v2.13.2 / v2.14.0) is built with
+        # go1.27.0 and bundles x/tools that cap export-data at v4, so the lint
+        # step fails with "export data version 5 is greater than maximum
+        # supported version 4". 1.27.1 emits v4 and lints clean.
+        # Bump this pin when a golangci-lint release lands with x/tools that
+        # supports v5 — do NOT just re-open '1.27' or the job breaks again.
+        go-version: '1.27.1'
 
     - name: Install dependencies
       run: go mod tidy

@@ -40,9 +40,9 @@ type Backend interface {
 type CircuitState int
 
 const (
-	CircuitClosed CircuitState = iota // Normal operation
-	CircuitHalfOpen                   // Testing if backend recovered
-	CircuitOpen                       // Backend is down, fail fast
+	CircuitClosed   CircuitState = iota // Normal operation
+	CircuitHalfOpen                     // Testing if backend recovered
+	CircuitOpen                         // Backend is down, fail fast
 )
 
 func (cs CircuitState) String() string {
@@ -51,13 +51,13 @@ func (cs CircuitState) String() string {
 
 // CircuitBreaker implements the circuit breaker pattern for resilience.
 type CircuitBreaker struct {
-	mu            sync.RWMutex
-	state         CircuitState
-	failureCount  int
+	mu               sync.RWMutex
+	state            CircuitState
+	failureCount     int
 	failureThreshold int
 	successThreshold int
-	lastFailureTime time.Time
-	cooldownPeriod time.Duration
+	lastFailureTime  time.Time
+	cooldownPeriod   time.Duration
 }
 
 // NewCircuitBreaker creates a new circuit breaker.
@@ -220,9 +220,9 @@ type Usage struct {
 
 // OpenAICompatibleBackend implements Backend for OpenAI-compatible APIs.
 type OpenAICompatibleBackend struct {
-	baseURL string
-	apiKey  string
-	client  *http.Client
+	baseURL        string
+	apiKey         string
+	client         *http.Client
 	circuitBreaker *CircuitBreaker
 }
 
@@ -668,9 +668,9 @@ type LlamaCppBackend struct {
 func NewLlamaCppBackend(endpoint string, contextSize, threads, gpuLayers int) *LlamaCppBackend {
 	return &LlamaCppBackend{
 		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(endpoint, ""),
-		contextSize:              contextSize,
-		threads:                  threads,
-		gpuLayers:                gpuLayers,
+		contextSize:             contextSize,
+		threads:                 threads,
+		gpuLayers:               gpuLayers,
 	}
 }
 

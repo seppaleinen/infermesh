@@ -23,15 +23,15 @@ import (
 
 // prodMTLSCerts holds generated certificates for a prod-mode test run.
 type prodMTLSCerts struct {
-	caDir        string
-	caCert       string
-	caKey        string
-	routerCert   string
-	routerKey    string
-	workerCert   string
-	workerKey    string
-	clientCert   string // CN "router-1" (trusted by router's --trusted-cn=router-1)
-	clientKey    string
+	caDir         string
+	caCert        string
+	caKey         string
+	routerCert    string
+	routerKey     string
+	workerCert    string
+	workerKey     string
+	clientCert    string // CN "router-1" (trusted by router's --trusted-cn=router-1)
+	clientKey     string
 	untrustedCert string // CN "untrusted-1" (NOT in router's trusted-cn list)
 	untrustedKey  string
 }

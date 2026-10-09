@@ -17,7 +17,7 @@ import (
 // It fetches /capabilities from workers on registry events and serves
 // cached snapshots to router endpoints.
 type CapabilityCache struct {
-	reg    registry.Registry
+	reg   registry.Registry
 	log   *slog.Logger
 	mu    sync.RWMutex
 	cache map[string]protocol.WorkerInfo

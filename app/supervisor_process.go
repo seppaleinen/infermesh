@@ -75,16 +75,16 @@ func realCmdBuilder(name string, args ...string) childCmd {
 // Every method is safe for concurrent call. The zero value is usable: call
 // start() before anything else.
 type managedProcess struct {
-	mu        sync.Mutex
-	cmd       childCmd
-	logFile   *os.File
-	logPath   string
-	pid       int
-	started   time.Time
-	done      chan struct{}
-	exitErr   error
-	exitCode  int
-	stopped   bool
+	mu         sync.Mutex
+	cmd        childCmd
+	logFile    *os.File
+	logPath    string
+	pid        int
+	started    time.Time
+	done       chan struct{}
+	exitErr    error
+	exitCode   int
+	stopped    bool
 	cmdBuilder cmdBuilder
 }
 
@@ -99,11 +99,11 @@ func newManagedProcess(logPath string, builder cmdBuilder) *managedProcess {
 
 // processInfo is the serialised view returned by managedProcess.status().
 type processInfo struct {
-	Running   bool  `json:"running"`
-	PID       int   `json:"pid"`
-	Stopped   bool  `json:"stopped,omitempty"`
-	ExitCode  int   `json:"exit_code,omitempty"`
-	LogPath   string `json:"log_path"`
+	Running   bool      `json:"running"`
+	PID       int       `json:"pid"`
+	Stopped   bool      `json:"stopped,omitempty"`
+	ExitCode  int       `json:"exit_code,omitempty"`
+	LogPath   string    `json:"log_path"`
 	StartedAt time.Time `json:"started_at,omitempty"`
 }
 

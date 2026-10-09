@@ -308,8 +308,8 @@ func (s *Server) Start(ctx context.Context) error {
 		}
 
 		s.server = &http.Server{
-			Addr:      s.addr,
-			Handler:   handler,
+			Addr:    s.addr,
+			Handler: handler,
 			TLSConfig: &tls.Config{
 				Certificates: []tls.Certificate{*cert},
 				ClientAuth:   tls.RequireAndVerifyClientCert,
@@ -317,31 +317,31 @@ func (s *Server) Start(ctx context.Context) error {
 			},
 		}
 
-s.log.Info("worker server starting", "addr", s.addr, "dev_mode", security.IsDevMode(s.config), "tls", "enabled")
+		s.log.Info("worker server starting", "addr", s.addr, "dev_mode", security.IsDevMode(s.config), "tls", "enabled")
 
-	// Bind explicitly on tcp4 BEFORE serving. http.ListenAndServe uses
-	// net.Listen("tcp", addr), which on macOS creates a dual-stack IPv6
-	// socket with IPV6_V6ONLY=0 under SO_REUSEADDR. When another process
-	// (e.g. LM Studio) already holds the IPv4 half of that port, the bind
-	// "succeeds" but the worker ends up serving IPv6-only: it advertises
-	// its IPv4 address to the router, the router's CapabilityCache fetches
-	// http://<ip>:<port>/capabilities, and the request lands on the other
-	// process, which returns 404. The worker then looks model-less.
-	//
-	// Binding tcp4 first fails loudly if the port is taken, instead of
-	// silently serving a half-dead endpoint.
-	listener, err := net.Listen("tcp4", s.addr)
-	if err != nil {
-		return fmt.Errorf("worker failed to bind %s: %w (port held by another process?)", s.addr, err)
+		// Bind explicitly on tcp4 BEFORE serving. http.ListenAndServe uses
+		// net.Listen("tcp", addr), which on macOS creates a dual-stack IPv6
+		// socket with IPV6_V6ONLY=0 under SO_REUSEADDR. When another process
+		// (e.g. LM Studio) already holds the IPv4 half of that port, the bind
+		// "succeeds" but the worker ends up serving IPv6-only: it advertises
+		// its IPv4 address to the router, the router's CapabilityCache fetches
+		// http://<ip>:<port>/capabilities, and the request lands on the other
+		// process, which returns 404. The worker then looks model-less.
+		//
+		// Binding tcp4 first fails loudly if the port is taken, instead of
+		// silently serving a half-dead endpoint.
+		listener, err := net.Listen("tcp4", s.addr)
+		if err != nil {
+			return fmt.Errorf("worker failed to bind %s: %w (port held by another process?)", s.addr, err)
+		}
+
+		go func() {
+			<-ctx.Done()
+			_ = s.server.Shutdown(context.Background())
+		}()
+
+		return s.server.ServeTLS(listener, "", "")
 	}
-
-	go func() {
-		<-ctx.Done()
-		_ = s.server.Shutdown(context.Background())
-	}()
-
-	return s.server.ServeTLS(listener, "", "")
-}
 
 	s.server = &http.Server{
 		Addr:    s.addr,
@@ -415,7 +415,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		Capabilities: caps,
 	}
 
-// Include models declared via SetModels (--model-path) so the router
+	// Include models declared via SetModels (--model-path) so the router
 	// can see and schedule them. Detect() only reads the model config file.
 	worker.Capabilities.Models = append(worker.Capabilities.Models, s.models...)
 

@@ -17,24 +17,24 @@ const (
 
 // ModelMetrics contains operational metrics for a model.
 type ModelMetrics struct {
-	LoadCount     int
-	UnloadCount   int
-	TotalLatency  time.Duration
-	VramUsageMB   int
-	GpuUsagePct   int
-	RequestCount  int
-	ErrorCount    int
+	LoadCount    int
+	UnloadCount  int
+	TotalLatency time.Duration
+	VramUsageMB  int
+	GpuUsagePct  int
+	RequestCount int
+	ErrorCount   int
 }
 
 // ModelHealthTracker tracks the health and metrics of a model.
 type ModelHealthTracker struct {
 	mu sync.Mutex
 
-	LastHealthCheck   time.Time
-	HealthStatus      HealthStatus
+	LastHealthCheck     time.Time
+	HealthStatus        HealthStatus
 	ConsecutiveFailures int
-	Metrics           ModelMetrics
-	Enabled           bool
+	Metrics             ModelMetrics
+	Enabled             bool
 }
 
 // NewModelHealthTracker creates a new model health tracker with health checks enabled by default.

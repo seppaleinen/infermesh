@@ -11,11 +11,11 @@ import (
 
 // Aggregator assembles detections from various sources and provides periodic refresh.
 type Aggregator struct {
-	config     Config
-	log        *slog.Logger
-	mu         sync.RWMutex
+	config       Config
+	log          *slog.Logger
+	mu           sync.RWMutex
 	capabilities protocol.Capabilities
-	lastUpdate time.Time
+	lastUpdate   time.Time
 }
 
 // NewAggregator creates a new capabilities aggregator.
@@ -25,8 +25,8 @@ func NewAggregator(config Config, log *slog.Logger) *Aggregator {
 	}
 	_ = config.Validate()
 	return &Aggregator{
-		config:     config,
-		log:        log,
+		config:       config,
+		log:          log,
 		capabilities: protocol.Capabilities{},
 	}
 }

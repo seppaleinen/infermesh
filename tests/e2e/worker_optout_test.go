@@ -246,24 +246,24 @@ func TestWorkerOptOut_E2E(t *testing.T) {
 			}
 		})
 
-t.Run("model-bl-y served by worker C", func(t *testing.T) {
-		code, body := postChat("model-bl-y")
-		if code != http.StatusOK || !strings.Contains(body, "FROM-C") {
-			t.Fatalf("model-bl-y: expected 200 FROM-C, got %d %s. router stderr: %s", code, body, routerStderr.String())
-		}
-	})
+		t.Run("model-bl-y served by worker C", func(t *testing.T) {
+			code, body := postChat("model-bl-y")
+			if code != http.StatusOK || !strings.Contains(body, "FROM-C") {
+				t.Fatalf("model-bl-y: expected 200 FROM-C, got %d %s. router stderr: %s", code, body, routerStderr.String())
+			}
+		})
 
-	// model-bl-z: no worker advertises it, but worker C is "willing" (no opt-out for it).
-	// The router's fallback "any available worker" path will select C, which then
-	// returns a backend error wrapped in SSE 200. This is expected fallback behavior.
-	t.Run("model-bl-z handled by fallback (worker C returns backend error)", func(t *testing.T) {
-		code, body := postChat("model-bl-z")
-		// Accept either 503 (if fallback is blocked by opt-out) or 200 with error
-		// (fallback selects C which returns backend error in SSE).
-		if code != http.StatusOK && code != http.StatusServiceUnavailable {
-			t.Fatalf("model-bl-z: expected 200 with error or 503, got %d %s. router stderr: %s", code, body, routerStderr.String())
-		}
-	})
+		// model-bl-z: no worker advertises it, but worker C is "willing" (no opt-out for it).
+		// The router's fallback "any available worker" path will select C, which then
+		// returns a backend error wrapped in SSE 200. This is expected fallback behavior.
+		t.Run("model-bl-z handled by fallback (worker C returns backend error)", func(t *testing.T) {
+			code, body := postChat("model-bl-z")
+			// Accept either 503 (if fallback is blocked by opt-out) or 200 with error
+			// (fallback selects C which returns backend error in SSE).
+			if code != http.StatusOK && code != http.StatusServiceUnavailable {
+				t.Fatalf("model-bl-z: expected 200 with error or 503, got %d %s. router stderr: %s", code, body, routerStderr.String())
+			}
+		})
 
 		_ = workerC.Process.Signal(syscall.SIGTERM)
 		done := make(chan error, 1)

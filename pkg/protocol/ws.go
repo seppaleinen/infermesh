@@ -34,10 +34,10 @@ const (
 // streaming inference produces N× inference_chunk followed by a single
 // inference_response with Done=true.
 type Message struct {
-	ID      string          `json:"id"`
-	Type    MessageType     `json:"type"`
-	WorkerID string         `json:"worker_id,omitempty"`
-	Payload json.RawMessage `json:"payload"`
+	ID       string          `json:"id"`
+	Type     MessageType     `json:"type"`
+	WorkerID string          `json:"worker_id,omitempty"`
+	Payload  json.RawMessage `json:"payload"`
 }
 
 // NewMessage builds an envelope, marshaling the payload. payload may be nil
@@ -77,7 +77,7 @@ func NewMessageID() string {
 // handshake completes.
 type RegisterPayload struct {
 	Worker WorkerInfo `json:"worker"`
-	Relay bool        `json:"relay,omitempty"` // true if this is a relay registration
+	Relay  bool       `json:"relay,omitempty"` // true if this is a relay registration
 }
 
 // WelcomePayload is sent by the router after it accepts a registration.
