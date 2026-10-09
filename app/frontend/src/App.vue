@@ -62,8 +62,6 @@ const activeView = ref<'dashboard' | 'settings'>('dashboard')
 // not navigate away from the settings view. No modals exist today.
 const modalOpen = ref(false)
 
-// Toggle for worker details section
-const showWorkerDetails = ref(false)
 // Track which worker is expanded in the list
 const expandedWorkerId = ref<string | null>(null)
 
@@ -413,21 +411,13 @@ function prevModelPage() {
           </div>
         </section>
 
-        <!-- Right: worker details (togglable) -->
+        <!-- Right: worker hostnames with per-host expand -->
         <aside class="workers-panel">
-          <button
-            class="workers-toggle"
-            @click="showWorkerDetails = !showWorkerDetails"
-            :aria-expanded="showWorkerDetails"
-          >
-            <span class="workers-toggle-label">Workers</span>
-            <span class="workers-toggle-count">{{ workerCount }}</span>
-            <svg class="workers-toggle-chev" :class="{ 'is-open': showWorkerDetails }" viewBox="0 0 24 24" fill="none" width="14" height="14" aria-hidden="true">
-              <path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </button>
-
-          <div class="workers-panel-body" v-if="showWorkerDetails">
+          <div class="workers-panel-body">
+            <div class="workers-header">
+              <h3 class="workers-title">Workers</h3>
+              <span class="workers-count">{{ workerCount }}</span>
+            </div>
             <ul class="worker-hostname-list">
               <li v-for="w in workersData" :key="w.id" class="worker-hostname-item">
                 <button
@@ -461,7 +451,7 @@ function prevModelPage() {
               No workers connected
             </div>
           </div>
-</aside>
+        </aside>
       </div>
     </main>
 
@@ -851,49 +841,30 @@ function prevModelPage() {
   overflow: hidden;
 }
 
-.workers-toggle {
+.workers-header {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
-  width: 100%;
+  justify-content: space-between;
   padding: 14px 16px;
-  font-size: 13px;
-  font-weight: 650;
-  color: var(--text);
-  background: transparent;
-  border: none;
   border-bottom: 1px solid var(--border);
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
-
-.workers-toggle:hover {
   background: var(--surface-2);
 }
 
-.workers-toggle-label {
-  flex: 1;
-  text-align: left;
+.workers-title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text);
 }
 
-.workers-toggle-count {
+.workers-count {
   font-family: var(--font-mono);
   font-size: 11.5px;
   color: var(--text-muted);
   padding: 2px 8px;
   border: 1px solid var(--border-strong);
   border-radius: 990px;
-  background: var(--surface-2);
-}
-
-.workers-toggle-chev {
-  color: var(--text-faint);
-  transition: transform 0.2s ease;
-}
-
-.workers-toggle-chev.is-open {
-  transform: rotate(90deg);
+  background: var(--surface);
 }
 
 .workers-panel-body {
