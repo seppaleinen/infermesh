@@ -52,9 +52,9 @@ func (m *mockBackend) SetMockModels(models []protocol.ModelInfo) {
 	m.models = models
 }
 
-func (m *mockBackend) Name() string                              { return "mock" }
-func (m *mockBackend) LoadModel(path string) (bool, error)       { return true, nil }
-func (m *mockBackend) UnloadModel() error                        { return nil }
+func (m *mockBackend) Name() string                        { return "mock" }
+func (m *mockBackend) LoadModel(path string) (bool, error) { return true, nil }
+func (m *mockBackend) UnloadModel() error                  { return nil }
 func (m *mockBackend) ListModels() ([]protocol.ModelInfo, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -62,7 +62,7 @@ func (m *mockBackend) ListModels() ([]protocol.ModelInfo, error) {
 	copy(out, m.models)
 	return out, nil
 }
-func (m *mockBackend) GetMetrics() (Metrics, error)              { return Metrics{}, nil }
+func (m *mockBackend) GetMetrics() (Metrics, error) { return Metrics{}, nil }
 func (m *mockBackend) CompleteChat(ctx context.Context, model string, req ChatRequest) (ChatResponse, error) {
 	return ChatResponse{
 		ID:      "chatcmpl-test",
