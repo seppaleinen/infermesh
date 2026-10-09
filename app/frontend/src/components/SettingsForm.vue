@@ -248,7 +248,7 @@ async function handleSave(): Promise<void> {
 
    // Parse the textarea into the map before persisting. Empty textarea →
    // empty map (feature off), matching the nil-default contract.
-   // No op: bound via computed aliasMapText
+   settings.value.model_aliases = parseModelAliasesText(aliasMapText.value)
 
   const s: Settings = { ...settings.value, secrets }
 
