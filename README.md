@@ -114,7 +114,7 @@ Worker A  Worker B  Worker C
 | Discovery | mDNS / DNS-SD |
 | Communication | HTTP/REST (gRPC future) |
 | Security | mTLS with self-signed certs |
-| Authentication | Dev: none / Prod: mTLS + API keys |
+| Authentication | Dev: optional API key / Prod: mTLS + API keys |
 | API | OpenAI-compatible |
 | Platforms | Linux (Ubuntu/Debian), macOS (Apple Silicon M1/M2/M4) |
 
