@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"path/filepath"
 	"time"
@@ -316,15 +317,31 @@ func (s *Server) Start(ctx context.Context) error {
 			},
 		}
 
-		s.log.Info("worker server starting", "addr", s.addr, "dev_mode", security.IsDevMode(s.config), "tls", "enabled")
+s.log.Info("worker server starting", "addr", s.addr, "dev_mode", security.IsDevMode(s.config), "tls", "enabled")
 
-		go func() {
-			<-ctx.Done()
-			_ = s.server.Shutdown(context.Background())
-		}()
-
-		return s.server.ListenAndServeTLS("", "")
+	// Bind explicitly on tcp4 BEFORE serving. http.ListenAndServe uses
+	// net.Listen("tcp", addr), which on macOS creates a dual-stack IPv6
+	// socket with IPV6_V6ONLY=0 under SO_REUSEADDR. When another process
+	// (e.g. LM Studio) already holds the IPv4 half of that port, the bind
+	// "succeeds" but the worker ends up serving IPv6-only: it advertises
+	// its IPv4 address to the router, the router's CapabilityCache fetches
+	// http://<ip>:<port>/capabilities, and the request lands on the other
+	// process, which returns 404. The worker then looks model-less.
+	//
+	// Binding tcp4 first fails loudly if the port is taken, instead of
+	// silently serving a half-dead endpoint.
+	listener, err := net.Listen("tcp4", s.addr)
+	if err != nil {
+		return fmt.Errorf("worker failed to bind %s: %w (port held by another process?)", s.addr, err)
 	}
+
+	go func() {
+		<-ctx.Done()
+		_ = s.server.Shutdown(context.Background())
+	}()
+
+	return s.server.ServeTLS(listener, "", "")
+}
 
 	s.server = &http.Server{
 		Addr:    s.addr,
@@ -333,12 +350,19 @@ func (s *Server) Start(ctx context.Context) error {
 
 	s.log.Info("worker server starting", "addr", s.addr, "dev_mode", security.IsDevMode(s.config))
 
+	// Bind explicitly on tcp4 BEFORE serving (see prod branch above for
+	// the dual-stack / port-collision rationale).
+	listener, err := net.Listen("tcp4", s.addr)
+	if err != nil {
+		return fmt.Errorf("worker failed to bind %s: %w (port held by another process?)", s.addr, err)
+	}
+
 	go func() {
 		<-ctx.Done()
 		_ = s.server.Shutdown(context.Background())
 	}()
 
-	return s.server.ListenAndServe()
+	return s.server.Serve(listener)
 }
 
 // Addr returns the address the server is listening on.
