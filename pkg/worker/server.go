@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/capabilities"
@@ -30,6 +31,12 @@ type Server struct {
 	config        security.Config
 	backend       Backend // Backend adapter for model inference
 	healthTracker *ModelHealthTracker
+
+	// modelsMu protects concurrent access to the models field. The refresh
+	// goroutine (SetModels/GetModels) and HTTP handlers (handleCapabilities,
+	// metrics, modelsList, loadModelByName, loadModelHandler) may run
+	// concurrently, so every read and write of s.models must hold this lock.
+	modelsMu sync.Mutex
 
 	// allowedModels is a whitelist of models this worker is WILLING to serve.
 	// When non-empty, the router only schedules requests for models in this
@@ -213,7 +220,9 @@ func (s *Server) SetBackend(backend Backend, model string) {
 			"count", len(discoveredModels),
 		)
 		// Merge discovered models with existing models
+		s.modelsMu.Lock()
 		s.models = mergeModels(s.models, discoveredModels)
+		s.modelsMu.Unlock()
 	} else if err != nil {
 		s.log.Warn("failed to discover models from backend", "error", err)
 	}
@@ -237,11 +246,15 @@ func mergeModels(existing, discovered []protocol.ModelInfo) []protocol.ModelInfo
 
 // SetModels sets the list of models known to this worker.
 func (s *Server) SetModels(models []protocol.ModelInfo) {
+	s.modelsMu.Lock()
+	defer s.modelsMu.Unlock()
 	s.models = models
 }
 
 // GetModels returns a copy of the models known to this worker.
 func (s *Server) GetModels() []protocol.ModelInfo {
+	s.modelsMu.Lock()
+	defer s.modelsMu.Unlock()
 	out := make([]protocol.ModelInfo, len(s.models))
 	copy(out, s.models)
 	return out
@@ -417,7 +430,11 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 
 	// Include models declared via SetModels (--model-path) so the router
 	// can see and schedule them. Detect() only reads the model config file.
-	worker.Capabilities.Models = append(worker.Capabilities.Models, s.models...)
+	s.modelsMu.Lock()
+	models := make([]protocol.ModelInfo, len(s.models))
+	copy(models, s.models)
+	s.modelsMu.Unlock()
+	worker.Capabilities.Models = append(worker.Capabilities.Models, models...)
 
 	// Surface the worker's model opt-out filters so the router's
 	// CapabilityCache hydrates them and the scheduler can honour them.
@@ -431,12 +448,15 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	s.modelsMu.Lock()
+	count := len(s.models)
+	s.modelsMu.Unlock()
 	metrics := "# HELP workers_total Total number of registered workers\n"
 	metrics += "# TYPE workers_total gauge\n"
 	metrics += "workers_total 1\n"
 	metrics += "# HELP models_total Total number of available models\n"
 	metrics += "# TYPE models_total gauge\n"
-	metrics += fmt.Sprintf("models_total %d\n", len(s.models))
+	metrics += fmt.Sprintf("models_total %d\n", count)
 	_, _ = w.Write([]byte(metrics))
 }
 
@@ -658,7 +678,10 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 // modelsList handles the /v1/models HTTP endpoint.
 func (s *Server) modelsList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	data := s.models
+	s.modelsMu.Lock()
+	data := make([]protocol.ModelInfo, len(s.models))
+	copy(data, s.models)
+	s.modelsMu.Unlock()
 	if data == nil {
 		data = []protocol.ModelInfo{}
 	}
@@ -674,6 +697,8 @@ func (s *Server) modelsList(w http.ResponseWriter, r *http.Request) {
 // dispatch; the next heartbeat carries the updated models so the router's
 // capability cache sees the load.
 func (s *Server) loadModelByName(name string) (bool, string) {
+	s.modelsMu.Lock()
+	defer s.modelsMu.Unlock()
 	for i, m := range s.models {
 		if m.Name == name {
 			s.models[i].Loaded = true
@@ -699,6 +724,7 @@ func (s *Server) loadModelHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	found := false
+	s.modelsMu.Lock()
 	for i, m := range s.models {
 		if m.Name == req.Model {
 			found = true
@@ -707,6 +733,7 @@ func (s *Server) loadModelHandler(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	s.modelsMu.Unlock()
 
 	if !found {
 		http.Error(w, "model not found", http.StatusNotFound)
