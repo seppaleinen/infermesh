@@ -9,7 +9,7 @@ import (
 type BackendType string
 
 const (
-	BackendMDNS       BackendType = "mdns"
+	BackendMDNS        BackendType = "mdns"
 	BackendCentralized BackendType = "centralized"
 )
 

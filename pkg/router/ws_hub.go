@@ -59,9 +59,9 @@ type WSHub struct {
 	// relayRejected504 tracks per-worker 504 (gateway timeout) rejections
 	// in relay mode; surfaced by /v1/queue/stats alongside the direct-
 	// connection wsConnection.rejected504 counter.
-	relayInFlight     map[string]int64
-	relayRejected429  map[string]int64
-	relayRejected504  map[string]int64
+	relayInFlight    map[string]int64
+	relayRejected429 map[string]int64
+	relayRejected504 map[string]int64
 
 	// qm holds pool-level queue-wait observability (reservoir percentiles).
 	qm *queueMetrics
@@ -452,33 +452,33 @@ func (h *WSHub) recordRejection(workerID string, code int) {
 }
 
 // recordRejectionLocked bumps the per-worker 429 counter for a direct-
-	// connection worker. The caller MUST hold c.pendingMu (used by addPending
-	// to avoid a re-entrant lock deadlock).
-	func (h *WSHub) recordRejectionLocked(c *wsConnection) {
-		c.rejected429++
-	}
+// connection worker. The caller MUST hold c.pendingMu (used by addPending
+// to avoid a re-entrant lock deadlock).
+func (h *WSHub) recordRejectionLocked(c *wsConnection) {
+	c.rejected429++
+}
 
-	// recordTimeout bumps the per-worker 504 counter for a direct-connection
-	// worker. Safe to call from outside any pendingMu lock.
-	func (h *WSHub) recordTimeout(workerID string) {
-		h.mu.RLock()
-		c, ok := h.conns[workerID]
-		h.mu.RUnlock()
-		if !ok {
-			return
-		}
-		c.pendingMu.Lock()
-		c.rejected504++
-		c.pendingMu.Unlock()
+// recordTimeout bumps the per-worker 504 counter for a direct-connection
+// worker. Safe to call from outside any pendingMu lock.
+func (h *WSHub) recordTimeout(workerID string) {
+	h.mu.RLock()
+	c, ok := h.conns[workerID]
+	h.mu.RUnlock()
+	if !ok {
+		return
 	}
+	c.pendingMu.Lock()
+	c.rejected504++
+	c.pendingMu.Unlock()
+}
 
-	// recordRelayTimeout bumps the per-worker 504 counter for a relay-mode
-	// worker. Safe to call concurrently.
-	func (h *WSHub) recordRelayTimeout(workerID string) {
-		h.relayPendingMu.Lock()
-		defer h.relayPendingMu.Unlock()
-		h.relayRejected504[workerID]++
-	}
+// recordRelayTimeout bumps the per-worker 504 counter for a relay-mode
+// worker. Safe to call concurrently.
+func (h *WSHub) recordRelayTimeout(workerID string) {
+	h.relayPendingMu.Lock()
+	defer h.relayPendingMu.Unlock()
+	h.relayRejected504[workerID]++
+}
 
 // recordWait records a queue-wait sample into the pool reservoir for the
 // worker whose call just completed. Called from pendingCall.finish.

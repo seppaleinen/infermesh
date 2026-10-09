@@ -8,11 +8,11 @@ import (
 const keyringServiceName = "infermesh"
 
 var knownSecretRefs = map[string]bool{
-	"router/apikey":    true,
+	"router/apikey":     true,
 	"worker/customauth": true,
-	"mtls/cert":        true,
-	"mtls/key":         true,
-	"relay/creds":      true,
+	"mtls/cert":         true,
+	"mtls/key":          true,
+	"relay/creds":       true,
 }
 
 type ConfigService struct {

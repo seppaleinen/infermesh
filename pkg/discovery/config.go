@@ -8,14 +8,14 @@ import (
 // Config controls mDNS discovery behavior.
 // Values are validated by `Validate()`.
 type Config struct {
-	ServiceType   string        `json:"service_type"`    // "_infermesh-worker._tcp.local."
-	Domain        string        `json:"domain"`           // "local."
-	ProbeInterval time.Duration `json:"probe_interval"`   // router queries every N
-	ProbeTimeout  time.Duration `json:"probe_timeout"`    // per-query timeout
-	HeartbeatTTL  time.Duration `json:"heartbeat_ttl"`    // mDNS announcement TTL
-	Interface     string        `json:"interface"`        // network interface name ""=all
-	LocalOnly     bool          `json:"local_only"`       // bind to loopback only (dev mode)
-	InstanceName  string        `json:"instance_name"`    // unique name for this node
+	ServiceType   string        `json:"service_type"`   // "_infermesh-worker._tcp.local."
+	Domain        string        `json:"domain"`         // "local."
+	ProbeInterval time.Duration `json:"probe_interval"` // router queries every N
+	ProbeTimeout  time.Duration `json:"probe_timeout"`  // per-query timeout
+	HeartbeatTTL  time.Duration `json:"heartbeat_ttl"`  // mDNS announcement TTL
+	Interface     string        `json:"interface"`      // network interface name ""=all
+	LocalOnly     bool          `json:"local_only"`     // bind to loopback only (dev mode)
+	InstanceName  string        `json:"instance_name"`  // unique name for this node
 }
 
 // Defaults returns a Config populated with production-safe defaults.

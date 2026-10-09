@@ -1617,10 +1617,10 @@ func TestPopularModelsHandler(t *testing.T) {
 					t.Errorf("expected 3 models, got %d", len(resp.Models))
 				}
 
-// Verify sorted by loaded_worker_count desc, then model name asc.
-// llama-3-8b and mistral-7b are both loaded (count 1) with
-// worker_count 1; llama-3-8b comes first alphabetically. qwen-72b is not
-// loaded (count 0) so it is last.
+				// Verify sorted by loaded_worker_count desc, then model name asc.
+				// llama-3-8b and mistral-7b are both loaded (count 1) with
+				// worker_count 1; llama-3-8b comes first alphabetically. qwen-72b is not
+				// loaded (count 0) so it is last.
 				if len(resp.Models) < 3 || resp.Models[0].Model != "llama-3-8b" {
 					t.Errorf("expected llama-3-8b first, got order: %+v", resp.Models)
 				}

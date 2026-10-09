@@ -14,11 +14,11 @@ const (
 
 // GPUInfo describes the GPU hardware of a worker.
 type GPUInfo struct {
-	Vendor      string `json:"vendor"`         // "nvidia", "amd", "apple"
-	Model       string `json:"model"`           // "RTX 4090", "M2 Ultra"
-	ComputeCore int    `json:"compute_cores"`  // CUDA cores / GPU cores
-	TotalVRAM   int64  `json:"total_vram_mb"`  // total VRAM in megabytes
-	FreeVRAM    int64  `json:"free_vram_mb"`   // currently free VRAM
+	Vendor      string `json:"vendor"`        // "nvidia", "amd", "apple"
+	Model       string `json:"model"`         // "RTX 4090", "M2 Ultra"
+	ComputeCore int    `json:"compute_cores"` // CUDA cores / GPU cores
+	TotalVRAM   int64  `json:"total_vram_mb"` // total VRAM in megabytes
+	FreeVRAM    int64  `json:"free_vram_mb"`  // currently free VRAM
 }
 
 // MemoryInfo describes system memory available to the worker.
@@ -29,12 +29,12 @@ type MemoryInfo struct {
 
 // ModelInfo describes a single model loaded or known to the worker.
 type ModelInfo struct {
-	Name        string   `json:"name"`            // e.g. "llama-3-8b"
-	Size        int64    `json:"size_bytes"`       // model file size
-	Quantization string  `json:"quantization"`    // "Q4_K_M", "FP16", etc.
-	MaxTokens   int      `json:"max_tokens"`       // context window
-	Backend     string   `json:"backend"`          // "llama-cpp", "ollama", etc.
-	Loaded      bool     `json:"loaded"`           // whether model is in VRAM
+	Name         string `json:"name"`         // e.g. "llama-3-8b"
+	Size         int64  `json:"size_bytes"`   // model file size
+	Quantization string `json:"quantization"` // "Q4_K_M", "FP16", etc.
+	MaxTokens    int    `json:"max_tokens"`   // context window
+	Backend      string `json:"backend"`      // "llama-cpp", "ollama", etc.
+	Loaded       bool   `json:"loaded"`       // whether model is in VRAM
 }
 
 // EngineType represents supported backend engines.
@@ -60,7 +60,7 @@ const (
 type Capabilities struct {
 	GPU     GPUInfo     `json:"gpu"`
 	Models  []ModelInfo `json:"models"`
-	Engines []string   `json:"engines"`  // supported backends ["llama-cpp","vllm",...]
+	Engines []string    `json:"engines"` // supported backends ["llama-cpp","vllm",...]
 	VRAM    MemoryInfo  `json:"vram"`
 	System  MemoryInfo  `json:"system"`
 
@@ -94,10 +94,10 @@ type WorkerInfo struct {
 type DiscoveryEventType string
 
 const (
-	EventAdded   DiscoveryEventType = "added"     // new worker discovered
-	EventUpdated DiscoveryEventType = "updated"   // existing worker refreshed
-	EventRemoved DiscoveryEventType = "removed"   // worker TTL expired or explicitly gone
-	EventExpired DiscoveryEventType = "expired"   // worker marked unavailable by registry
+	EventAdded   DiscoveryEventType = "added"   // new worker discovered
+	EventUpdated DiscoveryEventType = "updated" // existing worker refreshed
+	EventRemoved DiscoveryEventType = "removed" // worker TTL expired or explicitly gone
+	EventExpired DiscoveryEventType = "expired" // worker marked unavailable by registry
 )
 
 // DiscoveryInfo is the lightweight payload carried in mDNS TXT records.
@@ -116,5 +116,5 @@ type DiscoveryInfo struct {
 type DiscoveryEvent struct {
 	Type   DiscoveryEventType `json:"type"`
 	Worker WorkerInfo         `json:"worker"`
-	Time   time.Time         `json:"time"`
+	Time   time.Time          `json:"time"`
 }

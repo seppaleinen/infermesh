@@ -16,14 +16,14 @@ type SystemMetrics struct {
 
 // RuntimeMetrics holds runtime metrics for a worker.
 type RuntimeMetrics struct {
-	GPUUtilization   float64 `json:"gpu_utilization"`
-	VRAMUsedMB       int64   `json:"vram_used_mb"`
-	VRAMFreeMB       int64   `json:"vram_free_mb"`
-	QueueDepth       int     `json:"queue_depth"`
-	AvgLatencyMs     float64 `json:"avg_latency_ms"`
-	TotalRequests    int64   `json:"total_requests"`
-	LastRequestTime  string  `json:"last_request_time"`
-	UptimeSeconds    int64   `json:"uptime_seconds"`
+	GPUUtilization  float64 `json:"gpu_utilization"`
+	VRAMUsedMB      int64   `json:"vram_used_mb"`
+	VRAMFreeMB      int64   `json:"vram_free_mb"`
+	QueueDepth      int     `json:"queue_depth"`
+	AvgLatencyMs    float64 `json:"avg_latency_ms"`
+	TotalRequests   int64   `json:"total_requests"`
+	LastRequestTime string  `json:"last_request_time"`
+	UptimeSeconds   int64   `json:"uptime_seconds"`
 }
 
 // CollectRuntimeMetrics collects current runtime metrics for the worker.
@@ -48,7 +48,7 @@ func CollectRuntimeMetrics() (*RuntimeMetrics, error) {
 		VRAMUsedMB:      vramUsed,
 		VRAMFreeMB:      vramFree,
 		QueueDepth:      0,
-		AvgLatencyMs:     0,
+		AvgLatencyMs:    0,
 		TotalRequests:   0,
 		LastRequestTime: "",
 		UptimeSeconds:   0,

@@ -186,4 +186,3 @@ func readDarwinMemoryInfo() (int64, int64, error) {
 
 	return totalMB - pageFree, pageFree, nil
 }
-
