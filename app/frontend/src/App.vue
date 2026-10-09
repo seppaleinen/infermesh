@@ -91,7 +91,39 @@ const isLocalWorker = (w: { hostname?: string | null; port: number | null }): bo
   return w.port === ownPort
 }
 
-const supervisorStatus = useSupervisor()
+const supervisor = useSupervisor()
+
+const workerState = computed(() => {
+  const status = supervisor.status.value
+  if (!status) return null
+  return status.worker?.state ?? null
+})
+const workerRegistered = computed(() => {
+  const status = supervisor.status.value
+  if (!status) return false
+  return status.worker?.registered ?? false
+})
+const routerState = computed(() => {
+  const status = supervisor.status.value
+  if (!status) return null
+  return status.router?.state ?? null
+})
+
+async function handleRestartWorker() {
+  try {
+    await supervisor.restartWorker()
+  } catch (e) {
+    console.error('restart worker failed', e)
+  }
+}
+
+async function handleRestartRouter() {
+  try {
+    await supervisor.restartRouter()
+  } catch (e) {
+    console.error('restart router failed', e)
+  }
+}
 
 onMounted(async () => {
   window.addEventListener('keydown', onKeydown)
@@ -202,10 +234,10 @@ const availableModelCount = computed(() => {
             <path d="M7 11l9.5-3.5M7 13l9.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.6" />
           </svg>
         </div>
-        <h1 id="status-title" class="status-title">{{ supervisorStatus.value && supervisorStatus.value.worker && supervisorStatus.value.worker.state === 'running' && !supervisorStatus.value.worker.registered ? 'Worker enrolling…' : 'No workers connected' }}</h1>
+         <h1 id="status-title" class="status-title">{{ workerState === 'running' && !workerRegistered ? 'Worker enrolling…' : 'No workers connected' }}</h1>
         <p class="status-copy">
           Router is reachable at <span class="mono">{{ workers.state.value.routerURL }}</span>,
-          <template v-if="supervisorStatus.value && supervisorStatus.value.worker && supervisorStatus.value.worker.state === 'running' && !supervisorStatus.value.worker.registered">
+          <template v-if="workerState === 'running' && !workerRegistered">
             but the worker is enrolling and hasn't registered yet.
           </template>
           <template v-else>
@@ -243,26 +275,47 @@ const availableModelCount = computed(() => {
         </div>
       </section>
 
-      <!-- Workers present -->
-      <template v-else>
-        <div class="workers-head">
-          <div class="workers-title">
-            <h1 class="workers-count">{{ workerCount }} worker<span v-if="workerCount !== 1">s</span></h1>
-<p class="workers-sub">
-  connected to <span class="mono">{{ workers.state.value.routerURL }}</span>
-<span v-if="popular.state.value.kind === 'ready' && popular.state.value.data.length">
-	· {{ popular.state.value.data.length }} model<span v-if="popular.state.value.data.length !== 1">s</span> across the pool
-	<span v-if="popular.state.value.data.length">· {{ availableModelCount }} available</span>
-</span>
-<span v-if="connectionCount.state.value.kind === 'ready'">
-	· {{ connectionCount.state.value.data }} connection<span v-if="connectionCount.state.value.data !== 1">s</span>
-</span>
-</p>
-          </div>
-          <span class="workers-live"><span class="dot flag-dot flag-live"></span> live</span>
-        </div>
+       <!-- Workers present -->
+       <template v-else>
+         <div class="workers-head">
+           <div class="workers-title">
+             <h1 class="workers-count">{{ workerCount }} worker<span v-if="workerCount !== 1">s</span></h1>
+ <p class="workers-sub">
+   connected to <span class="mono">{{ workers.state.value.routerURL }}</span>
+ <span v-if="popular.state.value.kind === 'ready' && popular.state.value.data.length">
+ 	· {{ popular.state.value.data.length }} model<span v-if="popular.state.value.data.length !== 1">s</span> across the pool
+ 	<span v-if="popular.state.value.data.length">· {{ availableModelCount }} available</span>
+ </span>
+ <span v-if="connectionCount.state.value.kind === 'ready'">
+ 	· {{ connectionCount.state.value.data }} connection<span v-if="connectionCount.state.value.data !== 1">s</span>
+ </span>
+ </p>
+           </div>
+           <span class="workers-live"><span class="dot flag-dot flag-live"></span> live</span>
+         </div>
 
-        <!-- Popular models section (issue #79) -->
+         <!-- Supervisor controls -->
+         <div class="supervisor-controls" v-if="workerState !== null">
+           <div class="supervisor-title">
+             <h2>Supervisor</h2>
+           </div>
+           <div class="supervisor-status">
+             <span class="supervisor-label">Worker:</span>
+             <span class="supervisor-value" :class="{ 'running': workerState === 'running' }">
+               {{ workerState }}
+             </span>
+           </div>
+           <div class="supervisor-actions">
+             <button class="supervisor-btn" @click="handleRestartWorker" :disabled="workerState !== 'running'">
+               Restart Worker
+             </button>
+             <button class="supervisor-btn" @click="handleRestartRouter" :disabled="routerState !== 'running'">
+               Restart Router
+             </button>
+           </div>
+         </div>
+
+         <!-- Popular models section (issue #79) -->
         <PopularModelsTable
           v-if="popular.state.value.kind === 'ready' && popular.state.value.data.length"
           :models="popular.state.value.data"
@@ -644,14 +697,80 @@ const availableModelCount = computed(() => {
 }
 
 @keyframes heartbeat-pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgba(62, 207, 174, 0.45);
-  }
-  70% {
-    box-shadow: 0 0 0 6px rgba(62, 207, 174, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(62, 207, 174, 0);
-  }
+   0% {
+     box-shadow: 0 0 0 0 rgba(62, 207, 174, 0.45);
+   }
+   70% {
+     box-shadow: 0 0 0 6px rgba(62, 207, 174, 0);
+   }
+   100% {
+     box-shadow: 0 0 0 0 rgba(62, 207, 174, 0);
+   }
+ }
+
+/* Supervisor controls */
+.supervisor-controls {
+  width: min(100%, 430px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 20px 16px 0;
+  border: 1px dashed var(--border-strong);
+  border-radius: 16px;
+  background: var(--surface);
+  margin: 20px 0;
+}
+.supervisor-title h2 {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.supervisor-status {
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.supervisor-label {
+  color: var(--text-faint);
+}
+.supervisor-value {
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.supervisor-value.running {
+  color: var(--accent-strong);
+}
+.supervisor-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
+.supervisor-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--surface);
+  background: var(--accent-strong);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+.supervisor-btn:hover {
+  filter: brightness(1.1);
+}
+.supervisor-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 </style>
