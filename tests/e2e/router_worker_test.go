@@ -3,7 +3,9 @@ package e2e
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,6 +48,42 @@ func waitForWorker(t *testing.T, base string, workerPort int, timeout time.Durat
 	}
 }
 
+// waitForWorkerBackend polls the worker's own /v1/models endpoint until it
+// returns HTTP 200 with a non-empty "data" array, meaning the worker's
+// backend adapter has been probed and IsHealthy() will return true for the
+// next inference request. Without this, a streaming request can race the
+// 30s health-check loop: the worker registers (heartbeat) before its backend
+// is reachable, the worker's chatCompletions handler returns 503, and the
+// router's proxyStream overrides the text/event-stream Content-Type with
+// application/json (writeErrorResponse).
+func waitForWorkerBackend(t *testing.T, workerBase string, timeout time.Duration, workerStdout, workerStderr *bytes.Buffer) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	client := &http.Client{Timeout: 2 * time.Second}
+	for {
+		resp, err := client.Get(workerBase + "/v1/models")
+		if err == nil && resp.StatusCode == http.StatusOK {
+			var body struct {
+				Data []struct {
+					ID string `json:"id"`
+				} `json:"data"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&body) == nil && len(body.Data) > 0 {
+				_ = resp.Body.Close()
+				return
+			}
+		}
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("worker backend not ready after %s (worker stdout: %s, worker stderr: %s)",
+				timeout, workerStdout.String(), workerStderr.String())
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 // TestRouterWorkerE2E verifies that separate `infermesh-router` and
 // `infermesh-worker` processes work together: the worker self-registers
 // against the router via HTTP, the OpenAI endpoints respond, and SIGTERM on
@@ -77,10 +115,40 @@ func TestRouterWorkerE2E(t *testing.T) {
 		t.Fatalf("starting router process: %v", err)
 	}
 
+	// Stub backend: the worker's LM Studio adapter dials /v1/models to
+	// determine health. Without a reachable backend, the streaming request
+	// races the 30s health-check loop and surfaces as 503 → application/json.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/models":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"object": "list",
+				"data": []map[string]interface{}{
+					{"id": "stub-model", "object": "model", "owned_by": "stub"},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/chat/completions":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":     "stub-chat",
+				"object": "chat.completion",
+				"model":  "stub-model",
+				"choices": []map[string]interface{}{
+					{"message": map[string]interface{}{"role": "assistant", "content": "hi"}},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer backend.Close()
+
 	worker := exec.Command(workerBin, "--dev-mode",
 		"--router", "http://127.0.0.1:8082",
 		"--port", "8085",
 		"--backend", "lmstudio",
+		"--backend-url", backend.URL,
 		"--model-path", modelPath,
 	)
 	worker.Stdout = &workerStdout
@@ -102,6 +170,10 @@ func TestRouterWorkerE2E(t *testing.T) {
 		t.Fatalf("no workers registered after 10s (router stderr: %s, worker stderr: %s)",
 			routerStderr.String(), workerStderr.String())
 	}
+
+	// Gate both assertions behind a readiness check: the worker's backend
+	// adapter must have probed the stub and IsHealthy() must return true.
+	waitForWorkerBackend(t, fmt.Sprintf("http://127.0.0.1:%d", workerPort), 10*time.Second, &workerStdout, &workerStderr)
 
 	// The router must respond on its OpenAI-compatible endpoints.
 	for _, endpoint := range []string{"/v1/models", "/v1/workers"} {
