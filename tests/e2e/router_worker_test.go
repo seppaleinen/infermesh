@@ -213,6 +213,121 @@ func TestRouterWorkerE2E(t *testing.T) {
 	}
 }
 
+// TestRouterDevModeAPIKey verifies that the router enforces API key on
+// inference endpoints in dev mode when --api-key is provided.
+// - without X-API-Key → 401
+// - with wrong X-API-Key → 401
+// - with correct X-API-Key → request passes (backend health determines final status)
+func TestRouterDevModeAPIKey(t *testing.T) {
+	routerBin := "../../bin/infermesh-router"
+	if _, err := os.Stat(routerBin); err != nil {
+		t.Skipf("skipping e2e: binary %s not found (run `make build` first): %v", routerBin, err)
+	}
+
+	const apiKey = "test-secret-key"
+	routerBase := "http://127.0.0.1:18082"
+
+	var routerStderr bytes.Buffer
+	router := exec.Command(routerBin, "--dev-mode", "--api-key", apiKey, "--addr", "127.0.0.1:18082")
+	router.Stderr = &routerStderr
+	if err := router.Start(); err != nil {
+		_ = router.Process.Kill()
+		t.Fatalf("starting router process: %v", err)
+	}
+	defer func() {
+		_ = router.Process.Kill()
+		_, _ = router.Process.Wait()
+	}()
+
+	// Wait for router to be ready
+	client := &http.Client{Timeout: 2 * time.Second}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatalf("router not ready after 10s (stderr: %s)", routerStderr.String())
+		}
+		resp, err := client.Get(routerBase + "/v1/models")
+		if err == nil && resp.StatusCode == http.StatusOK {
+			_ = resp.Body.Close()
+			break
+		}
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	chatBody := `{"model":"any","messages":[{"role":"user","content":"hi"}],"stream":false}`
+
+	// 1. Request without X-API-Key → 401
+	req, err := http.NewRequest("POST", routerBase+"/v1/chat/completions", strings.NewReader(chatBody))
+	if err != nil {
+		t.Fatalf("creating request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST without API key: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("without API key: expected 401, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	// 2. Request with wrong X-API-Key → 401
+	req, err = http.NewRequest("POST", routerBase+"/v1/chat/completions", strings.NewReader(chatBody))
+	if err != nil {
+		t.Fatalf("creating request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", "wrong-key")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("POST with wrong API key: %v", err)
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("with wrong API key: expected 401, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	// 3. Request with correct X-API-Key → passes auth (backend health determines final status)
+	req, err = http.NewRequest("POST", routerBase+"/v1/chat/completions", strings.NewReader(chatBody))
+	if err != nil {
+		t.Fatalf("creating request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", apiKey)
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("POST with correct API key: %v", err)
+	}
+	// Auth passed; the request reaches the scheduler. Since no worker is
+	// registered, we expect 503 "no workers available" — NOT 401.
+	if resp.StatusCode == http.StatusUnauthorized {
+		t.Errorf("with correct API key: expected non-401 (auth passed), got 401")
+	}
+	_ = resp.Body.Close()
+
+	// Also verify that non-inference endpoints are NOT gated by API key
+	resp, err = client.Get(routerBase + "/v1/models")
+	if err != nil {
+		t.Fatalf("GET /v1/models: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/v1/models without API key: expected 200, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	resp, err = client.Get(routerBase + "/v1/workers")
+	if err != nil {
+		t.Fatalf("GET /v1/workers: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/v1/workers without API key: expected 200, got %d", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}
+
 // TestWorkerCapabilities verifies that `infermesh-worker --capabilities`
 // prints detected capabilities and exits 0.
 func TestWorkerCapabilities(t *testing.T) {
