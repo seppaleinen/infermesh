@@ -117,6 +117,19 @@ func (cb *CircuitBreaker) GetState() CircuitState {
 	return cb.state
 }
 
+// healthProbeURL returns the endpoint used to probe backend health.
+//
+// Historically this was "/health", but LM Studio does not implement that
+// endpoint: it logs "Unexpected endpoint or method. (GET /health). Returning
+// 200 anyway" and still returns 200, so the probe "worked" while spamming the
+// backend log with errors (issue #78). "/v1/models" is the endpoint every
+// OpenAI-compatible backend implements (it is also what ListModels uses), so
+// it is the correct health probe: a reachable, working backend answers it,
+// a dead one does not.
+func (b *OpenAICompatibleBackend) healthProbeURL() string {
+	return b.baseURL + "/v1/models"
+}
+
 // IsHealthy checks if the backend is healthy.
 func (b *OpenAICompatibleBackend) IsHealthy() bool {
 	// Check circuit breaker first
@@ -124,7 +137,7 @@ func (b *OpenAICompatibleBackend) IsHealthy() bool {
 		return false
 	}
 	// Check if backend is reachable
-	_, err := b.client.Get(b.baseURL + "/v1/models")
+	_, err := b.client.Get(b.healthProbeURL())
 	return err == nil
 }
 
@@ -133,7 +146,7 @@ func (b *OpenAICompatibleBackend) HealthCheck() error {
 	if !b.circuitBreaker.CanExecute() {
 		return fmt.Errorf("circuit breaker is open for backend %s", b.baseURL)
 	}
-	_, err := b.client.Get(b.baseURL + "/v1/models")
+	_, err := b.client.Get(b.healthProbeURL())
 	if err != nil {
 		b.circuitBreaker.RecordFailure()
 		return fmt.Errorf("health check failed for %s: %w", b.baseURL, err)
@@ -148,7 +161,7 @@ func (b *OpenAICompatibleBackend) HealthCheckDetails() (HealthStatus, ModelMetri
 		return Unhealthy, ModelMetrics{}, fmt.Errorf("circuit breaker is open for backend %s", b.baseURL)
 	}
 	start := time.Now()
-	_, err := b.client.Get(b.baseURL + "/v1/models")
+	_, err := b.client.Get(b.healthProbeURL())
 	elapsed := time.Since(start)
 	if err != nil {
 		b.circuitBreaker.RecordFailure()
