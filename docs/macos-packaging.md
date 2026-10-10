@@ -119,8 +119,10 @@ Opening the app can fail in two related ways:
    _LSOpenURLsWithCompletionHandler() failed with error -600
    ```
 
-2. Or — more common — double-clicking `InferMesh.app` in Finder just bounces the
-   Dock icon and no window ever appears, with **no** error message.
+2. Or — more common — double-clicking `InferMesh.app` in Finder: the Dock icon
+   bounces, then a best-effort already-running alert appears and self-dismisses
+   (in a non-GUI/`Background` launchd session the alert may not render, so
+   there is **no** error message at all).
 
 Error `-600` is `procNotFound`: Launch Services could not find or start a valid
 process for the bundle. **The bundle is usually fine** — a freshly built
@@ -159,9 +161,18 @@ If Calculator also ends up in state `T`, the launching session is the cause.
 The app takes an exclusive `flock` at
 `$TMPDIR/infermesh-desktop-<uid>.lock` for its whole lifetime
 (`app/instance_lock.go`). A suspended instance left behind by an earlier `open`
-keeps holding that lock, so the next launch hits `ErrAlreadyRunning`, logs to
-stderr and exits with status 0 (`app/main.go:71-75`) — bouncing Dock icon, no
-window, no error.
+keeps holding that lock, so the next launch hits `ErrAlreadyRunning` and exits
+with status 0 — but before exiting it tries to activate the running instance
+over a Unix-domain-socket activation channel that lives next to the lock file
+(`$TMPDIR/infermesh-desktop-<uid>.sock`, or `$XDG_RUNTIME_DIR/infermesh-desktop.sock`
+— derived by `activationSocketPath` in `app/activation.go`), which shows and
+focuses the running instance's window. If the running instance does not
+acknowledge within ~1 second (e.g. it is suspended), `handleSecondLaunch` in
+`app/activation.go` falls back to a best-effort native alert run **out of
+process** (`/usr/bin/osascript -e 'display dialog … giving up after 10'`, see
+`app/activation_dialog_darwin.go`), hard-bounded by a 12s timeout so the
+newcomer can never hang on it. In a non-GUI session that alert may not appear
+at all — and either way the newcomer still exits 0.
 
 **Fix:** clear the zombie instance(s), then launch from Finder:
 
@@ -170,6 +181,9 @@ pkill -f 'InferMesh.app/Contents/MacOS/InferMesh'
 lsof "$TMPDIR/infermesh-desktop-$(id -u).lock"    # should print nothing afterwards
 ```
 
+The "already running" alert is diagnostic only: a suspended instance cannot
+be revived by relaunching and must be killed.
+
 Then open `InferMesh.app` from **Finder**. If a terminal is required, use one in
 the GUI login session (Terminal.app on the desktop) — never SSH / CI / an agent
 background shell.
@@ -177,6 +191,18 @@ background shell.
 When the whole GUI session is wedged, **reboot**: it clears the suspended
 instances (releasing the lock) and resets Launch Services state. A reboot is
 what resolved the reported incident.
+
+**Residual limitation:** a suspended (SIGSTOP'd) instance still holds the
+flock and cannot be signalled or revived by a relaunch. Second launches
+detect it — the ack handshake fails within ~1 second — show a best-effort,
+time-bounded "InferMesh is already running" alert, and exit 0. The alert is
+diagnostic, not a fix: kill the suspended instance
+(`pkill -f 'InferMesh.app/Contents/MacOS/InferMesh'`) or reboot. It is run
+out of process (osascript `display dialog … giving up after 10`, killed
+after a hard 12s timeout) so the relaunch can never hang on it; in a
+non-GUI/Background launchd session it may not appear at all, and the
+relaunch still exits 0 regardless. If the second instance is itself
+suspended at launch (Cause 1), this mechanism never runs — unchanged.
 
 ### 3. Corrupted bundle
 

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -69,9 +70,16 @@ func main() {
 	// process lifetime; the kernel drops it on any exit path (including
 	// kill -9), so no cleanup is needed beyond this defer.
 	lock, err := acquireInstanceLock(lockFilePath())
+	gotLock := err == nil // may run fail-open below without the lock — must not own the activation socket then
 	if errors.Is(err, ErrAlreadyRunning) {
-		log.Print("another InferMesh instance is already running; exiting")
-		return // exit(0): benign for LaunchAgent-triggered relaunch
+		// Second instance (issue #93): first try to bring the running
+		// instance's window to the front over the activation socket next
+		// to the lock file; if it cannot be signalled (no listener /
+		// wedged / old build), show the visible time-bounded
+		// "already running" indication instead of exiting silently.
+		outcome, actErr := handleSecondLaunch(activationSocketPath(lockFilePath()), platformNotifyAlreadyRunning)
+		log.Printf("another InferMesh instance is already running (outcome=%s): %v; exiting", outcome, actErr)
+		return // exit(0): every second-instance path exits 0 for LaunchAgent benignness
 	}
 	if err != nil {
 		// Fail open: the guard is UX, not a security control.
@@ -162,6 +170,63 @@ func main() {
 	// details. Must be registered before app.Run so it precedes the default
 	// WindowClosing listeners.
 	registerCloseToTray(win)
+
+	// Readiness gate for the activation listener (issue #93): the listener
+	// below starts before app.Run(), but globalApplication.impl is only set
+	// inside Run() (wails application.go:664) and the pending windows are
+	// run during startup — until then win.Show() silently returns on its
+	// `globalApplication.impl == nil` guard and win.Focus() on its
+	// `w.impl == nil` guard (webview_window.go), while
+	// application.InvokeSync would nil-panic (dispatchOnMainThread reads
+	// a.impl). ApplicationStarted is emitted from the platform launch event
+	// (darwin: Mac.ApplicationDidFinishLaunching mapped in
+	// events_common_darwin.go) only after Run() has started the event loop
+	// and run the pending windows, so once appReady is true both calls are
+	// effective, and the ack can be gated on it.
+	var appReady atomic.Bool
+	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		appReady.Store(true)
+	})
+
+	// Single-instance activation listener (issue #93): runs only after the
+	// window exists and the readiness flag is registered (both before
+	// app.Run), so an incoming activation request can never race ahead of
+	// a window to show. A request arriving before ApplicationStarted gets
+	// NO ack (the callback returns false) and the second instance falls
+	// back to the visible alert instead of exiting silently.
+	if !gotLock {
+		// Fail-open instance: we do not hold the flock, so the socket path
+		// may belong to the true lock holder. startActivationListener
+		// unlinks its path before binding and again on Close — never touch
+		// it here, or we would steal the live instance's socket.
+		log.Print("single-instance lock not held; skipping activation listener")
+	} else {
+		actServer, err := startActivationListener(activationSocketPath(lockFilePath()), func() bool {
+			if !appReady.Load() {
+				// App event loop not up yet: Show/Focus would silently
+				// no-op, so report failure — no ack means the second
+				// instance shows the visible alert (non-silent).
+				return false
+			}
+			// Run both calls on the application thread: Show() writes
+			// w.options.Hidden and reads w.impl on the calling goroutine
+			// (webview_window.go Show/Focus), so concurrent accept
+			// goroutines would race main-thread writes to w.impl. Nested
+			// InvokeSync is a no-op when already on the main thread
+			// (application.go dispatchOnMainThread). Never called while
+			// !appReady — see the gate above.
+			application.InvokeSync(func() {
+				win.Show()
+				win.Focus()
+			})
+			return true
+		})
+		if err != nil {
+			log.Printf("single-instance activation listener unavailable; second launches will show a dialog: %v", err)
+		} else {
+			defer actServer.Close() //nolint:errcheck
+		}
+	}
 
 	// On shutdown, tear down any supervised children so the user's machine is
 	// left in the same state the app found it in. Uses the SAME supervisor
