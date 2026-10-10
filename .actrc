@@ -1,0 +1,20 @@
+# Local CI runner (act + podman). Run with:
+#   DOCKER_HOST=tcp://127.0.0.1:2376 act -j build
+#
+# DOCKER_HOST points at the podman machine's socat bridge (see
+# scripts/podman-act-bridge.sh), which forwards to the VM's
+# /run/podman/podman.sock. The bridge is required because podman's Docker
+# API rejects archive copies into paths that escape their parent via a
+# symlink (Ubuntu ships /var/run -> /run); the runner image below breaks
+# that symlink so `docker cp` works.
+#
+# Image: catthehacker/ubuntu:act-latest with /var/run materialised as a
+# real directory (see Dockerfile.actci). Pre-seeded action cache in
+# /tmp/act-cache so the action copies are cached across runs.
+
+--container-architecture=linux/amd64
+-P ubuntu-latest=act-ci:fixed
+-p=false
+--no-cache-server
+--action-cache-path=/tmp/act-cache
+--no-skip-checkout
