@@ -129,8 +129,11 @@ func TestRouterWorkerE2E(t *testing.T) {
 	}
 	_ = chatResp.Body.Close()
 
-	// Streaming requests still use text/event-stream.
-	streamBody := `{"model":"nonexistent","messages":[{"role":"user","content":"hi"}],"stream":true}`
+	// Streaming requests still use text/event-stream. Must target a model the
+	// worker actually advertises (filepath.Base(modelPath) == "model.bin");
+	// a nonexistent model is rejected by the scheduler with a JSON error body
+	// before any SSE header is written, so it would mask the content-type check.
+	streamBody := `{"model":"model.bin","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	streamResp, err := http.Post(routerBase+"/v1/chat/completions", "application/json", strings.NewReader(streamBody))
 	if err != nil {
 		t.Fatalf("POST /v1/chat/completions stream: %v", err)

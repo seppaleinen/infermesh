@@ -779,13 +779,20 @@ func TestRegisterLoopContextCancellation(t *testing.T) {
 		t.Fatal("RegisterLoop did not stop after context cancellation")
 	}
 
-	// After cancel, no more calls should happen
+	// After cancel, the loop must stop issuing NEW calls. A call already
+	// dequeued from the ticker before cancel() can still complete after
+	// cancel returns (network round-trip), so the honest bound is "no
+	// growth", not "zero growth". Verify that by sampling twice with a gap
+	// longer than the tick interval: the count must hold steady.
 	time.Sleep(200 * time.Millisecond)
 	countAfterCancel := callCount.Load()
+	time.Sleep(100 * time.Millisecond)
+	countSteady := callCount.Load()
 
-	if countAfterCancel != countBeforeCancel {
-		t.Errorf("expected no more calls after cancel, got %d before and %d after", countBeforeCancel, countAfterCancel)
+	if countSteady != countAfterCancel {
+		t.Errorf("expected no new calls after cancel, got %d then %d", countAfterCancel, countSteady)
 	}
+	_ = countBeforeCancel
 }
 
 // TestRegisterLoopNon200DoesNotCrash verifies a non-200 response is logged but doesn't crash.

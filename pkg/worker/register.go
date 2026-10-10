@@ -36,7 +36,17 @@ func RegisterLoopWithRefresh(ctx context.Context, routerBase string, infoFn func
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// Double-select: the inner `default` ensures ctx.Done() is checked
+	// before a possibly-stale ticker.C is dequeued, so cancellation is
+	// observed promptly rather than waiting for the next tick. Even so, a
+	// call already dequeued may complete after cancel() returns — postRegister
+	// short-circuits on ctx.Err() to minimise that window.
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -55,6 +65,14 @@ func registerURL(routerBase string) string {
 
 // postRegister sends a single POST to the router's /v1/dev/register endpoint.
 func postRegister(ctx context.Context, routerBase string, info protocol.WorkerInfo, log *slog.Logger) {
+	// Short-circuit if the context is already done: the select in
+	// RegisterLoopWithRefresh may have dequeued a ticker.C before ctx was
+	// cancelled, so a call can be in-flight when cancel() returns. Without
+	// this guard the in-flight POST still goes out and the loop's "no more
+	// calls after cancel" invariant is untestable (racy by construction).
+	if ctx.Err() != nil {
+		return
+	}
 	body, err := json.Marshal(info)
 	if err != nil {
 		log.Warn("failed to marshal worker info for dev register", "error", err)
@@ -91,6 +109,13 @@ func postRegister(ctx context.Context, routerBase string, info protocol.WorkerIn
 // prod-mode counterpart of postRegister: the router's /v1/dev/register endpoint
 // is wrapped by the mTLS middleware, so plain HTTP is rejected with 403.
 func postRegisterMTLS(ctx context.Context, routerBase string, info protocol.WorkerInfo, certFile, keyFile, caCertFile string, log *slog.Logger) {
+	// See postRegister: the select in RegisterLoopWithRefreshMTLS can dequeue
+	// a ticker.C after ctx was cancelled, so an in-flight POST is possible at
+	// cancel time. Short-circuit to keep the "no calls after cancel"
+	// invariant testable.
+	if ctx.Err() != nil {
+		return
+	}
 	body, err := json.Marshal(info)
 	if err != nil {
 		log.Warn("failed to marshal worker info for mTLS register", "error", err)
@@ -135,7 +160,14 @@ func RegisterLoopWithRefreshMTLS(ctx context.Context, routerBase string, infoFn 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// Double-select (see RegisterLoopWithRefresh): check ctx.Done()
+	// before dequeuing a possibly-stale ticker.C.
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		select {
 		case <-ctx.Done():
 			return
