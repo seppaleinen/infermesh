@@ -109,6 +109,15 @@ func runWorker(args []string) int {
 		isDevMode = true
 	}
 
+	// Dev-mode default: when --router is not provided, use the router's
+	// default address (http://127.0.0.1:8080) so the worker registers via
+	// HTTP instead of silently falling back to mDNS. This matches the
+	// router's default --addr :8080 and avoids the silent registration
+	// failure when the router runs on a non-default port.
+	if isDevMode && f.Router == "" {
+		f.Router = "http://127.0.0.1:8080"
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
