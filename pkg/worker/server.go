@@ -292,6 +292,14 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/models", s.modelsList)
 
 	var handler http.Handler = mux
+
+	// Per-endpoint API key check on inference endpoints (dev and prod).
+	// Mirrors the router's wrapInferenceEndpoints: the middleware is a
+	// no-op when APIKey is empty, so we can apply it unconditionally.
+	if s.config.APIKey != "" {
+		handler = s.wrapInferenceEndpoints(handler, s.config.APIKey)
+	}
+
 	if !security.IsDevMode(s.config) {
 		// Prod mode: validate the TLS configuration before starting so we
 		// fail fast with a clear error instead of crashing inside
@@ -306,13 +314,10 @@ func (s *Server) Start(ctx context.Context) error {
 
 		// Wrap the handler with the mTLS middleware so the worker enforces
 		// client-certificate verification and CN restriction at the HTTP
-		// layer as well as the TLS layer.
+		// layer as well as the TLS layer. mTLS wraps the API-key-wrapped
+		// handler so the ordering is: mTLS (innermost) -> API key (outermost).
 		mtlsMW := security.NewMTLSMiddleware(caCertPool, true, security.SplitCNs(s.config.TrustedCNs)...)
-
-		// Per-endpoint API key check on inference endpoints. The router
-		// (our client in prod) must present a valid X-API-Key on chat
-		// and completions requests.
-		handler = mtlsMW(s.wrapInferenceEndpoints(mux, s.config.APIKey))
+		handler = mtlsMW(handler)
 
 		// Load the worker's certificate for serving HTTPS.
 		cert, err := security.LoadTLSCertFromFile(s.config.MTLSCert, s.config.MTLSKey)

@@ -71,6 +71,10 @@ type RunConfig struct {
 	// ExcludedModels is a comma-separated blacklist of models this worker is
 	// NOT WILLING to serve. Applies only when AllowedModels is empty.
 	ExcludedModels string
+	// APIKey is the API key for authenticating inference requests (dev and prod mode).
+	// When non-empty, /v1/chat/completions and /v1/completions require a valid
+	// X-API-Key header. Mirrors the router's --api-key behavior (issue #81).
+	APIKey string
 }
 
 // Handle represents a running worker: HTTP server, registration loop (or
@@ -149,6 +153,7 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 		CertDir:            cfg.CertDir,
 		TrustedCNs:         cfg.TrustedCNs,
 		EnableHealthChecks: cfg.EnableHealthChecks,
+		APIKey:             cfg.APIKey,
 	}
 
 	// Configure capabilities

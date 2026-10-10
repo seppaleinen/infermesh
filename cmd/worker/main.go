@@ -37,6 +37,7 @@ type WorkerFlags struct {
 	// ModelRefreshInterval is the cadence for re-querying the backend's
 	// model catalogue (0 uses the default 10s).
 	ModelRefreshInterval time.Duration
+	APIKey               string
 }
 
 // parseWorkerFlags parses args into WorkerFlags. It uses ContinueOnError so
@@ -69,6 +70,7 @@ func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	fs.StringVar(&f.AllowedModels, "allowed-models", "", "comma-separated list of models this worker is WILLING to serve (whitelist); empty = all")
 	fs.StringVar(&f.ExcludedModels, "excluded-models", "", "comma-separated list of models this worker is NOT WILLING to serve (blacklist); applies only when --allowed-models is empty")
 	fs.DurationVar(&f.ModelRefreshInterval, "model-refresh-interval", 0, "cadence for re-querying the backend's model catalogue; 0 uses the default 10s")
+	fs.StringVar(&f.APIKey, "api-key", "", "API key for authenticating inference requests (dev and prod mode)")
 }
 
 // workerFlagUsage prints the worker flag help to w.
@@ -139,6 +141,7 @@ func runWorker(args []string) int {
 		AllowedModels:        f.AllowedModels,
 		ExcludedModels:       f.ExcludedModels,
 		ModelRefreshInterval: f.ModelRefreshInterval,
+		APIKey:               f.APIKey,
 	})
 	if err != nil {
 		if errors.Is(err, worker.ErrMissingModelPath) {
