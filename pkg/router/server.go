@@ -537,7 +537,7 @@ func (s *Server) Start(ctx context.Context) error {
 		// client-certificate verification and CN restriction at the HTTP
 		// layer. This replaces the raw tls.Config that was never enforced.
 		// The mTLS middleware handles worker-facing endpoints; the API key
-		// middleware (wrapped outside this block) handles external clients.
+		// middleware (applied after this block) handles external clients.
 		mtlsMW := security.NewMTLSMiddleware(caCertPool, true, security.SplitCNs(s.cfg.TrustedCNs)...)
 		handler = mtlsMW(mux)
 
@@ -552,14 +552,18 @@ func (s *Server) Start(ctx context.Context) error {
 		s.routerClientCert = cert
 		s.workerCAPool = caCertPool
 
+		// TLS config is needed for the server; build it now.
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{*cert},
+			ClientAuth:   tls.RequireAndVerifyClientCert,
+			ClientCAs:    caCertPool,
+		}
+
+		// Build the server (TLS or plain) after handler is fully wrapped.
 		s.server = &http.Server{
-			Addr:    s.addr,
-			Handler: handler,
-			TLSConfig: &tls.Config{
-				Certificates: []tls.Certificate{*cert},
-				ClientAuth:   tls.RequireAndVerifyClientCert,
-				ClientCAs:    caCertPool,
-			},
+			Addr:      s.addr,
+			Handler:   handler,
+			TLSConfig: tlsConfig,
 		}
 	} else {
 		// Dev mode: no mTLS.
@@ -570,12 +574,16 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	// Per-endpoint API key check on inference endpoints (dev and prod).
-	// Hoisted out of the mode branch so the guard appears once (issue #82).
-	// In prod, mTLS is already wrapped around mux (innermost), so API key
-	// wraps outermost to preserve original prod ordering: mTLS -> API key.
+	// Hoisted after the mode branch so the guard appears once (issue #82).
+	// In prod, mTLS already wraps mux (innermost), so API key wraps
+	// outermost to preserve original prod ordering: mTLS -> API key.
+	// In dev, API key wraps mux directly.
 	if s.cfg.APIKey != "" {
 		handler = s.wrapInferenceEndpoints(handler, s.cfg.APIKey)
 	}
+
+	// The server's handler must point to the final wrapped handler.
+	s.server.Handler = handler
 
 	// Attach the ConnState hook so the active-connection counter tracks
 	// live sockets. StateNew increments, StateClosed decrements. Keep-alive
