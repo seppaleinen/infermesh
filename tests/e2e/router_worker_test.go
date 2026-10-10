@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,6 +47,38 @@ func waitForWorker(t *testing.T, base string, workerPort int, timeout time.Durat
 	}
 }
 
+// startOpenAIMockBackend starts an in-process OpenAI-compatible backend on an
+// ephemeral 127.0.0.1 port and returns its base URL (http://127.0.0.1:<port>).
+// Its t.Cleanup(srv.Close) is registered here; call this BEFORE starting the
+// worker so the worker is killed before the mock is closed (t.Cleanup is LIFO).
+func startOpenAIMockBackend(t *testing.T) string {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{"id": "model.bin", "object": "model"}},
+		})
+	})
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "chatcmpl-mock",
+			"object":  "chat.completion",
+			"created": 0,
+			"model":   "model.bin",
+			"choices": []map[string]any{{
+				"index":         0,
+				"message":       map[string]any{"role": "assistant", "content": "Hello from mock backend!"},
+				"finish_reason": "stop",
+			}},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
 // TestRouterWorkerE2E verifies that separate `infermesh-router` and
 // `infermesh-worker` processes work together: the worker self-registers
 // against the router via HTTP, the OpenAI endpoints respond, and SIGTERM on
@@ -77,10 +110,15 @@ func TestRouterWorkerE2E(t *testing.T) {
 		t.Fatalf("starting router process: %v", err)
 	}
 
+	// Start the in-process mock backend before the worker so that, under
+	// t.Cleanup's LIFO ordering, the worker is torn down before the mock.
+	mockURL := startOpenAIMockBackend(t)
+
 	worker := exec.Command(workerBin, "--dev-mode",
 		"--router", "http://127.0.0.1:8082",
 		"--port", "8085",
-		"--backend", "lmstudio",
+		"--backend", "custom",
+		"--backend-url", mockURL,
 		"--model-path", modelPath,
 	)
 	worker.Stdout = &workerStdout
@@ -133,6 +171,9 @@ func TestRouterWorkerE2E(t *testing.T) {
 	// worker actually advertises (filepath.Base(modelPath) == "model.bin");
 	// a nonexistent model is rejected by the scheduler with a JSON error body
 	// before any SSE header is written, so it would mask the content-type check.
+	// Wait for the capability cache to hydrate the worker's model first.
+	waitForModel(t, routerBase, "model.bin", 10*time.Second)
+
 	streamBody := `{"model":"model.bin","messages":[{"role":"user","content":"hi"}],"stream":true}`
 	streamResp, err := http.Post(routerBase+"/v1/chat/completions", "application/json", strings.NewReader(streamBody))
 	if err != nil {
