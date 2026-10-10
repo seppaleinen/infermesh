@@ -541,12 +541,6 @@ func (s *Server) Start(ctx context.Context) error {
 		mtlsMW := security.NewMTLSMiddleware(caCertPool, true, security.SplitCNs(s.cfg.TrustedCNs)...)
 		handler = mtlsMW(mux)
 
-		// Per-endpoint API key check on inference endpoints, wrapped
-		// outermost (after mTLS) to preserve the original prod ordering.
-		if s.cfg.APIKey != "" {
-			handler = s.wrapInferenceEndpoints(handler, s.cfg.APIKey)
-		}
-
 		// Load the router's certificate for serving HTTPS.
 		cert, err := security.LoadTLSCertFromFile(s.cfg.MTLSCert, s.cfg.MTLSKey)
 		if err != nil {
@@ -568,17 +562,19 @@ func (s *Server) Start(ctx context.Context) error {
 			},
 		}
 	} else {
-		// Dev mode: no mTLS. An api-key, if configured, still gates the
-		// inference endpoints — previously dev mode ignored --api-key
-		// entirely (issue #77).
-		if s.cfg.APIKey != "" {
-			handler = s.wrapInferenceEndpoints(handler, s.cfg.APIKey)
-		}
-
+		// Dev mode: no mTLS.
 		s.server = &http.Server{
 			Addr:    s.addr,
 			Handler: handler,
 		}
+	}
+
+	// Per-endpoint API key check on inference endpoints (dev and prod).
+	// Hoisted out of the mode branch so the guard appears once (issue #82).
+	// In prod, mTLS is already wrapped around mux (innermost), so API key
+	// wraps outermost to preserve original prod ordering: mTLS -> API key.
+	if s.cfg.APIKey != "" {
+		handler = s.wrapInferenceEndpoints(handler, s.cfg.APIKey)
 	}
 
 	// Attach the ConnState hook so the active-connection counter tracks
