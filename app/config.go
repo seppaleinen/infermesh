@@ -31,6 +31,7 @@ type Settings struct {
 	RelayURL                 string            `json:"relay_url" yaml:"relay_url"`
 	ModelAliases             map[string]string `json:"model_aliases" yaml:"model_aliases"`
 	DevMode                  *bool             `json:"dev_mode" yaml:"dev_mode"`
+	ClientCertCN             string            `json:"client_cert_cn" yaml:"client_cert_cn"`
 	AutoStartOnLogin         *bool             `json:"auto_start_on_login" yaml:"auto_start_on_login"`
 	Secrets                  map[string]string `json:"secrets" yaml:"-"`
 	SecretRefs               map[string]string `json:"secret_refs" yaml:"secret_refs"`
@@ -47,6 +48,7 @@ func DefaultSettings() Settings {
 		WorkerPort:               8081,
 		WorkerEnableHealthChecks: boolPtr(true),
 		DevMode:                  boolPtr(true),
+		ClientCertCN:             "infermesh-desktop",
 		AutoStartOnLogin:         boolPtr(false), // opt-in: no login item by default
 		Secrets:                  make(map[string]string),
 		SecretRefs:               make(map[string]string),
@@ -232,6 +234,9 @@ func mergeDefaults(s Settings) Settings {
 	}
 	if s.DevMode == nil {
 		s.DevMode = def.DevMode
+	}
+	if s.ClientCertCN == "" {
+		s.ClientCertCN = def.ClientCertCN
 	}
 	// *bool tri-state: nil means "old file / no opinion" → default (false);
 	// an explicit true or false on disk must survive the merge untouched.

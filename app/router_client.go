@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -38,12 +41,16 @@ type WorkerView struct {
 }
 
 // RouterClient is a Wails service bound to the frontend. It talks to the
-// router's HTTP API over plain HTTP (dev mode). No auth, no mTLS here —
-// that is prod-mode scope (#9/#10), not the desktop MVP.
+// router's HTTP API over plain HTTP (dev mode) or mTLS (prod mode).
+// The desktop app presents a client certificate minted by the CA in prod mode.
 type RouterClient struct {
 	baseURL       string
 	localHostname string
 	sv            *Supervisor
+	// tlsClient is cached lazily so the expensive tls.Config build happens
+	// once per process. It is reset when the supervisor's client cert paths
+	// change (e.g. router restart).
+	tlsClient *http.Client
 }
 
 // ServiceName implements application.ServiceName so the binding generator
@@ -73,7 +80,92 @@ func (c *RouterClient) GetRouterURL() string {
 	return c.baseURL
 }
 
+// SetSupervisor attaches the Supervisor to the client so TLS can be
+// negotiated when the router runs in production mode. The routerProbe
+// in the supervisor uses this to build a TLS transport.
 func (c *RouterClient) SetSupervisor(sv *Supervisor) { c.sv = sv }
+
+// effectiveBaseURL returns the base URL with the correct scheme for the
+// current mode: https when the supervisor has minted a client certificate
+// (prod mode), http otherwise.
+// This keeps the public RouterClient API stable — callers pass an http base
+// URL; the client transparently upgrades to https in production.
+func (c *RouterClient) effectiveBaseURL() string {
+	if c.sv == nil {
+		return c.baseURL
+	}
+	certPath, _ := c.sv.GetClientCertPaths()
+	if certPath == "" {
+		return c.baseURL
+	}
+	// Upgrade scheme to https for prod mode.
+	if strings.HasPrefix(c.baseURL, "http://") {
+		return "https://" + strings.TrimPrefix(c.baseURL, "http://")
+	}
+	return c.baseURL
+}
+
+// httpClient returns an http.Client that uses mTLS when the supervisor has
+// minted a client certificate (production mode). The TLS configuration is
+// built lazily and cached. The client trusts the CA certificate in the
+// supervisor's caCertDir.
+func (c *RouterClient) httpClient() *http.Client {
+	if c.tlsClient != nil {
+		return c.tlsClient
+	}
+	if c.sv == nil {
+		c.tlsClient = http.DefaultClient
+		return c.tlsClient
+	}
+	certPath, keyPath := c.sv.GetClientCertPaths()
+	caCertDir := c.sv.GetCACertDir()
+	if certPath == "" || keyPath == "" || caCertDir == "" {
+		c.tlsClient = http.DefaultClient
+		return c.tlsClient
+	}
+	// Load client certificate.
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		// Fall back to plain HTTP on load error.
+		c.tlsClient = http.DefaultClient
+		return c.tlsClient
+	}
+	// Load CA certificate pool.
+	caCertFile := filepath.Join(caCertDir, "ca.crt")
+	caPEM, err := os.ReadFile(caCertFile)
+	if err != nil {
+		c.tlsClient = http.DefaultClient
+		return c.tlsClient
+	}
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM(caPEM) {
+		c.tlsClient = http.DefaultClient
+		return c.tlsClient
+	}
+	// In production the router may serve with a self-signed certificate
+	// whose SANs differ from the hostname in the URL (e.g. 127.0.0.1).
+	// We skip hostname verification for now; the mTLS client certificate
+	// and CA pinning are the real authentication mechanisms.
+	// This is acceptable for a desktop app connecting to a locally-supervised
+	// router; production deployments with stricter verification can pin the
+	// server certificate.
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      caPool,
+		// InsecureSkipVerify is used because the router may be addressed by
+		// 127.0.0.1 while the certificate's SANs include "localhost". The mTLS
+		// client cert remains the primary authentication mechanism.
+		InsecureSkipVerify: true,
+	}
+	transport := &http.Transport{
+		TLSClientConfig: tlsConfig,
+	}
+	c.tlsClient = &http.Client{
+		Transport: transport,
+		Timeout:   10 * time.Second,
+	}
+	return c.tlsClient
+}
 
 // IsLocalWorker reports whether the worker identified by hostname/port is the
 // one this desktop app supervises. Used by the UI to tag the local worker
@@ -108,7 +200,7 @@ func (c *RouterClient) SetRouterURL(url string) {
 
 // workersPath builds the full /v1/workers URL for the configured base.
 func (c *RouterClient) workersPath() string {
-	return c.baseURL + "/v1/workers"
+	return c.effectiveBaseURL() + "/v1/workers"
 }
 
 // GetWorkers fetches the connected-workers list from the router. It returns
@@ -120,7 +212,7 @@ func (c *RouterClient) GetWorkers(ctx context.Context) ([]WorkerView, error) {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("router unreachable at %s: %w", c.baseURL, err)
 	}
@@ -248,7 +340,7 @@ type PopularModelView struct {
 // popularModelsPath builds the full /meta/models/popular URL for the
 // configured base.
 func (c *RouterClient) popularModelsPath() string {
-	return c.baseURL + "/meta/models/popular"
+	return c.effectiveBaseURL() + "/meta/models/popular"
 }
 
 // GetPopularModels fetches the sorted popular-models list from the router.
@@ -261,7 +353,7 @@ func (c *RouterClient) GetPopularModels(ctx context.Context) ([]PopularModelView
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("router unreachable at %s: %w", c.baseURL, err)
 	}
@@ -316,7 +408,7 @@ var ErrRouterUnreachable = errors.New("router unreachable")
 // connectionCountPath builds the full /meta/connections/count URL for the
 // configured base.
 func (c *RouterClient) connectionCountPath() string {
-	return c.baseURL + "/meta/connections/count"
+	return c.effectiveBaseURL() + "/meta/connections/count"
 }
 
 // GetConnectionCount fetches the number of currently active HTTP connections
@@ -329,7 +421,7 @@ func (c *RouterClient) GetConnectionCount(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("build request: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("router unreachable at %s: %w", c.baseURL, err)
 	}

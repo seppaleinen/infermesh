@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/seppaleinen/infermesh/pkg/security"
 )
 
 // default binary names — match the Makefile output layout
@@ -42,6 +44,8 @@ const (
 	secretRefWorkerCustomAuth = "worker/customauth"
 	secretRefMTLSCert         = "mtls/cert"
 	secretRefMTLSKey          = "mtls/key"
+	secretRefMTLSCACert       = "mtls/ca-cert"
+	secretRefMTLSCAKey        = "mtls/ca-key"
 	envWorkerCustomAuth       = "INFERMESH_WORKER_CUSTOM_AUTH"
 	roleRouter                = "router"
 	roleWorker                = "worker"
@@ -113,6 +117,16 @@ type Supervisor struct {
 	routerProbe  func(ctx context.Context, st Settings) ([]WorkerView, error)
 	workerProbe  func(ctx context.Context, st Settings) (bool, error)
 
+	// clientCertPaths holds the minted desktop client cert/key PEM paths so
+	// RouterClient can build a TLS transport in prod mode. Set when the
+	// router is started in prod mode; cleared on StopRouter.
+	clientCertPaths [2]string // [0]=cert, [1]=key
+
+	// caCertDir holds the temporary directory containing ca.crt for the router
+	// to verify client certificates. Set when the router is started in prod
+	// mode; cleared on StopRouter.
+	caCertDir string
+
 	mu             sync.Mutex
 	router         *managedProcess
 	worker         *managedProcess
@@ -162,6 +176,7 @@ func (*Supervisor) ServiceName() string { return supervisorServiceName }
 func (s *Supervisor) defaultRouterProbe() func(ctx context.Context, st Settings) ([]WorkerView, error) {
 	return func(ctx context.Context, st Settings) ([]WorkerView, error) {
 		rc := NewRouterClient(routerBaseURL(st.RouterAddr))
+		rc.SetSupervisor(s)
 		return rc.GetWorkers(ctx)
 	}
 }
@@ -307,6 +322,22 @@ func (s *Supervisor) buildRouterArgs(settings Settings) ([]string, error) {
 		if key != "" {
 			args = append(args, "--mtls-key", key)
 		}
+		// Write CA cert to a temp dir so the router can verify client certs.
+		certDir, err := s.writeCertDir()
+		if err != nil {
+			return nil, err
+		}
+		if certDir != "" {
+			args = append(args, "--cert-dir", certDir)
+		}
+		// Mint the desktop client certificate so RouterClient can connect
+		// over mTLS in production mode.
+		if certDir != "" {
+			caCertPath := filepath.Join(certDir, "ca.crt")
+			if _, _, err := s.writeClientCert(settings, caCertPath); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return args, nil
 }
@@ -370,6 +401,109 @@ func (s *Supervisor) buildEnv(settings Settings) ([]string, error) {
 	return env, nil
 }
 
+// writeCertDir creates a temp directory containing ca.crt from the
+// mtls/cert secret. Returns the dir path (empty if no CA cert provisioned).
+// The router reads ca.crt from --cert-dir to verify client certificates.
+func (s *Supervisor) writeCertDir() (string, error) {
+	caCert, err := s.resolveSecret(secretRefMTLSCACert)
+	if err != nil {
+		return "", err
+	}
+	if caCert == "" {
+		return "", nil
+	}
+	if err := os.MkdirAll(s.logsDir, 0o755); err != nil {
+		return "", fmt.Errorf("ensure log dir: %w", err)
+	}
+	// Create a temp directory and write ca.crt into it so the router can
+	// find it under --cert-dir/ca.crt.
+	dir, err := os.MkdirTemp(s.logsDir, "infermesh-ca-dir-")
+	if err != nil {
+		return "", fmt.Errorf("create CA dir: %w", err)
+	}
+	caPath := filepath.Join(dir, "ca.crt")
+	if err := os.WriteFile(caPath, []byte(caCert), 0o600); err != nil {
+		return "", fmt.Errorf("write ca.crt: %w", err)
+	}
+	s.mu.Lock()
+	s.tempFiles = append(s.tempFiles, dir)
+	s.caCertDir = dir
+	s.mu.Unlock()
+	return dir, nil
+}
+
+// writeClientCert mints a desktop client certificate signed by the CA key
+// (mtls/ca-key) using security.GenerateNodeCert. Returns empty paths when
+// the CA key is absent. The cert/key PEM paths are stored in
+// s.clientCertPaths so RouterClient can build a TLS transport.
+func (s *Supervisor) writeClientCert(settings Settings, caCertPath string) (certPath, keyPath string, err error) {
+	caKey, err := s.resolveSecret(secretRefMTLSCAKey)
+	if err != nil {
+		return "", "", err
+	}
+	if caKey == "" {
+		return "", "", nil
+	}
+	if err := os.MkdirAll(s.logsDir, 0o755); err != nil {
+		return "", "", fmt.Errorf("ensure log dir: %w", err)
+	}
+	// GenerateNodeCert reads the CA key from disk; write it to a temp PEM.
+	caKeyPath, err := writeTempFile(s.logsDir, "infermesh-ca-key-*.pem", caKey)
+	if err != nil {
+		return "", "", err
+	}
+	s.mu.Lock()
+	s.tempFiles = append(s.tempFiles, caKeyPath)
+	s.mu.Unlock()
+
+	clientDir, err := os.MkdirTemp(s.logsDir, "infermesh-client-cert-")
+	if err != nil {
+		return "", "", fmt.Errorf("create client cert dir: %w", err)
+	}
+	certPath, keyPath, err = security.GenerateNodeCert(clientDir, caCertPath, caKeyPath, settings.ClientCertCN)
+	if err != nil {
+		return "", "", fmt.Errorf("generate client cert: %w", err)
+	}
+	s.mu.Lock()
+	s.tempFiles = append(s.tempFiles, certPath, keyPath)
+	s.clientCertPaths[0] = certPath
+	s.clientCertPaths[1] = keyPath
+	s.mu.Unlock()
+	return certPath, keyPath, nil
+}
+
+// GetClientCertPaths returns the minted desktop client cert/key PEM paths.
+// Empty strings mean no client cert was minted (dev mode or no CA key).
+func (s *Supervisor) GetClientCertPaths() (certPath, keyPath string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.clientCertPaths[0], s.clientCertPaths[1]
+}
+
+// clearClientCertPaths resets the stored client cert paths (called on StopRouter).
+func (s *Supervisor) clearClientCertPaths() {
+	s.mu.Lock()
+	s.clientCertPaths[0] = ""
+	s.clientCertPaths[1] = ""
+	s.mu.Unlock()
+}
+
+// GetCACertDir returns the temporary directory containing ca.crt for the
+// router to verify client certificates. Empty string means no CA cert
+// provisioned (dev mode).
+func (s *Supervisor) GetCACertDir() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.caCertDir
+}
+
+// clearCACertDir resets the stored CA cert dir (called on StopRouter).
+func (s *Supervisor) clearCACertDir() {
+	s.mu.Lock()
+	s.caCertDir = ""
+	s.mu.Unlock()
+}
+
 // writeMTLSFiles resolves the mtls/cert and mtls/key secrets from the keyring
 // into temp files (mode 0600) and records them for cleanup. Returns empty
 // paths when the secrets are absent. The file contents are never logged.
@@ -414,7 +548,8 @@ func (s *Supervisor) cleanupTempFiles() {
 	s.tempFiles = nil
 	s.mu.Unlock()
 	for _, f := range files {
-		_ = os.Remove(f)
+		// Use RemoveAll to clean up both files and directories (MkdirTemp dirs).
+		_ = os.RemoveAll(f)
 	}
 }
 
@@ -525,6 +660,8 @@ func (s *Supervisor) StopRouter() error {
 	if err := mp.stop(); err != nil {
 		return err
 	}
+	s.clearClientCertPaths()
+	s.clearCACertDir()
 	return nil
 }
 

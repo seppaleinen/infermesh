@@ -12,6 +12,8 @@ var knownSecretRefs = map[string]bool{
 	"worker/customauth": true,
 	"mtls/cert":         true,
 	"mtls/key":          true,
+	"mtls/ca-cert":      true,
+	"mtls/ca-key":       true,
 	"relay/creds":       true,
 }
 
