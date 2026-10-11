@@ -50,19 +50,27 @@ const showCaKey = ref(false)
 
 // Model alias textarea — two‑way bound to settings.model_aliases
 // via a computed that formats/parses the comma/newline‑separated form.
-// This keeps settings.model_aliases up‑to‑date on every input,
-// so dirty tracking works correctly.
-const aliasMapText = computed(() => {
-  if (!settings.value) return ''
-  const raw = settings.value.model_aliases
-  if (raw == null) return ''
-  const clean: Record<string, string> = {}
-  for (const [key, value] of Object.entries(raw)) {
-    if (value !== undefined) {
-      clean[key] = value
+// The setter keeps settings.model_aliases up‑to‑date on every input,
+// so dirty tracking works correctly and the save persists what the user
+// actually typed (a getter-only computed silently no-ops v-model writes).
+const aliasMapText = computed({
+  get() {
+    if (!settings.value) return ''
+    const raw = settings.value.model_aliases
+    if (raw == null) return ''
+    const clean: Record<string, string> = {}
+    for (const [key, value] of Object.entries(raw)) {
+      if (value !== undefined) {
+        clean[key] = value
+      }
     }
-  }
-  return formatModelAliases(clean)
+    return formatModelAliases(clean)
+  },
+  set(text: string) {
+    if (settings.value) {
+      settings.value.model_aliases = parseModelAliasesText(text)
+    }
+  },
 })
 
 // mTLS fields are only relevant when dev mode is explicitly off (see
