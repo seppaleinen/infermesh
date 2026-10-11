@@ -1,0 +1,48 @@
+# Exclude everything by default, then allow only what's needed for the build
+# This is a denylist approach — everything not matched is included.
+
+# Git
+.git
+.gitignore
+.github
+
+# Build outputs
+bin/
+dist/
+*.test
+*.cover
+cover/
+
+# Desktop app (Wails) — large, not needed for router/worker binaries
+app/
+!app/build/docker/
+
+# Frontend (Vue/Vite) — built into desktop app only
+frontend/
+
+# Documentation
+docs/
+README.md
+CHANGELOG.md
+CONTEXT.md
+AGENTS.md
+DYNAMIC_MODEL_MANAGEMENT_PLAN.md
+TEST_SUMMARY.md
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+
+# Go module cache (not needed, we download fresh)
+vendor/
+
+# Temporary files
+*.tmp
+*.temp
+tmp/

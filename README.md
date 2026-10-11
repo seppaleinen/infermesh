@@ -26,6 +26,53 @@ export OPENAI_BASE_URL=http://localhost:8080/v1
 export OPENAI_API_KEY=unused
 ```
 
+## Docker Images
+
+Pre-built multi-arch images are published to **GHCR** on every release:
+
+| Image | Description | Tags |
+|-------|-------------|------|
+| `ghcr.io/seppaleinen/infermesh/router` | Inference router (OpenAI-compatible API) | `latest`, `vX.Y.Z` |
+| `ghcr.io/seppaleinen/infermesh/worker` | Worker (llama.cpp, Ollama, LM Studio backends) | `latest`, `vX.Y.Z` |
+
+Both images run in **dev mode** by default (no auth, loopback only). Override at runtime:
+
+```bash
+# Router
+docker run -d -p 8080:8080 \
+  ghcr.io/seppaleinen/infermesh/router:latest
+
+# Worker (llama.cpp example)
+docker run -d -p 8081:8081 \
+  -v /path/to/models:/models \
+  ghcr.io/seppaleinen/infermesh/worker:latest \
+  --dev-mode --backend llama-cpp --model-path /models/model.gguf
+
+# Test
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-oss-20b","messages":[{"role":"user","content":"Hello"}],"max_tokens":16}'
+```
+
+**Production mode (mTLS):** mount certs and pass flags via env:
+
+```bash
+docker run -d -p 8080:8080 \
+  -v /path/to/certs:/certs:ro \
+  -e ROUTER_ARGS="--prod-mode --mtls-cert=/certs/cert.pem --mtls-key=/certs/key.pem --cert-dir=/certs" \
+  ghcr.io/seppaleinen/infermesh/router:latest
+```
+
+**Build locally:**
+
+```bash
+# Single-arch (loads into local daemon for testing)
+make pkg-docker IMAGE=ghcr.io/seppaleinen/infermesh VERSION=dev
+
+# Multi-arch (requires buildx; push requires auth)
+make pkg-docker-push IMAGE=ghcr.io/seppaleinen/infermesh VERSION=v0.1.16
+```
+
 ## Firewall / Outbound-Only Relay
 
 If your worker machine sits behind a firewall that blocks inbound connections (common on macOS Sequoia+, corporate LANs, or restricted VMs), use the **outbound-only relay** architecture. Both the router and every worker dial OUTBOUND to a relay broker on a permissive host — no machine with an unsigned binary ever accepts an inbound connection.

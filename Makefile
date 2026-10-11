@@ -118,6 +118,54 @@ package-app-windows:
 	fi
 	@echo "Built: $(APP_BIN_DIR)/$(APP_NAME).exe (compile-check)"
 
+# Docker images for router and worker (multi-arch via buildx)
+# Usage: make pkg-docker IMAGE=ghcr.io/seppaleinen/infermesh VERSION=v0.1.16
+# Requires: docker buildx (included in Docker Desktop / docker-ce)
+# Builds both router and worker images, tagged with VERSION and latest.
+# Set PLATFORMS to override (default: linux/amd64,linux/arm64).
+IMAGE      ?= ghcr.io/seppaleinen/infermesh
+VERSION    ?= latest
+PLATFORMS  ?= linux/amd64,linux/arm64
+DOCKERFILE ?= docker/Dockerfile
+
+pkg-docker:
+	@echo "Building Docker images for $(IMAGE):router/$(VERSION) and $(IMAGE):worker/$(VERSION)"
+	@echo "Platforms: $(PLATFORMS)"
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--target router \
+		-t $(IMAGE)/router:$(VERSION) \
+		-t $(IMAGE)/router:latest \
+		-f $(DOCKERFILE) \
+		--load .
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--target worker \
+		-t $(IMAGE)/worker:$(VERSION) \
+		-t $(IMAGE)/worker:latest \
+		-f $(DOCKERFILE) \
+		--load .
+
+# Build and push Docker images to registry (CI use; requires auth)
+# Usage: make pkg-docker-push IMAGE=ghcr.io/seppaleinen/infermesh VERSION=v0.1.16
+pkg-docker-push:
+	@echo "Building and pushing Docker images for $(IMAGE):router/$(VERSION) and $(IMAGE):worker/$(VERSION)"
+	@echo "Platforms: $(PLATFORMS)"
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--target router \
+		-t $(IMAGE)/router:$(VERSION) \
+		-t $(IMAGE)/router:latest \
+		-f $(DOCKERFILE) \
+		--push .
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--target worker \
+		-t $(IMAGE)/worker:$(VERSION) \
+		-t $(IMAGE)/worker:latest \
+		-f $(DOCKERFILE) \
+		--push .
+
 # Build the app, launch it, probe window/tray presence LIGHTLY. Skips (exit 0)
 # on SKIP=1 / INFERMESH_SMOKE_SKIP=1 or headless Linux. Not part of `make test`.
 test-app-smoke: build-app
@@ -187,4 +235,4 @@ coverage:
 	go tool funccover -mode=count -func=cover/coverage.out
 	@echo "Coverage report: cover/coverage.out"
 
-.PHONY: build build-router build-worker build-static build-app package-app package-app-dmg package-app-linux package-app-windows relay test test-security test-integration test-e2e test-platform test-all-platforms lint install-hooks tidy clean app coverage test-app-smoke
+.PHONY: build build-router build-worker build-static build-app package-app package-app-dmg package-app-linux package-app-windows relay test test-security test-integration test-e2e test-platform test-all-platforms lint install-hooks tidy clean app coverage test-app-smoke pkg-docker pkg-docker-push
