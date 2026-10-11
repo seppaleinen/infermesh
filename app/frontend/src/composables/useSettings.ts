@@ -11,6 +11,8 @@ const SECRET_REFS = {
   'worker/customauth': 'worker_custom_auth',
   'mtls/cert': 'worker_mtls_cert',
   'mtls/key': 'worker_mtls_key',
+  'mtls/ca-cert': 'ca_cert',
+  'mtls/ca-key': 'ca_key',
 } as const
 
 export type SecretRefKey = keyof typeof SECRET_REFS
@@ -33,6 +35,7 @@ export function emptySettings(): Settings {
     dev_mode: null,
     worker_enable_health_checks: null,
     auto_start_on_login: null,
+    client_cert_cn: 'infermesh-desktop',
     secrets: {},
     secret_refs: {},
     model_aliases: {},

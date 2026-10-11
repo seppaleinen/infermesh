@@ -31,6 +31,9 @@ const routerApikey = ref('')
 const workerCustomAuth = ref('')
 const workerMTLSCert = ref('')
 const workerMTLSKey = ref('')
+const caCert = ref('')
+const caKey = ref('')
+const clientCertCN = ref('infermesh-desktop')
 
 const saving = ref(false)
 const saveError = ref<string | null>(null)
@@ -42,6 +45,8 @@ const showRouterApikey = ref(false)
 const showWorkerCustomAuth = ref(false)
 const showWorkerMTLSCert = ref(false)
 const showWorkerMTLSKey = ref(false)
+const showCaCert = ref(false)
+const showCaKey = ref(false)
 
 // Model alias textarea — two‑way bound to settings.model_aliases
 // via a computed that formats/parses the comma/newline‑separated form.
@@ -120,6 +125,8 @@ async function loadExistingSecrets(): Promise<void> {
     { ref: 'worker/customauth', target: workerCustomAuth },
     { ref: 'mtls/cert', target: workerMTLSCert },
     { ref: 'mtls/key', target: workerMTLSKey },
+    { ref: 'mtls/ca-cert', target: caCert },
+    { ref: 'mtls/ca-key', target: caKey },
   ]
   for (const { ref, target } of refs) {
     try {
@@ -142,6 +149,8 @@ function takeSnapshot(s: Settings): void {
     workerCustomAuth: '',
     workerMTLSCert: '',
     workerMTLSKey: '',
+    caCert: '',
+    caKey: '',
   }
 }
 
@@ -164,6 +173,7 @@ const dirty = computed(() => {
     'dev_mode',
     'worker_enable_health_checks',
     'auto_start_on_login',
+    'client_cert_cn',
     'model_aliases',
   ]
 
@@ -176,6 +186,8 @@ const dirty = computed(() => {
   if (workerCustomAuth.value !== snapshotSecrets.value.workerCustomAuth) return true
   if (workerMTLSCert.value !== snapshotSecrets.value.workerMTLSCert) return true
   if (workerMTLSKey.value !== snapshotSecrets.value.workerMTLSKey) return true
+  if (caCert.value !== snapshotSecrets.value.caCert) return true
+  if (caKey.value !== snapshotSecrets.value.caKey) return true
 
   return false
 })
@@ -245,6 +257,8 @@ async function handleSave(): Promise<void> {
   if (workerCustomAuth.value) secrets['worker/customauth'] = workerCustomAuth.value
   if (workerMTLSCert.value) secrets['mtls/cert'] = workerMTLSCert.value
   if (workerMTLSKey.value) secrets['mtls/key'] = workerMTLSKey.value
+  if (caCert.value) secrets['mtls/ca-cert'] = caCert.value
+  if (caKey.value) secrets['mtls/ca-key'] = caKey.value
 
    // Parse the textarea into the map before persisting. Empty textarea →
    // empty map (feature off), matching the nil-default contract.
@@ -263,6 +277,8 @@ async function handleSave(): Promise<void> {
     'worker/customauth': workerCustomAuth.value,
     'mtls/cert': workerMTLSCert.value,
     'mtls/key': workerMTLSKey.value,
+    'mtls/ca-cert': caCert.value,
+    'mtls/ca-key': caKey.value,
   }
   const persistedRefs = settings.value?.secret_refs || {}
   for (const [ref, value] of Object.entries(localSecrets)) {
@@ -710,6 +726,88 @@ onMounted(() => {
                 </template>
               </button>
             </div>
+          </div>
+
+          <div class="field">
+            <label for="ca_cert">CA certificate (PEM)</label>
+            <div class="input-group">
+              <input
+                id="ca_cert"
+                :type="showCaCert ? 'text' : 'password'"
+                v-model="caCert"
+                :disabled="!isKeyringAvailable || saving"
+                autocomplete="off"
+                placeholder="-----BEGIN CERTIFICATE-----"
+              />
+              <button
+                type="button"
+                class="toggle-eye"
+                :aria-label="showCaCert ? 'Hide' : 'Show'"
+                @click="showCaCert = !showCaCert"
+                :disabled="!isKeyringAvailable || saving"
+                tabindex="-1"
+              >
+                <template v-if="showCaCert">
+                  <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
+                    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
+                    <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
+                    <path d="M3 3l18 18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  </svg>
+                </template>
+                <template v-else>
+                  <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
+                    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
+                    <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
+                  </svg>
+                </template>
+              </button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="ca_key">CA private key (PEM)</label>
+            <div class="input-group">
+              <input
+                id="ca_key"
+                :type="showCaKey ? 'text' : 'password'"
+                v-model="caKey"
+                :disabled="!isKeyringAvailable || saving"
+                autocomplete="off"
+                placeholder="-----BEGIN RSA PRIVATE KEY-----"
+              />
+              <button
+                type="button"
+                class="toggle-eye"
+                :aria-label="showCaKey ? 'Hide' : 'Show'"
+                @click="showCaKey = !showCaKey"
+                :disabled="!isKeyringAvailable || saving"
+                tabindex="-1"
+              >
+                <template v-if="showCaKey">
+                  <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
+                    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
+                    <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
+                    <path d="M3 3l18 18" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                  </svg>
+                </template>
+                <template v-else>
+                  <svg viewBox="0 0 24 24" fill="none" width="16" height="16">
+                    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="1.5" />
+                    <circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="1.5" />
+                  </svg>
+                </template>
+              </button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="client_cert_cn">Desktop client certificate CN</label>
+            <input
+              id="client_cert_cn"
+              type="text"
+              v-model="settings.client_cert_cn"
+              :disabled="saving"
+            />
           </div>
         </div>
       </section>
