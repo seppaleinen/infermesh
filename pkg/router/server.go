@@ -866,6 +866,21 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build a set of canonical model names that are targets of an active
+	// alias. These are hidden from the worker-model list so the alias (short
+	// name) is advertised instead — an alias is a rename, not additive.
+	// modelAliases is not touched by the cache lock, so computing the set
+	// before acquiring the RLock is safe.
+	var hideCanonical map[string]bool
+	if s.modelAliasesActive() {
+		hideCanonical = make(map[string]bool, len(s.modelAliases.Aliases))
+		for _, target := range s.modelAliases.Aliases {
+			if target.Canonical != "" {
+				hideCanonical[target.Canonical] = true
+			}
+		}
+	}
+
 	// Get capabilities from cache
 	s.cache.mu.RLock()
 	defer s.cache.mu.RUnlock()
@@ -877,12 +892,15 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 
 	// Aggregate models from all workers, only including loaded models.
 	// Initialized as empty slice (not nil) so JSON encodes as [] not null.
+	// Canonical models shadowed by an active alias are skipped here; the
+	// synthetic alias advertisement block below still advertises them.
 	models := []protocol.ModelInfo{}
 	for _, worker := range workers {
 		for _, m := range worker.Capabilities.Models {
-			if m.Loaded {
-				models = append(models, m)
+			if !m.Loaded || hideCanonical[m.Name] {
+				continue
 			}
+			models = append(models, m)
 		}
 	}
 

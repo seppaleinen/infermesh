@@ -900,3 +900,93 @@ func TestModelAlias_ModelsList_AliasAndAutoCoexist(t *testing.T) {
 		t.Error("expected alias model in list")
 	}
 }
+
+// TestModelAlias_ModelsListHidesCanonical verifies that when a configured
+// alias's canonical model is loaded on a worker, the canonical is hidden
+// from /v1/models and only the alias (short name) is advertised.
+func TestModelAlias_ModelsListHidesCanonical(t *testing.T) {
+	workers := []protocol.WorkerInfo{
+		mkWorker("worker-1", "gemma-4-12b"),
+	}
+	aliasCfg := ParseModelAliases("short-name=gemma-4-12b")
+	tr := testRegistry(t, workers)
+	srv := tr.Server()
+	srv.cache = NewCapabilityCache(tr.reg, testLogger())
+	srv.cache.Start(tr.ctx)
+	srv.cache.mu.Lock()
+	for _, w := range workers {
+		srv.cache.cache[w.ID] = w
+	}
+	srv.cache.mu.Unlock()
+	srv.SetModelAliases(aliasCfg)
+	defer func() { _ = tr.reg.Stop() }()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	w := httptest.NewRecorder()
+	srv.handleModelsList(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp ModelsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	aliasFound := false
+	for _, m := range resp.Data {
+		if m.Name == "gemma-4-12b" {
+			t.Errorf("canonical model gemma-4-12b should be hidden from /v1/models, got: %+v", m)
+		}
+		if m.Name == "short-name" && m.Backend == "alias" && m.Loaded {
+			aliasFound = true
+		}
+	}
+	if !aliasFound {
+		t.Errorf("expected alias 'short-name' advertised in /v1/models, got: %+v", resp.Data)
+	}
+}
+
+// TestModelAlias_ModelsListKeepsCanonicalWhenNoAlias verifies that a loaded
+// worker model is still advertised when it is NOT the canonical of any
+// active alias (only canonicals of active aliases are hidden).
+func TestModelAlias_ModelsListKeepsCanonicalWhenNoAlias(t *testing.T) {
+	workers := []protocol.WorkerInfo{
+		mkWorker("worker-1", "gemma-4-12b"),
+	}
+	// Alias targets a different model; gemma-4-12b is not a canonical target.
+	aliasCfg := ParseModelAliases("other-alias=some-other-model")
+	tr := testRegistry(t, workers)
+	srv := tr.Server()
+	srv.cache = NewCapabilityCache(tr.reg, testLogger())
+	srv.cache.Start(tr.ctx)
+	srv.cache.mu.Lock()
+	for _, w := range workers {
+		srv.cache.cache[w.ID] = w
+	}
+	srv.cache.mu.Unlock()
+	srv.SetModelAliases(aliasCfg)
+	defer func() { _ = tr.reg.Stop() }()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	w := httptest.NewRecorder()
+	srv.handleModelsList(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp ModelsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	found := false
+	for _, m := range resp.Data {
+		if m.Name == "gemma-4-12b" && m.Backend != "alias" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected loaded worker model 'gemma-4-12b' to remain in /v1/models, got: %+v", resp.Data)
+	}
+}
