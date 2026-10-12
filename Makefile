@@ -166,6 +166,29 @@ pkg-docker-push:
 		-f $(DOCKERFILE) \
 		--push .
 
+# Package the Helm chart: lint + package into infermesh-<version>.tgz
+# Byproduct .tgz is gitignored (see .gitignore: *.tgz).
+pkg-helm:
+	@echo "Linting chart charts/infermesh ..."
+	helm lint charts/infermesh
+	@echo "Packaging chart ..."
+	helm package charts/infermesh --destination .
+	@echo "Packaged: infermesh-$$(grep '^version:' charts/infermesh/Chart.yaml | awk '{print $$2}').tgz"
+
+# Validate the docker-compose file (validate only — does NOT start containers).
+# Requires the docker compose plugin (or docker-compose). If neither is
+# available, the YAML is structurally validated by a Python parser instead.
+pkg-compose:
+	@echo "Validating docker-compose.yml ..."
+	@if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then \
+		docker compose -f docker-compose.yml config -q && echo "compose config OK"; \
+	elif command -v docker-compose >/dev/null 2>&1; then \
+		docker-compose -f docker-compose.yml config -q && echo "compose config OK"; \
+	else \
+		echo "NOTE: neither 'docker compose' nor 'docker-compose' is installed; structurally validating YAML instead."; \
+		python3 hack/compose_validate.py; \
+	fi
+
 # Build the app, launch it, probe window/tray presence LIGHTLY. Skips (exit 0)
 # on SKIP=1 / INFERMESH_SMOKE_SKIP=1 or headless Linux. Not part of `make test`.
 test-app-smoke: build-app
@@ -235,4 +258,4 @@ coverage:
 	go tool funccover -mode=count -func=cover/coverage.out
 	@echo "Coverage report: cover/coverage.out"
 
-.PHONY: build build-router build-worker build-static build-app package-app package-app-dmg package-app-linux package-app-windows relay test test-security test-integration test-e2e test-platform test-all-platforms lint install-hooks tidy clean app coverage test-app-smoke pkg-docker pkg-docker-push
+.PHONY: build build-router build-worker build-static build-app package-app package-app-dmg package-app-linux package-app-windows relay test test-security test-integration test-e2e test-platform test-all-platforms lint install-hooks tidy clean app coverage test-app-smoke pkg-docker pkg-docker-push pkg-helm pkg-compose
