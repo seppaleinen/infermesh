@@ -210,6 +210,28 @@ test-integration:
 test-e2e:
 	@if [ -d ./tests/e2e ]; then go test ./tests/e2e/...; else echo "No ./tests/e2e directory; skipping"; fi
 
+# Build packaged binaries and run e2e tests against them
+test-packaged: build
+	@echo "Running E2E tests against packaged binaries..."
+	go test ./tests/e2e/... -v -count=1
+
+# Build static binaries and run e2e tests against current-platform ones
+test-static: build-static
+	@HOST_BIN_OS=$$(go env GOOS); \
+	HOST_BIN_ARCH=$$(go env GOARCH); \
+	EXE=""; \
+	[ "$$HOST_BIN_OS" = "windows" ] && EXE=".exe"; \
+	ROUTER=bin/infermesh-router-$$HOST_BIN_OS-$$HOST_BIN_ARCH$$EXE; \
+	WORKER=bin/infermesh-worker-$$HOST_BIN_OS-$$HOST_BIN_ARCH$$EXE; \
+	if [ ! -f "$$ROUTER" ] || [ ! -f "$$WORKER" ]; then \
+		echo "skipping e2e: static binaries for $$HOST_BIN_OS/$$HOST_BIN_ARCH not found"; exit 0; \
+	fi; \
+	chmod +x $$ROUTER $$WORKER 2>/dev/null || true; \
+	cp -f $$ROUTER bin/infermesh-router; \
+	cp -f $$WORKER bin/infermesh-worker; \
+	echo "Running E2E tests against static binaries ($$HOST_BIN_OS/$$HOST_BIN_ARCH)..."; \
+	go test ./tests/e2e/... -v -count=1
+
 # Run all tests: unit + integration + e2e
 test: vet-app test-unit test-integration test-e2e
 
@@ -258,4 +280,4 @@ coverage:
 	go tool funccover -mode=count -func=cover/coverage.out
 	@echo "Coverage report: cover/coverage.out"
 
-.PHONY: build build-router build-worker build-static build-app package-app package-app-dmg package-app-linux package-app-windows relay test test-security test-integration test-e2e test-platform test-all-platforms lint install-hooks tidy clean app coverage test-app-smoke pkg-docker pkg-docker-push pkg-helm pkg-compose
+.PHONY: build build-router build-worker build-static build-app package-app package-app-dmg package-app-linux package-app-windows relay test test-security test-integration test-e2e test-packaged test-static test-platform test-all-platforms lint install-hooks tidy clean app coverage test-app-smoke pkg-docker pkg-docker-push pkg-helm pkg-compose
