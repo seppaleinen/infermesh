@@ -53,3 +53,15 @@ jobs:
 
     - name: Run tests
       run: go test ./... -v -cover -race
+
+    - name: Check coverage threshold
+      run: |
+        make coverage
+        TOTAL=$(go tool cover -func=cover/coverage.out | grep "^total:" | awk '{print $NF}' | tr -d '%')
+        echo "Total pkg/ coverage: ${TOTAL}%"
+        if awk -v t="$TOTAL" 'BEGIN { exit (t < 80) ? 1 : 0 }'; then
+          echo "Coverage ${TOTAL}% meets the 80% threshold"
+        else
+          echo "Coverage ${TOTAL}% is below the 80% threshold"
+          exit 1
+        fi

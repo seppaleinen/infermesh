@@ -276,8 +276,15 @@ app:
 
 # Coverage
 coverage:
+	mkdir -p cover
 	go test -coverprofile=cover/coverage.out ./pkg/...
-	go tool funccover -mode=count -func=cover/coverage.out
+	go tool cover -func=cover/coverage.out
+	@echo "Per-package coverage:"
+	@go tool cover -func=cover/coverage.out | \
+		grep -E "github.com/seppaleinen/infermesh/pkg/" | \
+		sed 's|github.com/seppaleinen/infermesh/pkg/||' | \
+		awk -F'\t' '{split($$1,a,"/"); pkg=a[1]; c=$$NF; gsub(/%.*/,"",c); sum[pkg]+=c; cnt[pkg]++} END {for(p in sum) printf "  %s: %.1f%%\n", p, sum[p]/cnt[p]}' | \
+		sort
 	@echo "Coverage report: cover/coverage.out"
 
 .PHONY: build build-router build-worker build-static build-app package-app package-app-dmg package-app-linux package-app-windows relay test test-security test-integration test-e2e test-packaged test-static test-platform test-all-platforms lint install-hooks tidy clean app coverage test-app-smoke pkg-docker pkg-docker-push pkg-helm pkg-compose
