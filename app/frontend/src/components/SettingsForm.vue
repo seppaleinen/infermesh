@@ -172,11 +172,6 @@ const dirty = computed(() => {
     'worker_backend',
     'worker_model_path',
     'worker_port',
-    'worker_addr',
-    'worker_apikey',
-    'worker_custom_auth',
-    'worker_mtls_cert',
-    'worker_mtls_key',
     'relay_url',
     'dev_mode',
     'worker_enable_health_checks',
@@ -481,10 +476,10 @@ onMounted(() => {
           <p class="section-hint">mTLS options are hidden while dev mode is on.</p>
 
           <div class="field">
-            <label for="router_apikey">Router API key</label>
+            <label for="secretRouterApikey">Router API key</label>
             <div class="input-group">
               <input
-                id="router_apikey"
+                id="secretRouterApikey"
                 :type="showRouterApikey ? 'text' : 'password'"
                 v-model="routerApikey"
                 :disabled="!isKeyringAvailable || saving"
@@ -570,34 +565,14 @@ onMounted(() => {
             />
           </div>
 
-          <div class="field">
-            <label for="worker_addr">Worker address</label>
-            <input
-              id="worker_addr"
-              type="text"
-              v-model="settings.worker_addr"
-              :disabled="saving"
-            />
-          </div>
-
-          <div class="field">
-            <label for="worker_apikey">Worker API key</label>
-            <input
-              id="worker_apikey"
-              type="text"
-              v-model="settings.worker_apikey"
-              :disabled="saving"
-            />
-          </div>
-
           <div
             v-if="settings.worker_backend === 'custom'"
             class="field"
           >
-            <label for="worker_custom_auth">Custom auth header</label>
+            <label for="secretWorkerCustomAuth">Custom auth header</label>
             <div class="input-group">
               <input
-                id="worker_custom_auth"
+                id="secretWorkerCustomAuth"
                 :type="showWorkerCustomAuth ? 'text' : 'password'"
                 v-model="workerCustomAuth"
                 :disabled="!isKeyringAvailable || saving"
@@ -667,10 +642,10 @@ onMounted(() => {
 
         <div class="section-body" v-show="openSections.security">
           <div class="field">
-            <label for="worker_mtls_cert">mTLS certificate</label>
+            <label for="secretWorkerMTLSCert">mTLS certificate</label>
             <div class="input-group">
               <input
-                id="worker_mtls_cert"
+                id="secretWorkerMTLSCert"
                 :type="showWorkerMTLSCert ? 'text' : 'password'"
                 v-model="workerMTLSCert"
                 :disabled="!isKeyringAvailable || saving"
@@ -702,10 +677,10 @@ onMounted(() => {
           </div>
 
           <div class="field">
-            <label for="worker_mtls_key">mTLS key</label>
+            <label for="secretWorkerMTLSKey">mTLS key</label>
             <div class="input-group">
               <input
-                id="worker_mtls_key"
+                id="secretWorkerMTLSKey"
                 :type="showWorkerMTLSKey ? 'text' : 'password'"
                 v-model="workerMTLSKey"
                 :disabled="!isKeyringAvailable || saving"
