@@ -62,18 +62,16 @@ func TestRecordFailureZeroThreshold(t *testing.T) {
 	}
 }
 
-// TestCanExecute documents the current CanExecute contract (issue #103 R6).
+// TestCanExecute documents the CanExecute state machine (issue #103 R6 fix).
 //
 //   - CircuitClosed -> true.
 //   - CircuitOpen while cooldown has NOT elapsed -> false (fail fast).
-//   - CircuitOpen after cooldown HAS elapsed -> true (one probe request allowed).
+//   - CircuitOpen after cooldown HAS elapsed -> transitions to CircuitHalfOpen
+//     and returns true (one probe request allowed).
+//   - CircuitHalfOpen -> true (probe request in flight).
 //
-// Known limitation: CanExecute returns true after cooldown but never
-// transitions the breaker to CircuitHalfOpen, so the half-open state is
-// unreachable through this code path. RecordSuccess only resets the state
-// when it is already CircuitHalfOpen, so a successful probe leaves the
-// breaker in CircuitOpen and the next call re-checks the cooldown. This test
-// documents that behaviour; fixing it is a separate issue.
+// A successful probe (RecordSuccess in half-open) closes the breaker; a
+// failed probe (RecordFailure in half-open) re-opens it.
 func TestCanExecute(t *testing.T) {
 	cooldown := 50 * time.Millisecond
 
@@ -95,23 +93,59 @@ func TestCanExecute(t *testing.T) {
 		}
 	})
 
-	t.Run("open allows execution after cooldown", func(t *testing.T) {
+	t.Run("open transitions to half-open after cooldown", func(t *testing.T) {
 		cb := NewCircuitBreaker(1, cooldown)
 		cb.RecordFailure() // trips to CircuitOpen
+		if cb.GetState() != CircuitOpen {
+			t.Fatalf("precondition: state = %s, want %s", cb.GetState(), CircuitOpen)
+		}
 		time.Sleep(cooldown + 10*time.Millisecond)
-		if got := cb.CanExecute(); !got {
+		if !cb.CanExecute() {
 			t.Error("CanExecute() = false after cooldown, want true (probe request allowed)")
+		}
+		if cb.GetState() != CircuitHalfOpen {
+			t.Errorf("state after cooldown probe = %s, want %s", cb.GetState(), CircuitHalfOpen)
 		}
 	})
 
 	t.Run("half-open allows execution", func(t *testing.T) {
-		// CircuitHalfOpen is reachable only by direct field manipulation
-		// (the public API never transitions to it); assert the branch anyway
-		// so the switch is exercised.
+		// CircuitHalfOpen is reachable via the cooldown transition above;
+		// assert the branch directly so the switch is exercised.
 		cb := NewCircuitBreaker(5, cooldown)
 		cb.state = CircuitHalfOpen
 		if got := cb.CanExecute(); !got {
 			t.Error("CanExecute() = false in CircuitHalfOpen, want true")
+		}
+	})
+
+	t.Run("successful probe in half-open closes the breaker", func(t *testing.T) {
+		cb := NewCircuitBreaker(1, cooldown)
+		cb.RecordFailure() // trips to CircuitOpen
+		time.Sleep(cooldown + 10*time.Millisecond)
+		_ = cb.CanExecute() // transitions to half-open
+		if cb.GetState() != CircuitHalfOpen {
+			t.Fatalf("precondition: state = %s, want %s", cb.GetState(), CircuitHalfOpen)
+		}
+		cb.RecordSuccess()
+		if cb.GetState() != CircuitClosed {
+			t.Errorf("state after successful probe = %s, want %s", cb.GetState(), CircuitClosed)
+		}
+		if cb.failureCount != 0 {
+			t.Errorf("failureCount after success = %d, want 0", cb.failureCount)
+		}
+	})
+
+	t.Run("failed probe in half-open re-opens the breaker", func(t *testing.T) {
+		cb := NewCircuitBreaker(1, cooldown)
+		cb.RecordFailure() // trips to CircuitOpen
+		time.Sleep(cooldown + 10*time.Millisecond)
+		_ = cb.CanExecute() // transitions to half-open
+		if cb.GetState() != CircuitHalfOpen {
+			t.Fatalf("precondition: state = %s, want %s", cb.GetState(), CircuitHalfOpen)
+		}
+		cb.RecordFailure()
+		if cb.GetState() != CircuitOpen {
+			t.Errorf("state after failed probe = %s, want %s", cb.GetState(), CircuitOpen)
 		}
 	})
 }

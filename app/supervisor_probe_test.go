@@ -37,9 +37,8 @@ func newProbeSupervisor(t *testing.T) *Supervisor {
 // TestDefaultRouterProbeBuildsClientAndReadsWorkers verifies the probe
 // contract end-to-end against a mocked router: the URL is normalised from
 // Settings.RouterAddr, the request lands on /v1/workers over plain GET, and
-// the WorkerViews are returned. The probe's documented side effect (it calls
-// Supervisor.StartWorker on every 200) is exercised here with a dummy worker
-// binary and saved settings so the side effect succeeds.
+// the WorkerViews are returned. The probe is a pure read — it does NOT call
+// Supervisor.StartWorker (issue #103 R1 fix).
 func TestDefaultRouterProbeBuildsClientAndReadsWorkers(t *testing.T) {
 	workersBody := router.WorkersResponse{Workers: []router.WorkerInfo{
 		{
@@ -71,19 +70,9 @@ func TestDefaultRouterProbeBuildsClientAndReadsWorkers(t *testing.T) {
 	st := DefaultSettings()
 	st.RouterAddr = host + ":" + port
 
-	// The probe calls Supervisor.StartWorker() on every 200 (issue #103 R1);
-	// wire a dummy worker binary + saved settings so that side effect succeeds
-	// and the probe returns the worker list rather than surfacing the error.
-	binDir := t.TempDir()
-	st.WorkerBinaryPath = writeDummyBinary(t, binDir, "infermesh-worker")
-	settingsPath := t.TempDir() + "/settings.yml"
-	if err := SaveTo(st, settingsPath); err != nil {
-		t.Fatalf("SaveTo: %v", err)
-	}
-	s := NewSupervisorService(nil, settingsPath, binDir, t.TempDir())
-	if s.routerProbe == nil {
-		t.Fatal("Supervisor.routerProbe is nil after NewSupervisorService")
-	}
+	// The probe is a pure read (no StartWorker side effect), so a fresh
+	// supervisor with no settings file and no worker binary is fine.
+	s := newProbeSupervisor(t)
 
 	got, err := s.routerProbe(context.Background(), st)
 	if err != nil {
@@ -100,6 +89,11 @@ func TestDefaultRouterProbeBuildsClientAndReadsWorkers(t *testing.T) {
 	}
 	if got[0].ID != "probe-w-1" || got[0].Hostname != "probe-host" {
 		t.Errorf("probe worker = %+v, want ID probe-w-1 / Hostname probe-host", got[0])
+	}
+
+	// The probe must not have started the worker as a side effect.
+	if s.IsWorkerRunning() {
+		t.Error("worker started by probe side effect, want not running")
 	}
 }
 

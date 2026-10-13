@@ -196,14 +196,10 @@ func TestGetWorkers(t *testing.T) {
 	}
 }
 
-// TestGetWorkersDocumentsStartWorkerSideEffect documents issue #103 R1:
-// GetWorkers calls Supervisor.StartWorker() on every 200 response from
-// /v1/workers — a read endpoint that mutates process state. Here the
-// supervisor has no settings file and no worker binary, so the side-effect
-// StartWorker fails with errBinaryNotFound and GetWorkers must surface it.
-// A "start worker on connect" error on a plain 200 read is only possible if
-// the side effect ran. Fixing this behaviour is a separate issue.
-func TestGetWorkersDocumentsStartWorkerSideEffect(t *testing.T) {
+// TestGetWorkersNoSideEffect verifies GetWorkers is a pure read: a 200
+// response from /v1/workers does NOT trigger Supervisor.StartWorker().
+// Issue #103 R1 documented the old side-effect; this test asserts the fix.
+func TestGetWorkersNoSideEffect(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(router.WorkersResponse{Workers: []router.WorkerInfo{}})
@@ -215,18 +211,12 @@ func TestGetWorkersDocumentsStartWorkerSideEffect(t *testing.T) {
 	c.SetSupervisor(sv)
 
 	_, err := c.GetWorkers(context.Background())
-	// No settings file and no worker binary: the side-effect StartWorker()
-	// call fails with errBinaryNotFound, which GetWorkers surfaces (the
-	// "worker is already running" string match is the only exempted error).
-	// The error proves the side effect ran against a plain 200 read.
-	if err == nil {
-		t.Fatal("GetWorkers: want error surfacing the StartWorker side effect, got nil")
+	if err != nil {
+		t.Fatalf("GetWorkers: %v", err)
 	}
-	if !strings.Contains(err.Error(), "start worker on connect") {
-		t.Errorf("error %q should surface the StartWorker side effect", err)
-	}
+	// A pure read must not have started the worker.
 	if sv.IsWorkerRunning() {
-		t.Error("worker left running after GetWorkers side effect, want not running")
+		t.Error("worker started by GetWorkers side effect, want not running")
 	}
 }
 

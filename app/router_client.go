@@ -218,11 +218,6 @@ func (c *RouterClient) GetWorkers(ctx context.Context) ([]WorkerView, error) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusOK && c.sv != nil {
-		if err := c.sv.StartWorker(); err != nil && err.Error() != "worker is already running" {
-			return nil, fmt.Errorf("start worker on connect: %w", err)
-		}
-	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return nil, fmt.Errorf("router /v1/workers returned %d: %s", resp.StatusCode, truncateBody(body))

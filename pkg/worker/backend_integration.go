@@ -92,9 +92,17 @@ func (cb *CircuitBreaker) RecordFailure() {
 }
 
 // CanExecute checks if an operation can be executed.
+//
+// State machine:
+//   - CircuitClosed  → true (normal operation).
+//   - CircuitHalfOpen → true (one probe request allowed).
+//   - CircuitOpen    → false while cooldown has not elapsed.
+//     After cooldown elapses, transitions to CircuitHalfOpen and returns true
+//     (the probe request). The caller must call RecordSuccess or RecordFailure
+//     to resolve the half-open state.
 func (cb *CircuitBreaker) CanExecute() bool {
-	cb.mu.RLock()
-	defer cb.mu.RUnlock()
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
 	switch cb.state {
 	case CircuitClosed:
 		return true
@@ -103,7 +111,9 @@ func (cb *CircuitBreaker) CanExecute() bool {
 	case CircuitOpen:
 		// Check if cooldown period has passed
 		if time.Since(cb.lastFailureTime) > cb.cooldownPeriod {
-			return true // Allow one request through to test
+			// Transition to half-open: allow one probe request through.
+			cb.state = CircuitHalfOpen
+			return true
 		}
 		return false
 	}
@@ -130,15 +140,20 @@ func (b *OpenAICompatibleBackend) healthProbeURL() string {
 	return b.baseURL + "/v1/models"
 }
 
-// IsHealthy checks if the backend is healthy.
+// IsHealthy checks if the backend is healthy. It reads the breaker state
+// without consuming the half-open transition (unlike CanExecute, which
+// advances the state machine). A backend that is open or in cooldown is
+// considered unhealthy without probing it.
 func (b *OpenAICompatibleBackend) IsHealthy() bool {
-	// Check circuit breaker first
-	if !b.circuitBreaker.CanExecute() {
+	switch b.circuitBreaker.GetState() {
+	case CircuitClosed, CircuitHalfOpen:
+		// Probe the backend to confirm it is actually reachable.
+		_, err := b.client.Get(b.healthProbeURL())
+		return err == nil
+	default:
+		// CircuitOpen: don't waste a probe; the breaker is already failing fast.
 		return false
 	}
-	// Check if backend is reachable
-	_, err := b.client.Get(b.healthProbeURL())
-	return err == nil
 }
 
 // HealthCheck performs a health check on the backend.

@@ -92,7 +92,7 @@ func (cs *ConfigService) SaveSettings(s Settings) (bool, error) {
 		return false, err
 	}
 	if cs.sv != nil {
-		if err := cs.sv.StartWorker(); err != nil && err.Error() != "worker is already running" {
+		if err := cs.sv.StartWorker(); err != nil && !errors.Is(err, errWorkerAlreadyRunning) {
 			return false, fmt.Errorf("start worker: %w", err)
 		}
 	}
