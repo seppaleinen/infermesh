@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -73,9 +74,29 @@ type protocolEnv struct {
 	router    *exec.Cmd
 	worker    *exec.Cmd
 	mock      *exec.Cmd
-	routerErr bytes.Buffer
-	workerOut bytes.Buffer
-	workerErr bytes.Buffer
+	routerErr lockedBuffer
+	workerOut lockedBuffer
+	workerErr lockedBuffer
+}
+
+// lockedBuffer is a bytes.Buffer guarded by a mutex. Child processes write to
+// it concurrently via exec.Cmd pipes, so reads (e.g. in assertions or failure
+// messages) must take the lock to avoid a data race.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func (e *protocolEnv) stop() {
