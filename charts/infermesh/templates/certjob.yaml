@@ -1,0 +1,78 @@
+{{- if and .Values.tls.enabled .Values.tls.certJob.enabled (not .Values.tls.existingSecret) -}}
+{{- $fullname := include "infermesh.fullname" . -}}
+{{- $root := . -}}
+{{- $secretName := printf "%s-tls" $fullname -}}
+
+# Service account used by the cert-generation Job so it can create the Secret.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $fullname }}-certjob
+  labels:
+    {{- include "infermesh.labels" $root | nindent 4 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullname }}-certjob
+  labels:
+    {{- include "infermesh.labels" $root | nindent 4 }}
+spec:
+  template:
+    metadata:
+      labels:
+        {{- include "infermesh.labels" $root | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $fullname }}-certjob
+      restartPolicy: OnFailure
+      containers:
+        - name: certgen
+          image: alpine/openssl:3.3
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              CERT_DIR=/certs
+              mkdir -p "$CERT_DIR"
+              # Self-signed CA
+              openssl genrsa -out "$CERT_DIR/ca.key" 4096
+              openssl req -x509 -new -nodes -key "$CERT_DIR/ca.key" \
+                -subj "/CN=infermesh-ca" -days 3650 -out "$CERT_DIR/ca.crt"
+              # Server cert + key (CN = in-cluster service DNS)
+              openssl genrsa -out "$CERT_DIR/tls.key" 4096
+              cat > "$CERT_DIR/server.cnf" <<EOF
+              [req]
+              default_bits = 4096
+              prompt = no
+              default_md = sha256
+              distinguished_name = dn
+              [dn]
+              CN = {{ $fullname }}
+              [alt_names]
+              DNS.1 = {{ $fullname }}
+              DNS.2 = {{ $fullname }}.default
+              DNS.3 = {{ $fullname }}.default.svc
+              DNS.4 = {{ $fullname }}.default.svc.cluster.local
+              DNS.5 = localhost
+              EOF
+              openssl req -new -key "$CERT_DIR/tls.key" -config "$CERT_DIR/server.cnf" \
+                -out "$CERT_DIR/tls.csr"
+              openssl x509 -req -in "$CERT_DIR/tls.csr" -CA "$CERT_DIR/ca.crt" \
+                -CAkey "$CERT_DIR/ca.key" -CAcreateserial -out "$CERT_DIR/tls.crt" -days 3650
+              # Publish as a k8s Secret (tls.crt, tls.key, ca.crt)
+              kubectl create secret tls {{ $secretName }} \
+                --cert="$CERT_DIR/tls.crt" \
+                --key="$CERT_DIR/tls.key" \
+                --dry-run=client -o yaml | \
+                kubectl apply -f -
+              kubectl label secret {{ $secretName }} \
+                app.kubernetes.io/name=infermesh \
+                app.kubernetes.io/instance={{ .Release.Name }}
+          env:
+            - name: KUBERNETES_SERVICE_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+---
+{{- end }}

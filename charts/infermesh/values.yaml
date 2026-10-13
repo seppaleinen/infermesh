@@ -1,0 +1,54 @@
+# InferMesh Helm chart default values.
+#
+# Consumes the published images from ghcr.io/seppaleinen/infermesh.
+# Dev mode is the default (no auth, loopback-only). Production mode enables
+# mTLS, driven by an existing Secret or an openssl cert-generation Job.
+
+image:
+  registry: ghcr.io/seppaleinen/infermesh
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# mode: dev | prod
+#   dev  → router --dev-mode; worker --dev-mode --router=http://<svc>:8080
+#   prod → router --prod-mode --mtls-cert=... --mtls-key=... --cert-dir=...;
+#          worker --prod-mode --prod-router=https://<svc>:8080 --mtls-cert=... --mtls-key=...
+mode: dev
+
+router:
+  replicas: 1
+  port: 8080
+  apiKey: ""        # optional, dev+prod
+  modelAlias: ""    # e.g. "gpt-oss-20b=openai/gpt-oss-20b"
+  resources: {}
+  # extra flags pass-through:
+  extraArgs: []     # e.g. ["--max-attempts","3"]
+
+worker:
+  replicas: 1
+  port: 8081
+  backend: llama-cpp     # llama-cpp | ollama | lmstudio | vllm | custom
+  backendUrl: ""         # optional override
+  modelPath: ""
+  allowedModels: ""
+  excludedModels: ""
+  resources: {}
+  extraArgs: []
+
+tls:
+  enabled: false
+  existingSecret: ""     # name of a pre-existing k8s Secret with tls.crt/tls.key/ca.crt
+  certJob:
+    enabled: false       # openssl Job generates the secret
+
+ingress:
+  enabled: false
+  className: ""
+  host: infermesh.local
+  tls: []                # [{secretName, hosts}]
+
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70

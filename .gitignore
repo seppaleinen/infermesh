@@ -31,8 +31,8 @@ vendor/
 
 # Test artifacts
  coverage.out
- *.cover
- cover/
+*.cover
+cover/
 
 # Go specific
 *.exe
@@ -58,6 +58,9 @@ vendor/
 
 # Docker artifacts
 *.dockerfile
+
+# Helm chart packaging byproduct (produced by `make pkg-helm`)
+*.tgz
 
 # Wails/app build artifacts
 /app/build/frontend

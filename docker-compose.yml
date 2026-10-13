@@ -1,0 +1,79 @@
+# InferMesh — local / homelab inference pool via Docker Compose.
+#
+# Consumes the PUBLISHED images from ghcr.io/seppaleinen/infermesh.
+# Both images default to --dev-mode (no auth, loopback-only).
+#
+# DEFAULT config works out of the box: `docker compose up -d`.
+#   - router:  ghcr.io/seppaleinen/infermesh/router:latest  (--dev-mode)
+#   - worker:  ghcr.io/seppaleinen/infermesh/worker:latest  (--dev-mode
+#               --router http://router:8080 --backend lmstudio ...)
+#
+# Override flags at runtime via ROUTER_ARGS / WORKER_ARGS (the images' CMD
+# runs the binary with $ROUTER_ARGS / $WORKER_ARGS). See the commented
+# production example below for mTLS.
+
+version: "3.9"
+
+services:
+  router:
+    image: ghcr.io/seppaleinen/infermesh/router:latest
+    container_name: infermesh-router
+    ports:
+      - "8080:8080"
+    environment:
+      # Router flags. Default: dev mode (no auth, loopback only).
+      ROUTER_ARGS: "--dev-mode"
+    restart: unless-stopped
+    depends_on: []
+
+  worker:
+    image: ghcr.io/seppaleinen/infermesh/worker:latest
+    container_name: infermesh-worker
+    ports:
+      - "8081:8081"
+    environment:
+      # Worker flags. Default: dev mode, registers to the router over plain
+      # HTTP inside the Compose network (--router http://router:8080).
+      #
+      # WORKER_MODEL_PATH is the path to your model file on the HOST. The
+      # worker image needs a local inference backend (llama-cpp / ollama /
+      # lmstudio / vllm) reachable from inside its container. For llama-cpp,
+      # the default backend endpoint is localhost:8080 INSIDE the container,
+      # so run the backend inside the worker container (or point
+      # --backend-url at a reachable host:port). For ollama/lmstudio/vllm,
+      # point --backend-url at the host-side backend (e.g.
+      # --backend-url http://host.docker.internal:11434) since those run on
+      # the host, not inside the container.
+      WORKER_ARGS: "--dev-mode --router http://router:8080 --backend lmstudio --model-path ${WORKER_MODEL_PATH:-}"
+    restart: unless-stopped
+    depends_on:
+      - router
+
+# ---------------------------------------------------------------------------
+# Production example (mTLS). UNCOMMENT and switch both services to prod args.
+# Mount your cert dir (./certs on the host, or ${CERT_DIR}) into both
+# containers read-only, then run `docker compose up -d`.
+#
+# services:
+#   router:
+#     image: ghcr.io/seppaleinen/infermesh/router:latest
+#     ports:
+#       - "8080:8080"
+#     environment:
+#       ROUTER_ARGS: "--prod-mode --mtls-cert=/certs/tls.crt --mtls-key=/certs/tls.key --cert-dir=/certs"
+#     volumes:
+#       - "${CERT_DIR:-./certs}:/certs:ro"
+#     restart: unless-stopped
+#
+#   worker:
+#     image: ghcr.io/seppaleinen/infermesh/worker:latest
+#     ports:
+#       - "8081:8081"
+#     environment:
+#       WORKER_ARGS: "--prod-mode --prod-router=https://router:8080 --mtls-cert=/certs/tls.crt --mtls-key=/certs/tls.key --backend lmstudio --model-path ${WORKER_MODEL_PATH:-}"
+#     volumes:
+#       - "${CERT_DIR:-./certs}:/certs:ro"
+#     restart: unless-stopped
+#     depends_on:
+#       - router
+# ---------------------------------------------------------------------------

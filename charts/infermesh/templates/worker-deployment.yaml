@@ -1,0 +1,103 @@
+{{- if .Values.worker -}}
+{{- $root := . -}}
+{{- $fullname := include "infermesh.fullname" . -}}
+{{- $workerImage := include "infermesh.workerImage" . -}}
+{{- $workerPort := int (.Values.worker.port | default 8081) -}}
+{{- $workerReplicas := int (.Values.worker.replicas | default 1) -}}
+{{- $mode := .Values.mode | default "dev" -}}
+{{- $tlsEnabled := .Values.tls.enabled | default false -}}
+{{- $secretName := .Values.tls.existingSecret | default "" -}}
+{{- $svc := $fullname -}}
+{{- $workerArgs := list -}}
+{{- $workerArgs = append $workerArgs (printf "--port=%d" $workerPort) -}}
+{{- $workerArgs = append $workerArgs (printf "--backend=%s" .Values.worker.backend) -}}
+{{- if .Values.worker.backendUrl -}}
+{{- $workerArgs = append $workerArgs (printf "--backend-url=%s" .Values.worker.backendUrl) -}}
+{{- end -}}
+{{- if .Values.worker.modelPath -}}
+{{- $workerArgs = append $workerArgs (printf "--model-path=%s" .Values.worker.modelPath) -}}
+{{- end -}}
+{{- if .Values.worker.allowedModels -}}
+{{- $workerArgs = append $workerArgs (printf "--allowed-models=%s" .Values.worker.allowedModels) -}}
+{{- end -}}
+{{- if .Values.worker.excludedModels -}}
+{{- $workerArgs = append $workerArgs (printf "--excluded-models=%s" .Values.worker.excludedModels) -}}
+{{- end -}}
+{{- if eq $mode "prod" -}}
+{{- $workerArgs = append $workerArgs "--prod-mode" -}}
+{{- $workerArgs = append $workerArgs (printf "--prod-router=https://%s:%d" $svc 8080) -}}
+{{- if .Values.router.apiKey -}}
+{{- $workerArgs = append $workerArgs (printf "--api-key=%s" .Values.router.apiKey) -}}
+{{- end -}}
+{{- else -}}
+{{- $workerArgs = append $workerArgs "--dev-mode" -}}
+{{- $workerArgs = append $workerArgs (printf "--router=http://%s:%d" $svc 8080) -}}
+{{- end -}}
+{{- range .Values.worker.extraArgs -}}
+{{- $workerArgs = append $workerArgs . -}}
+{{- end -}}
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-worker
+  labels:
+    {{- include "infermesh.workerLabels" $root | nindent 4 }}
+spec:
+  replicas: {{ $workerReplicas }}
+  selector:
+    matchLabels:
+      {{- include "infermesh.workerSelectorLabels" $root | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "infermesh.workerLabels" $root | nindent 8 }}
+    spec:
+      containers:
+        - name: worker
+          image: {{ $workerImage | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" | quote }}
+          args:
+            {{- $workerArgs | toYaml | nindent 12 }}
+          ports:
+            - name: worker
+              containerPort: {{ $workerPort }}
+              protocol: TCP
+          {{- if .Values.worker.resources }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            tcpSocket:
+              port: worker
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: worker
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+          {{- if $tlsEnabled }}
+          volumeMounts:
+            - name: certs
+              mountPath: /certs
+              readOnly: true
+          {{- end }}
+      {{- if $tlsEnabled }}
+      volumes:
+        - name: certs
+          secret:
+            secretName: {{ if $secretName }}{{ $secretName | quote }}{{ else }}{{ printf "%s-tls" $fullname | quote }}{{ end }}
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+              - key: ca.crt
+                path: ca.crt
+            defaultMode: 0600
+      {{- end }}
+---
+{{- end }}

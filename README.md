@@ -73,6 +73,106 @@ make pkg-docker IMAGE=ghcr.io/seppaleinen/infermesh VERSION=dev
 make pkg-docker-push IMAGE=ghcr.io/seppaleinen/infermesh VERSION=v0.1.16
 ```
 
+## Helm Chart
+
+A Kubernetes-native deployment is provided at `charts/infermesh/`. The chart
+consumes the **published images** (`ghcr.io/seppaleinen/infermesh/{router,worker}`)
+— it does not build anything. No chart dependencies.
+
+```bash
+# Lint + package (produces infermesh-<version>.tgz in the repo root)
+make pkg-helm
+
+# Install (dev mode default — no auth, loopback-only)
+helm install infermesh charts/infermesh
+
+# Install in production mode with an openssl cert-generation Job
+helm install infermesh charts/infermesh \
+  --set mode=prod \
+  --set tls.enabled=true \
+  --set tls.certJob.enabled=true
+
+# Optional ingress + HPA for the worker
+helm install infermesh charts/infermesh \
+  --set ingress.enabled=true \
+  --set hpa.enabled=true
+```
+
+### Key values
+
+| Value | Default | Description |
+|-------|---------|-------------|
+| `mode` | `dev` | `dev` (no auth) or `prod` (mTLS) |
+| `image.registry` | `ghcr.io/seppaleinen/infermesh` | image registry |
+| `image.tag` | `latest` | image tag |
+| `router.replicas` | `1` | router Deployment replicas |
+| `router.apiKey` | `""` | optional API key (dev + prod) |
+| `router.modelAlias` | `""` | e.g. `gpt-oss-20b=openai/gpt-oss-20b` |
+| `worker.backend` | `llama-cpp` | `llama-cpp \| ollama \| lmstudio \| vllm \| custom` |
+| `worker.modelPath` | `""` | model path passed to `--model-path` |
+| `tls.enabled` | `false` | enable mTLS |
+| `tls.existingSecret` | `""` | name of a pre-existing Secret (`tls.crt`/`tls.key`/`ca.crt`) |
+| `tls.certJob.enabled` | `false` | openssl Job generates the Secret |
+| `ingress.enabled` | `false` | optional Ingress |
+| `hpa.enabled` | `false` | optional HPA for the worker |
+
+**In-cluster registration:** in dev mode the worker registers to the router
+over plain HTTP via `--router=http://<svc>:8080`; in prod mode via
+`--prod-router=https://<svc>:8080`. mDNS is **not** the in-cluster path
+(it needs an mDNS reflector); the `--router` / `--prod-router` flags are the
+supported in-cluster registration mechanism.
+
+## Docker Compose
+
+A local / homelab inference pool is provided at `docker-compose.yml` at the
+repo root. It consumes the **published images** and defaults to dev mode.
+
+```bash
+# Validate only (does NOT start containers)
+make pkg-compose
+
+# Start the pool (dev mode default)
+docker compose up -d
+```
+
+The default config works out of the box:
+
+```yaml
+router:
+  image: ghcr.io/seppaleinen/infermesh/router:latest
+  environment:
+    ROUTER_ARGS: "--dev-mode"
+
+worker:
+  image: ghcr.io/seppaleinen/infermesh/worker:latest
+  environment:
+    WORKER_ARGS: "--dev-mode --router http://router:8080 --backend lmstudio --model-path ${WORKER_MODEL_PATH:-}"
+  depends_on:
+    - router
+```
+
+Override flags at runtime via `ROUTER_ARGS` / `WORKER_ARGS` (the images' CMD
+runs the binary with `$ROUTER_ARGS` / `$WORKER_ARGS`).
+
+**Production mode (mTLS):** mount a cert dir (`./certs` on the host, or
+`${CERT_DIR}`) into both containers read-only and switch to prod args:
+
+```bash
+# Router
+ROUTER_ARGS="--prod-mode --mtls-cert=/certs/tls.crt --mtls-key=/certs/tls.key --cert-dir=/certs"
+# Worker
+WORKER_ARGS="--prod-mode --prod-router=https://router:8080 --mtls-cert=/certs/tls.crt --mtls-key=/certs/tls.key --backend lmstudio --model-path ${WORKER_MODEL_PATH:-}"
+```
+
+> **Note:** the worker needs a local inference backend (llama-cpp / ollama /
+> lmstudio / vllm) reachable from inside its container. For llama-cpp the
+> default backend endpoint is `localhost:8080` *inside* the container, so run
+> the backend inside the worker container (or point `--backend-url` at a
+> reachable host:port).
+
+See also the **Docker Images** section above for the published multi-arch
+images and runtime override examples.
+
 ## Firewall / Outbound-Only Relay
 
 If your worker machine sits behind a firewall that blocks inbound connections (common on macOS Sequoia+, corporate LANs, or restricted VMs), use the **outbound-only relay** architecture. Both the router and every worker dial OUTBOUND to a relay broker on a permissive host — no machine with an unsigned binary ever accepts an inbound connection.
@@ -225,23 +325,27 @@ GET  /v1/models                # Available model list
 ```
 infermesh/
 ├── cmd/
-│   └── infermesh/                 # Unified binary entry point (router + worker subcommands)
+│   ├── relay/                     # Optional relay binary (connectivity bridge)
+│   ├── router/                    # Router HTTP server + OpenAI-compatible API
+│   └── worker/                    # Worker HTTP server + backend adapters
 ├── pkg/
-│   ├── discovery/                 # mDNS service discovery
-│   │   └── discovery_test.go      # Unit tests
-│   ├── registry/                  # Worker registry & heartbeats
-│   ├── scheduler/                 # Capability matching & scoring
-│   ├── protocol/                  # Shared types (HTTP request/response)
+│   ├── discovery/                 # mDNS listener (router) / announcer (worker)
+│   │   ├── discovery_test.go      # Unit tests
+│   │   └── factory.go             # Pluggable backend factory
+│   ├── registry/                  # In-memory worker registry & heartbeats
+│   ├── scheduler/                 # Capability matching & deterministic scoring
+│   ├── protocol/                  # Shared types (WorkerInfo, Capabilities, events)
 │   ├── capabilities/              # GPU/VRAM detection, model parsing
-│   ├── router/                    # Router HTTP server & OpenAI API
-│   ├── worker/                    # Worker HTTP server & backend adapters
-│   ├── security/                  # mTLS, TLS cert generation, auth
-│   └── platform/                  # GPU detection, platform helpers (macOS/Linux)
-├── internal/                      # Private implementation details
+│   ├── router/                    # Router HTTP server, OpenAI API, call counter
+│   ├── worker/                    # Worker HTTP server + backend adapters
+│   ├── security/                  # mTLS, cert generation, API-key middleware
+│   └── platform/                  # Platform helpers (macOS/Linux/Windows)
 ├── tests/
 │   ├── integration/               # Multi-component integration tests
 │   └── e2e/                       # End-to-end flow tests
-├── scripts/                       # Helper scripts (certs, test runners)
+├── hack/                          # Helper scripts (certs, test runners)
+├── docker/                        # Docker image build
+├── charts/infermesh/              # Helm chart (consumes published images)
 ├── Makefile
 ├── go.mod
 ├── go.sum

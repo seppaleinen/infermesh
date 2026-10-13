@@ -1,0 +1,25 @@
+{{- if .Values.hpa.enabled -}}
+{{- $fullname := include "infermesh.fullname" . -}}
+{{- $root := . -}}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $fullname }}-worker
+  labels:
+    {{- include "infermesh.labels" $root | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $fullname }}-worker
+  minReplicas: {{ .Values.hpa.minReplicas | default 1 }}
+  maxReplicas: {{ .Values.hpa.maxReplicas | default 5 }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          targetCPUUtilizationPercentage: {{ .Values.hpa.targetCPUUtilizationPercentage | default 70 }}
+---
+{{- end }}

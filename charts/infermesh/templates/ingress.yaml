@@ -1,0 +1,40 @@
+{{- if .Values.ingress.enabled -}}
+{{- $fullname := include "infermesh.fullname" . -}}
+{{- $root := . -}}
+{{- $host := .Values.ingress.host | default "infermesh.local" -}}
+{{- $className := .Values.ingress.className | default "" -}}
+{{- $tls := .Values.ingress.tls | default list -}}
+{{- if $tls }}
+{{- range $entry := $tls }}
+{{- if not $entry.secretName }}
+{{- fail "ingress.tls entries must include secretName" }}
+{{- end }}
+{{- end }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "infermesh.labels" $root | nindent 4 }}
+spec:
+  {{- if $className }}
+  ingressClassName: {{ $className | quote }}
+  {{- end }}
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}
+                port:
+                  number: {{ .Values.router.port | default 8080 }}
+  {{- if $tls }}
+  tls:
+    {{- toYaml $tls | nindent 4 }}
+  {{- end }}
+---
+{{- end }}

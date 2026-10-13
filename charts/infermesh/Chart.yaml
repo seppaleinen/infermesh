@@ -1,0 +1,22 @@
+# InferMesh Helm chart — deploys the router + worker pool into a Kubernetes cluster.
+#
+# This chart consumes the PUBLISHED images (ghcr.io/seppaleinen/infermesh) —
+# it does NOT build anything. No image build changes are made here.
+#
+# appVersion tracks the published image tag the chart is authored against.
+# Update it at release time to match the latest git tag (e.g. "0.1.20").
+# The published images are tagged with both `latest` and `vX.Y.Z`, so the
+# rendered Deployment uses `values.image.tag` (default `latest`) and this
+# Chart.yaml appVersion is informational only.
+apiVersion: v2
+name: infermesh
+description: |-
+  InferMesh — a lightweight, self-hosted inference pool that turns a collection
+  of heterogeneous machines with spare GPU/inference capacity into a
+  dynamically discovered, automatically scheduled OpenAI-compatible pool.
+  This chart deploys the published router + worker images into a Kubernetes
+  cluster. Dev mode is the default (no auth, loopback-only); production mode
+  enables mTLS with an existing Secret or an openssl cert-generation Job.
+type: application
+version: 0.1.0
+appVersion: "0.1.20"
