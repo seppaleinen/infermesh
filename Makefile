@@ -249,7 +249,7 @@ lint:
 
 vet-app:
 	@echo "⟶ Running TypeScript type check on the Wails app…"
-	cd app/frontend && ./node_modules/.bin/tsc --noEmit
+	cd app/frontend && ./node_modules/.bin/vue-tsc --noEmit
 
 # Install git hooks (pre-push runs `make lint` before every push)
 install-hooks:

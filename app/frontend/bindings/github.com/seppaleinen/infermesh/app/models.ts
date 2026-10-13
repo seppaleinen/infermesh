@@ -62,39 +62,19 @@ export interface ProcessStatus {
  */
 export interface Settings {
     "router_addr": string;
-    "router_apikey": string;
     "router_binary_path": string;
-    "worker_addr": string;
-    "worker_apikey": string;
     "worker_backend": string;
     "worker_model_path": string;
     "worker_port": number;
     "worker_binary_path": string;
-    "worker_custom_auth": string;
     "worker_enable_health_checks": boolean | null;
-    "worker_mtls_cert": string;
-    "worker_mtls_key": string;
     "relay_url": string;
     "model_aliases": { [_ in string]?: string } | null;
     "dev_mode": boolean | null;
+    "client_cert_cn": string;
     "auto_start_on_login": boolean | null;
     "secrets": { [_ in string]?: string } | null;
     "secret_refs": { [_ in string]?: string } | null;
-}
-
-/**
- * Supervisor is a Wails service that launches and manages the headless
- * router/worker binaries on behalf of the desktop app (issue #44).
- * 
- * Wails-bound methods: StartRouter / StopRouter / StartWorker / StopWorker
- * / Status / RestartRouter / RestartWorker.
- * 
- * Secrets: the supervisor never holds secret values directly. When building
- * child process args it resolves secrets from the keyring (router/apikey for
- * --api-key, mtls/cert + mtls/key for --mtls-cert/--mtls-key) and never logs
- * them. Dev mode (the default) requires no secrets.
- */
-export interface Supervisor {
 }
 
 /**

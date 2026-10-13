@@ -24,6 +24,23 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 import * as $models from "./models.js";
 
 /**
+ * GetCACertDir returns the temporary directory containing ca.crt for the
+ * router to verify client certificates. Empty string means no CA cert
+ * provisioned (dev mode).
+ */
+export function GetCACertDir(): $CancellablePromise<string> {
+    return $Call.ByID(4267585311);
+}
+
+/**
+ * GetClientCertPaths returns the minted desktop client cert/key PEM paths.
+ * Empty strings mean no client cert was minted (dev mode or no CA key).
+ */
+export function GetClientCertPaths(): $CancellablePromise<[string, string]> {
+    return $Call.ByID(1541708233);
+}
+
+/**
  * IsRouterRunning reports whether the router child is alive.
  */
 export function IsRouterRunning(): $CancellablePromise<boolean> {
