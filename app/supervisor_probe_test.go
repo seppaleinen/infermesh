@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/router"
+	"github.com/seppaleinen/infermesh/pkg/security"
 )
 
 // newProbeSupervisor builds a Supervisor whose routerProbe is the REAL
@@ -97,39 +98,46 @@ func TestDefaultRouterProbeBuildsClientAndReadsWorkers(t *testing.T) {
 	}
 }
 
-// TestDefaultRouterProbeSetSupervisorOnProbeClient verifies the probe client
-// is wired back to the supervisor (rc.SetSupervisor(s)), so effectiveBaseURL
-// and httpClient can negotiate mTLS once the router runs in prod mode.
-// Observable consequence: with a minted client cert, the probe upgrades the
-// scheme to https and the request to an https router fails TLS against a
-// plain-http mock — the error path proves the supervisor was attached (a
-// nil-supervisor client would hit the plain-http server and succeed).
-func TestDefaultRouterProbeSetSupervisorOnProbeClient(t *testing.T) {
-	// The mock serves plain HTTP. A client that upgraded to https (because
-	// SetSupervisor wired the prod-mode cert) cannot complete a TLS handshake
-	// against it, which distinguishes "supervisor attached" from "not".
+// TestDefaultRouterProbeInjectsTLSClient verifies the probe injects the
+// Supervisor's mTLS transport when the router runs in prod mode. With a
+// minted client cert the probe upgrades to https and cannot complete a TLS
+// handshake against a plain-http mock — proving the transport was injected
+// (issue #103 R1). A nil-supervisor client would hit the plain-http server
+// and succeed, distinguishing the two paths.
+func TestDefaultRouterProbeInjectsTLSClient(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(router.WorkersResponse{Workers: []router.WorkerInfo{}})
 	}))
 	defer ts.Close()
 
+	// Provision a real CA + client cert so buildTLSClient can load them.
+	caDir := t.TempDir()
+	caCertPath, caKeyPath, err := security.GenerateSelfSignedCA(caDir)
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+	clientDir := t.TempDir()
+	clientCertPath, clientKeyPath, err := security.GenerateNodeCert(clientDir, caCertPath, caKeyPath, "infermesh-desktop")
+	if err != nil {
+		t.Fatalf("generate client cert: %v", err)
+	}
+
 	host, port, _ := strings.Cut(strings.TrimPrefix(ts.URL, "http://"), ":")
 	st := DefaultSettings()
 	st.RouterAddr = host + ":" + port
 
 	s := newProbeSupervisor(t)
-	// Simulate prod mode: the supervisor has minted a client cert.
-	s.clientCertPaths[0] = "/tmp/fake-cert.pem"
-	s.clientCertPaths[1] = "/tmp/fake-key.pem"
+	// Simulate prod mode: the supervisor has minted a client cert and CA dir.
+	s.clientCertPaths[0] = clientCertPath
+	s.clientCertPaths[1] = clientKeyPath
+	s.caCertDir = caDir
 
-	_, err := s.routerProbe(context.Background(), st)
+	_, err = s.routerProbe(context.Background(), st)
 	if err == nil {
 		t.Fatal("probe succeeded against plain-http mock with a prod-mode client cert; " +
-			"expected the https upgrade (proving SetSupervisor was called on the probe client)")
+			"expected the https upgrade (proving the TLS transport was injected)")
 	}
-	// The TLS handshake error comes from the https upgrade, not from an
-	// unnormalised URL.
 	if !strings.Contains(err.Error(), "router unreachable") {
 		t.Errorf("probe error %q should be the router-unreachable form from the https dial", err)
 	}

@@ -21,82 +21,56 @@ import (
 	"github.com/seppaleinen/infermesh/pkg/router"
 )
 
-// TestSetSupervisor verifies the supervisor back-reference is stored on the
-// client and is the same instance the caller passed in.
+// TestSetSupervisor is retired (issue #103 R1): RouterClient no longer holds
+// a Supervisor reference. The TLS transport is injected via SetTransport.
+// This test asserts the new contract: a fresh client has no transport and
+// uses plain HTTP.
 func TestSetSupervisor(t *testing.T) {
 	c := NewRouterClient("http://127.0.0.1:8080")
-	if c.sv != nil {
-		t.Fatal("fresh client: sv != nil, want nil")
+	if c.client != nil {
+		t.Fatal("fresh client: transport != nil, want nil (dev mode)")
 	}
-
-	sv := NewSupervisorService(nil, t.TempDir()+"/settings.yml", t.TempDir(), t.TempDir())
-	c.SetSupervisor(sv)
-	if c.sv != sv {
-		t.Fatal("SetSupervisor did not store the supervisor")
-	}
-	// A freshly-attached supervisor has not minted a client cert yet, which
-	// effectiveBaseURL and httpClient both key off via GetClientCertPaths.
-	cert, key := c.sv.GetClientCertPaths()
-	if cert != "" || key != "" {
-		t.Errorf("unexpected client cert paths after SetSupervisor: %q %q", cert, key)
+	// SetTransport(nil) is a no-op (idempotent dev-mode reset).
+	c.SetTransport(nil)
+	if c.client != nil {
+		t.Fatal("after SetTransport(nil): transport != nil, want nil")
 	}
 }
 
-// TestEffectiveBaseURL documents the scheme-upgrade contract of
-// effectiveBaseURL:
+// TestSetTransport documents the scheme-upgrade contract of SetTransport:
 //
-//   - bare ":8080" is normalised to "http://127.0.0.1:8080" by the
-//     constructor and stays http without a supervisor;
-//   - a supervisor without a minted client cert leaves the URL unchanged
-//     (dev mode);
-//   - a supervisor WITH a minted client cert (prod mode) upgrades http:// to
-//     https://;
-//   - an https:// base URL is never touched.
-func TestEffectiveBaseURL(t *testing.T) {
-	// Dev-mode supervisor: no client cert minted.
-	devSup := NewSupervisorService(nil, t.TempDir()+"/settings.yml", t.TempDir(), t.TempDir())
-	// Prod-mode supervisor: minted client cert paths.
-	prodSup := NewSupervisorService(nil, t.TempDir()+"/settings.yml", t.TempDir(), t.TempDir())
-	prodSup.clientCertPaths[0] = "/tmp/fake-cert.pem"
-	prodSup.clientCertPaths[1] = "/tmp/fake-key.pem"
-
+//   - a fresh client has no transport (dev mode, plain http);
+//   - injecting a non-nil http.Client upgrades the base URL to https;
+//   - injecting nil reverts to plain http.
+func TestSetTransport(t *testing.T) {
 	cases := []struct {
 		name    string
 		baseURL string
-		sv      *Supervisor
+		client  *http.Client
 		want    string
 	}{
 		{
-			name:    "bare addr normalised, no supervisor",
-			baseURL: ":8080",
+			name:    "fresh client, no transport",
+			baseURL: "http://127.0.0.1:8080",
+			client:  nil,
 			want:    "http://127.0.0.1:8080",
 		},
 		{
-			name:    "http unchanged without supervisor",
-			baseURL: "http://host:8080",
-			want:    "http://host:8080",
-		},
-		{
-			name:    "https unchanged without supervisor",
-			baseURL: "https://host:8443",
-			want:    "https://host:8443",
-		},
-		{
-			name:    "dev mode (no client cert) keeps http",
+			name:    "transport injected, upgrades to https",
 			baseURL: "http://127.0.0.1:8080",
-			sv:      devSup,
-			want:    "http://127.0.0.1:8080",
-		},
-		{
-			name:    "prod mode (client cert minted) upgrades to https",
-			baseURL: "http://127.0.0.1:8080",
-			sv:      prodSup,
+			client:  &http.Client{},
 			want:    "https://127.0.0.1:8080",
 		},
 		{
-			name:    "prod mode with https base stays https",
+			name:    "transport removed, reverts to http",
+			baseURL: "https://127.0.0.1:8080",
+			client:  nil,
+			want:    "http://127.0.0.1:8080",
+		},
+		{
+			name:    "https base stays https with transport",
 			baseURL: "https://router.example.com",
-			sv:      prodSup,
+			client:  &http.Client{},
 			want:    "https://router.example.com",
 		},
 	}
@@ -104,11 +78,9 @@ func TestEffectiveBaseURL(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			c := NewRouterClient(tc.baseURL)
-			if tc.sv != nil {
-				c.sv = tc.sv
-			}
-			if got := c.effectiveBaseURL(); got != tc.want {
-				t.Errorf("effectiveBaseURL() = %q, want %q", got, tc.want)
+			c.SetTransport(tc.client)
+			if got := c.GetRouterURL(); got != tc.want {
+				t.Errorf("GetRouterURL() = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -207,14 +179,13 @@ func TestGetWorkersNoSideEffect(t *testing.T) {
 	defer ts.Close()
 
 	c := NewRouterClient(ts.URL)
-	sv := NewSupervisorService(nil, t.TempDir()+"/settings.yml", t.TempDir(), t.TempDir())
-	c.SetSupervisor(sv)
 
 	_, err := c.GetWorkers(context.Background())
 	if err != nil {
 		t.Fatalf("GetWorkers: %v", err)
 	}
 	// A pure read must not have started the worker.
+	sv := NewSupervisorService(nil, t.TempDir()+"/settings.yml", t.TempDir(), t.TempDir())
 	if sv.IsWorkerRunning() {
 		t.Error("worker started by GetWorkers side effect, want not running")
 	}

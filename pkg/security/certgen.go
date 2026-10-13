@@ -112,7 +112,7 @@ func GenerateNodeCert(dir, caCertPath, caKeyPath, commonName string) (certFile, 
 		return "", "", fmt.Errorf("failed to parse CA key: %w", err)
 	}
 
-	// Get primary IPv4
+	// Get primary IPv4 and always include 127.0.0.1 for local mTLS
 	ip := getPrimaryIPv4()
 
 	node := &x509.Certificate{
@@ -126,7 +126,7 @@ func GenerateNodeCert(dir, caCertPath, caKeyPath, commonName string) (certFile, 
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 		DNSNames:    []string{"localhost"},
-		IPAddresses: []net.IP{ip},
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1"), ip},
 	}
 
 	nodeKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -114,6 +116,12 @@ type Supervisor struct {
 	// mode; cleared on StopRouter.
 	caCertDir string
 
+	// routerClient is the desktop RouterClient whose transport is updated
+	// when the router starts/stops in prod mode. The Supervisor owns the
+	// transport; RouterClient has zero knowledge of the Supervisor (issue
+	// #103 R1).
+	routerClient *RouterClient
+
 	mu             sync.Mutex
 	router         *managedProcess
 	worker         *managedProcess
@@ -156,15 +164,78 @@ func NewSupervisorService(kr Keyring, settingsPath, binaryDir, logsDir string) *
 // ServiceName implements application.Service for Wails binding discovery.
 func (*Supervisor) ServiceName() string { return supervisorServiceName }
 
+// SetRouterClient wires the desktop RouterClient into the Supervisor so the
+// transport can be updated when the router starts/stops in prod mode. The
+// client itself has zero knowledge of the Supervisor (issue #103 R1).
+func (s *Supervisor) SetRouterClient(rc *RouterClient) {
+	s.routerClient = rc
+}
+
+// buildTLSClient builds an mTLS http.Client from the supervisor's minted
+// client cert and CA cert dir. Returns nil when no client cert is minted
+// (dev mode or no CA key). The client verifies the router's server
+// certificate against the CA pool — no InsecureSkipVerify (issue #103 R1).
+func (s *Supervisor) buildTLSClient() *http.Client {
+	certPath, keyPath := s.GetClientCertPaths()
+	caCertDir := s.GetCACertDir()
+	if certPath == "" || keyPath == "" || caCertDir == "" {
+		return nil
+	}
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return nil
+	}
+	caCertFile := filepath.Join(caCertDir, "ca.crt")
+	caPEM, err := os.ReadFile(caCertFile)
+	if err != nil {
+		return nil
+	}
+	caPool := x509.NewCertPool()
+	if !caPool.AppendCertsFromPEM(caPEM) {
+		return nil
+	}
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      caPool,
+	}
+	return &http.Client{
+		Transport: &http.Transport{TLSClientConfig: tlsConfig},
+		Timeout:   10 * time.Second,
+	}
+}
+
+// updateRouterClientTransport injects the Supervisor's mTLS transport into
+// the desktop RouterClient when the router is running in prod mode, or
+// clears it when the router stops. This is called from StartRouter/StopRouter
+// so the UI's live poll always talks to the router over the right transport
+// (issue #103 R1).
+func (s *Supervisor) updateRouterClientTransport() {
+	if s.routerClient == nil {
+		return
+	}
+	s.routerClient.SetTransport(s.buildTLSClient())
+}
+
 // defaultRouterProbe returns a router-reachability check built from
 // RouterClient. It doubles as the worker-registration list source: a nil error
 // means the router answered /v1/workers with 200, and the returned slice is
 // the pool. Tests inject a stub returning canned WorkerViews.
+//
+// The probe uses the Supervisor's RouterClient (constructed once in main.go)
+// and injects the Supervisor's mTLS transport when the router is running in
+// prod mode. RouterClient has zero knowledge of the Supervisor (issue #103 R1).
 func (s *Supervisor) defaultRouterProbe() func(ctx context.Context, st Settings) ([]WorkerView, error) {
 	return func(ctx context.Context, st Settings) ([]WorkerView, error) {
-		rc := NewRouterClient(routerBaseURL(st.RouterAddr))
-		rc.SetSupervisor(s)
-		return rc.GetWorkers(ctx)
+		if s.routerClient == nil {
+			// Fallback for tests that build a Supervisor without main.go.
+			rc := NewRouterClient(routerBaseURL(st.RouterAddr))
+			if client := s.buildTLSClient(); client != nil {
+				rc.SetTransport(client)
+			}
+			return rc.GetWorkers(ctx)
+		}
+		s.routerClient.SetRouterURL(routerBaseURL(st.RouterAddr))
+		return s.routerClient.GetWorkers(ctx)
 	}
 }
 
@@ -616,6 +687,9 @@ func (s *Supervisor) StartRouter() error {
 	s.routerErr = nil
 	s.routerPID = mp.pid
 	s.mu.Unlock()
+	// Update the desktop RouterClient's transport so the live poll talks
+	// to the router over mTLS in prod mode (issue #103 R1).
+	s.updateRouterClientTransport()
 	return nil
 }
 
@@ -633,6 +707,9 @@ func (s *Supervisor) StopRouter() error {
 	}
 	s.clearClientCertPaths()
 	s.clearCACertDir()
+	// Clear the desktop RouterClient's transport so the live poll falls
+	// back to plain HTTP (dev mode) once the router is gone (issue #103 R1).
+	s.updateRouterClientTransport()
 	return nil
 }
 

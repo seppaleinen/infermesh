@@ -121,6 +121,12 @@ func main() {
 	// instance would own none of them and StopAll would be a no-op.)
 	supervisor := NewSupervisorService(newProdKeyring(), settingsPath, binaryDir, "")
 
+	// RouterClient is constructed once and handed to the Supervisor so the
+	// transport can be updated when the router starts/stops in prod mode.
+	// The client itself has zero knowledge of the Supervisor (issue #103 R1).
+	rc := NewRouterClient(settings.RouterAddr)
+	supervisor.SetRouterClient(rc)
+
 	// Auto-start backend registers this very binary as a login item. If the
 	// executable path cannot be resolved, fall back to an empty path — the
 	// backend then fails at registration time as a user-visible warning
@@ -141,11 +147,7 @@ func main() {
 		// AutoStartService registers/removes the OS login item (issue #45); it
 		// must stay in this list so `wails3 generate bindings` discovers it.
 		Services: []application.Service{
-			application.NewService(func() *RouterClient {
-				r := NewRouterClient(settings.RouterAddr)
-				r.SetSupervisor(supervisor)
-				return r
-			}()),
+			application.NewService(rc),
 			application.NewService(func() *ConfigService {
 				c := NewConfigService(newProdKeyring(), settingsPath)
 				c.SetSupervisor(supervisor)

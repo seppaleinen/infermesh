@@ -2,15 +2,12 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -44,15 +41,14 @@ type WorkerView struct {
 
 // RouterClient is a Wails service bound to the frontend. It talks to the
 // router's HTTP API over plain HTTP (dev mode) or mTLS (prod mode).
-// The desktop app presents a client certificate minted by the CA in prod mode.
+//
+// The client has zero knowledge of the Supervisor (issue #103 R1). In prod
+// mode the Supervisor builds the TLS transport and injects it via
+// SetTransport; the client simply uses it for all requests.
 type RouterClient struct {
 	baseURL       string
 	localHostname string
-	sv            *Supervisor
-	// tlsClient is cached lazily so the expensive tls.Config build happens
-	// once per process. It is reset when the supervisor's client cert paths
-	// change (e.g. router restart).
-	tlsClient *http.Client
+	client        *http.Client // nil = plain HTTP (dev mode)
 }
 
 // ServiceName implements application.ServiceName so the binding generator
@@ -65,9 +61,19 @@ func (*RouterClient) ServiceName() string {
 // back to defaultRouterURL. A bare host:port (e.g. ":8080") is normalised to
 // "http://host:port" so callers can pass either form.
 func NewRouterClient(baseURL string) *RouterClient {
-	baseURL = routeraddr.Normalize(baseURL)
-	hostname, _ := os.Hostname()
-	return &RouterClient{baseURL: baseURL, localHostname: hostname}
+	return &RouterClient{
+		baseURL:       routeraddr.Normalize(baseURL),
+		localHostname: mustHostname(),
+	}
+}
+
+// mustHostname returns the local hostname, or "localhost" on failure.
+func mustHostname() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return "localhost"
+	}
+	return h
 }
 
 // GetRouterURL returns the configured base URL (used by the UI to show the
@@ -76,91 +82,43 @@ func (c *RouterClient) GetRouterURL() string {
 	return c.baseURL
 }
 
-// SetSupervisor attaches the Supervisor to the client so TLS can be
-// negotiated when the router runs in production mode. The routerProbe
-// in the supervisor uses this to build a TLS transport.
-func (c *RouterClient) SetSupervisor(sv *Supervisor) { c.sv = sv }
-
-// effectiveBaseURL returns the base URL with the correct scheme for the
-// current mode: https when the supervisor has minted a client certificate
-// (prod mode), http otherwise.
-// This keeps the public RouterClient API stable — callers pass an http base
-// URL; the client transparently upgrades to https in production.
-func (c *RouterClient) effectiveBaseURL() string {
-	if c.sv == nil {
-		return c.baseURL
+// SetTransport updates the HTTP transport. When client is non-nil the
+// client switches to prod mode: the base URL is upgraded to https. When
+// client is nil it reverts to dev mode (plain http). The Supervisor calls
+// this when the router starts/stops in prod mode (issue #103 R1).
+func (c *RouterClient) SetTransport(client *http.Client) {
+	c.client = client
+	if client != nil {
+		c.baseURL = upgradeToHTTPS(c.baseURL)
+	} else {
+		c.baseURL = downgradeToHTTP(c.baseURL)
 	}
-	certPath, _ := c.sv.GetClientCertPaths()
-	if certPath == "" {
-		return c.baseURL
-	}
-	// Upgrade scheme to https for prod mode.
-	if strings.HasPrefix(c.baseURL, "http://") {
-		return "https://" + strings.TrimPrefix(c.baseURL, "http://")
-	}
-	return c.baseURL
 }
 
-// httpClient returns an http.Client that uses mTLS when the supervisor has
-// minted a client certificate (production mode). The TLS configuration is
-// built lazily and cached. The client trusts the CA certificate in the
-// supervisor's caCertDir.
+// upgradeToHTTPS rewrites an http:// URL to https:// for prod mode.
+// URLs that are already https or have no scheme are returned unchanged.
+func upgradeToHTTPS(url string) string {
+	if strings.HasPrefix(url, "http://") {
+		return "https://" + strings.TrimPrefix(url, "http://")
+	}
+	return url
+}
+
+// downgradeToHTTP rewrites an https:// URL to http:// for dev mode.
+func downgradeToHTTP(url string) string {
+	if strings.HasPrefix(url, "https://") {
+		return "http://" + strings.TrimPrefix(url, "https://")
+	}
+	return url
+}
+
+// httpClient returns the configured HTTP client, or http.DefaultClient for
+// plain dev-mode connections.
 func (c *RouterClient) httpClient() *http.Client {
-	if c.tlsClient != nil {
-		return c.tlsClient
+	if c.client != nil {
+		return c.client
 	}
-	if c.sv == nil {
-		c.tlsClient = http.DefaultClient
-		return c.tlsClient
-	}
-	certPath, keyPath := c.sv.GetClientCertPaths()
-	caCertDir := c.sv.GetCACertDir()
-	if certPath == "" || keyPath == "" || caCertDir == "" {
-		c.tlsClient = http.DefaultClient
-		return c.tlsClient
-	}
-	// Load client certificate.
-	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
-	if err != nil {
-		// Fall back to plain HTTP on load error.
-		c.tlsClient = http.DefaultClient
-		return c.tlsClient
-	}
-	// Load CA certificate pool.
-	caCertFile := filepath.Join(caCertDir, "ca.crt")
-	caPEM, err := os.ReadFile(caCertFile)
-	if err != nil {
-		c.tlsClient = http.DefaultClient
-		return c.tlsClient
-	}
-	caPool := x509.NewCertPool()
-	if !caPool.AppendCertsFromPEM(caPEM) {
-		c.tlsClient = http.DefaultClient
-		return c.tlsClient
-	}
-	// In production the router may serve with a self-signed certificate
-	// whose SANs differ from the hostname in the URL (e.g. 127.0.0.1).
-	// We skip hostname verification for now; the mTLS client certificate
-	// and CA pinning are the real authentication mechanisms.
-	// This is acceptable for a desktop app connecting to a locally-supervised
-	// router; production deployments with stricter verification can pin the
-	// server certificate.
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		RootCAs:      caPool,
-		// InsecureSkipVerify is used because the router may be addressed by
-		// 127.0.0.1 while the certificate's SANs include "localhost". The mTLS
-		// client cert remains the primary authentication mechanism.
-		InsecureSkipVerify: true,
-	}
-	transport := &http.Transport{
-		TLSClientConfig: tlsConfig,
-	}
-	c.tlsClient = &http.Client{
-		Transport: transport,
-		Timeout:   10 * time.Second,
-	}
-	return c.tlsClient
+	return http.DefaultClient
 }
 
 // IsLocalWorker reports whether the worker identified by hostname/port is the
@@ -185,16 +143,20 @@ func (c *RouterClient) GetHostname() string {
 // constructor). Does NOT persist to disk — that is the ConfigService's job.
 func (c *RouterClient) SetRouterURL(url string) {
 	c.baseURL = routeraddr.Normalize(url)
+	if c.client != nil {
+		c.baseURL = upgradeToHTTPS(c.baseURL)
+	}
 }
 
 // workersPath builds the full /v1/workers URL for the configured base.
 func (c *RouterClient) workersPath() string {
-	return c.effectiveBaseURL() + "/v1/workers"
+	return c.baseURL + "/v1/workers"
 }
 
 // GetWorkers fetches the connected-workers list from the router. It returns
 // an empty (non-nil) slice when the router is reachable but idle, and a
 // typed error when the router is unreachable or returns a bad body.
+// This is a pure read: no side-effects on the Supervisor (issue #103 R1).
 func (c *RouterClient) GetWorkers(ctx context.Context) ([]WorkerView, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.workersPath(), nil)
 	if err != nil {
@@ -324,7 +286,7 @@ type PopularModelView struct {
 // popularModelsPath builds the full /meta/models/popular URL for the
 // configured base.
 func (c *RouterClient) popularModelsPath() string {
-	return c.effectiveBaseURL() + "/meta/models/popular"
+	return c.baseURL + "/meta/models/popular"
 }
 
 // GetPopularModels fetches the sorted popular-models list from the router.
@@ -392,7 +354,7 @@ var ErrRouterUnreachable = errors.New("router unreachable")
 // connectionCountPath builds the full /meta/connections/count URL for the
 // configured base.
 func (c *RouterClient) connectionCountPath() string {
-	return c.effectiveBaseURL() + "/meta/connections/count"
+	return c.baseURL + "/meta/connections/count"
 }
 
 // GetConnectionCount fetches the number of currently active HTTP connections
