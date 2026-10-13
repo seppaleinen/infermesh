@@ -35,7 +35,9 @@ Pre-built multi-arch images are published to **GHCR** on every release:
 | `ghcr.io/seppaleinen/infermesh/router` | Inference router (OpenAI-compatible API) | `latest`, `vX.Y.Z` |
 | `ghcr.io/seppaleinen/infermesh/worker` | Worker (llama.cpp, Ollama, LM Studio backends) | `latest`, `vX.Y.Z` |
 
-Both images run in **dev mode** by default (no auth, loopback only). Override at runtime:
+> **⚠️ Security Warning:** Both images run in **dev mode** by default (no auth, loopback only). **Do not expose these ports to an untrusted network.** Anyone who can reach port 8080/8081 has full access with no authentication. For production deployments, you **must** override to prod-mode with mTLS (see below).
+
+Override at runtime:
 
 ```bash
 # Router
@@ -74,6 +76,8 @@ make pkg-docker-push IMAGE=ghcr.io/seppaleinen/infermesh VERSION=v0.1.16
 ```
 
 ## Helm Chart
+
+> **⚠️ Experimental / Best-Effort:** The Helm chart is provided as a community convenience. It is **not a supported deployment path** — no Kubernetes CI, no cluster in the test matrix, and maintainers do not operate K8s day-to-day. Use at your own risk. **Docker Compose is the primary homelab deployment path.**
 
 A Kubernetes-native deployment is provided at `charts/infermesh/`. The chart
 consumes the **published images** (`ghcr.io/seppaleinen/infermesh/{router,worker}`)
