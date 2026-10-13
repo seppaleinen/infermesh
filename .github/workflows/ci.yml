@@ -102,6 +102,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install system dependencies for wails3 (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libgtk-4-dev libwebkitgtk-6.0-dev
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
