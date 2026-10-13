@@ -193,7 +193,7 @@ func TestMTLSValidateTLSConfig(t *testing.T) {
 	}
 
 	cases := []struct {
-		name     string
+		name          string
 		cert, key, ca string
 	}{
 		{"missing cert", "", nodeKeyPath, caCertPath},

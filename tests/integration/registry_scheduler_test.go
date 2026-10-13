@@ -220,16 +220,16 @@ func TestRegistryCapabilityMatching(t *testing.T) {
 	// Worker A only serves model X; worker B only serves model Y.
 	workers := []protocol.WorkerInfo{
 		{
-			ID: "w-x",
-			IP: "10.0.0.11",
+			ID:   "w-x",
+			IP:   "10.0.0.11",
 			Port: 8085,
 			Capabilities: protocol.Capabilities{
 				Models: []protocol.ModelInfo{modelInfo("model-x", true)},
 			},
 		},
 		{
-			ID: "w-y",
-			IP: "10.0.0.12",
+			ID:   "w-y",
+			IP:   "10.0.0.12",
 			Port: 8086,
 			Capabilities: protocol.Capabilities{
 				Models: []protocol.ModelInfo{modelInfo("model-y", true)},

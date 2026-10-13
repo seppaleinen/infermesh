@@ -148,13 +148,13 @@ func TestConfigMergeDefaultsFillsMissing(t *testing.T) {
 		prod := false
 		autostart := true
 		merged := mergeDefaults(Settings{
-			RouterAddr:         ":7777",
-			WorkerBackend:      "custom",
-			WorkerPort:         7778,
+			RouterAddr:               ":7777",
+			WorkerBackend:            "custom",
+			WorkerPort:               7778,
 			WorkerEnableHealthChecks: boolPtr(false),
-			DevMode:            &prod,
-			ClientCertCN:       "custom-cn",
-			AutoStartOnLogin:   &autostart,
+			DevMode:                  &prod,
+			ClientCertCN:             "custom-cn",
+			AutoStartOnLogin:         &autostart,
 		})
 		if merged.RouterAddr != ":7777" {
 			t.Errorf("RouterAddr overwritten: got %q", merged.RouterAddr)
