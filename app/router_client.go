@@ -16,10 +16,12 @@ import (
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/pkg/router"
+	"github.com/seppaleinen/infermesh/pkg/routeraddr"
 )
 
 // defaultRouterURL is the compile-time fallback base URL for the router.
-// It is NOT persisted here — that is issue #43 (settings UI).
+// It is NOT persisted here — that is issue #43 (settings UI). Normalisation
+// delegates to pkg/routeraddr.Normalize (issue #103 R2).
 const defaultRouterURL = "http://127.0.0.1:8080"
 
 // WorkerView is the slim projection the desktop UI renders. It mirrors
@@ -63,13 +65,7 @@ func (*RouterClient) ServiceName() string {
 // back to defaultRouterURL. A bare host:port (e.g. ":8080") is normalised to
 // "http://host:port" so callers can pass either form.
 func NewRouterClient(baseURL string) *RouterClient {
-	baseURL = strings.TrimRight(baseURL, "/")
-	if baseURL == "" {
-		baseURL = defaultRouterURL
-	}
-	if !strings.Contains(baseURL, "://") {
-		baseURL = "http://" + baseURL
-	}
+	baseURL = routeraddr.Normalize(baseURL)
 	hostname, _ := os.Hostname()
 	return &RouterClient{baseURL: baseURL, localHostname: hostname}
 }
@@ -188,14 +184,7 @@ func (c *RouterClient) GetHostname() string {
 // or malformed url falls back to defaultRouterURL (same normalisation as the
 // constructor). Does NOT persist to disk — that is the ConfigService's job.
 func (c *RouterClient) SetRouterURL(url string) {
-	url = strings.TrimRight(url, "/")
-	if url == "" {
-		url = defaultRouterURL
-	}
-	if !strings.Contains(url, "://") {
-		url = "http://" + url
-	}
-	c.baseURL = url
+	c.baseURL = routeraddr.Normalize(url)
 }
 
 // workersPath builds the full /v1/workers URL for the configured base.

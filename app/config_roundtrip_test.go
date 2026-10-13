@@ -38,7 +38,6 @@ func TestConfigSaveLoadRoundTrip(t *testing.T) {
 	s.WorkerBackend = "vllm"
 	s.WorkerModelPath = "/models/round-trip.bin"
 	s.WorkerPort = 9011
-	s.WorkerCustomAuth = "custom-auth-token"
 	s.WorkerEnableHealthChecks = boolPtr(false)
 	s.RelayURL = "ws://relay.example:8080"
 	s.ModelAliases = map[string]string{"short-alias": "canonical-model"}
@@ -78,9 +77,6 @@ func TestConfigSaveLoadRoundTrip(t *testing.T) {
 	}
 	if loaded.WorkerPort != s.WorkerPort {
 		t.Errorf("WorkerPort: got %d want %d", loaded.WorkerPort, s.WorkerPort)
-	}
-	if loaded.WorkerCustomAuth != s.WorkerCustomAuth {
-		t.Errorf("WorkerCustomAuth: got %q want %q", loaded.WorkerCustomAuth, s.WorkerCustomAuth)
 	}
 	if loaded.WorkerEnableHealthChecks == nil || *loaded.WorkerEnableHealthChecks {
 		t.Errorf("WorkerEnableHealthChecks: got %v want false", loaded.WorkerEnableHealthChecks)

@@ -5,18 +5,6 @@ import (
 	"fmt"
 )
 
-const keyringServiceName = "infermesh"
-
-var knownSecretRefs = map[string]bool{
-	"router/apikey":     true,
-	"worker/customauth": true,
-	"mtls/cert":         true,
-	"mtls/key":          true,
-	"mtls/ca-cert":      true,
-	"mtls/ca-key":       true,
-	"relay/creds":       true,
-}
-
 type ConfigService struct {
 	kr   Keyring
 	path string
@@ -158,14 +146,14 @@ func (cs *ConfigService) IsKeyringAvailable() bool {
 // GetKeyringServiceName returns the service name used when storing secrets
 // in the OS keyring.
 func (*ConfigService) GetKeyringServiceName() string {
-	return keyringServiceName
+	return keyringService
 }
 
 // ValidateSecretRefs ensures that all keys present in SecretRefs are within
-// the known set of acceptable references.
+// the known set of acceptable references (issue #103 R2).
 func (*ConfigService) ValidateSecretRefs(s Settings) error {
 	for ref := range s.SecretRefs {
-		if !knownSecretRefs[ref] {
+		if !knownSecretRefs(ref) {
 			return fmt.Errorf("unknown secret ref: %s", ref)
 		}
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/seppaleinen/infermesh/pkg/discovery"
 	"github.com/seppaleinen/infermesh/pkg/registry"
 	"github.com/seppaleinen/infermesh/pkg/router"
+	"github.com/seppaleinen/infermesh/pkg/routeraddr"
 	"github.com/seppaleinen/infermesh/pkg/security"
 )
 
@@ -178,19 +179,15 @@ func runRouter(args []string) int {
 	}
 
 	// Determine dev mode: --prod-mode disables dev mode, --dev-mode enables it
-	// If neither specified, defaults to dev mode (backward compatible)
-	isDevMode := true
-	if f.ProdMode {
-		isDevMode = false
-	} else if f.DevMode {
-		isDevMode = true
-	}
+	// If neither specified, defaults to dev mode (backward compatible).
+	// Resolved once per process via the shared routeraddr.Mode (issue #103 R2).
+	mode := routeraddr.ResolveMode(f.DevMode, f.ProdMode)
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil)).With("role", "router")
 
 	// Configure discovery and registry
 	var cfg discovery.Config
-	if isDevMode {
+	if mode.IsDev() {
 		cfg = discovery.DevDefaults()
 	} else {
 		cfg = discovery.Defaults()
@@ -218,7 +215,7 @@ func runRouter(args []string) int {
 	// (docker, CI, minimal VMs) where every 5s probe logs
 	// "[ERR] mdns: Failed to bind to udp6 port" with no functional benefit.
 	var listener discovery.Listener
-	if !isDevMode {
+	if !mode.IsDev() {
 		listener, err = discovery.NewListener(discovery.BackendMDNS, cfg, log)
 		if err != nil {
 			log.Error("failed to create listener", "error", err)
@@ -251,7 +248,7 @@ func runRouter(args []string) int {
 
 	// Security configuration
 	secCfg := security.Config{
-		DevMode:    isDevMode,
+		DevMode:    mode.IsDev(),
 		MTLSCert:   f.MTLSCert,
 		MTLSKey:    f.MTLSKey,
 		CertDir:    f.CertDir,
@@ -261,7 +258,7 @@ func runRouter(args []string) int {
 
 	// Validate TLS configuration in production mode before starting the server
 	// so we fail fast with a clear error instead of crashing inside ListenAndServe.
-	if !isDevMode {
+	if !mode.IsDev() {
 		caCertPath := filepath.Join(f.CertDir, "ca.crt")
 		if err := security.ValidateTLSConfig(f.MTLSCert, f.MTLSKey, caCertPath); err != nil {
 			log.Error("invalid TLS configuration", "error", err)
@@ -315,9 +312,9 @@ func runRouter(args []string) int {
 			"mode", "relay-only",
 			"note", "/v1/connect not mounted (workers connect via relay)",
 			"relay_url", f.RelayURL,
-			"dev_mode", isDevMode)
+			"dev_mode", mode.IsDev())
 	} else {
-		log.Info("router listening", "addr", f.Addr, "dev_mode", isDevMode)
+		log.Info("router listening", "addr", f.Addr, "dev_mode", mode.IsDev())
 	}
 
 	// Wait for shutdown signal

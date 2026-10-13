@@ -18,6 +18,7 @@ import (
 	"github.com/seppaleinen/infermesh/pkg/capabilities"
 	"github.com/seppaleinen/infermesh/pkg/discovery"
 	"github.com/seppaleinen/infermesh/pkg/protocol"
+	"github.com/seppaleinen/infermesh/pkg/routeraddr"
 	"github.com/seppaleinen/infermesh/pkg/security"
 )
 
@@ -403,7 +404,8 @@ func NewBackendFromName(backendName, modelPath, backendURL string) (Backend, err
 //	"127.0.0.1:9000" -> "http://127.0.0.1:9000"
 //	"myhost:8080" -> "http://myhost:8080"
 //
-// The scheme is always http (combined mode is dev-only).
+// The scheme is always http (combined mode is dev-only). URL construction
+// delegates to pkg/routeraddr.Normalize (issue #103 R2).
 func RouterBaseFromListenAddr(addr string) (string, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -415,7 +417,7 @@ func RouterBaseFromListenAddr(addr string) (string, error) {
 	if isLoopbackHost(host) {
 		host = "127.0.0.1"
 	}
-	return "http://" + net.JoinHostPort(host, port), nil
+	return routeraddr.Normalize(net.JoinHostPort(host, port)), nil
 }
 
 // isLoopbackHost reports whether a listen host is empty (any), the wildcard

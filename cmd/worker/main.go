@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/seppaleinen/infermesh/pkg/routeraddr"
 	"github.com/seppaleinen/infermesh/pkg/worker"
 )
 
@@ -103,20 +104,16 @@ func runWorker(args []string) int {
 	}
 
 	// Determine dev mode: --prod-mode disables dev mode, --dev-mode enables it
-	// If neither specified, defaults to dev mode (backward compatible)
-	isDevMode := true
-	if f.ProdMode {
-		isDevMode = false
-	} else if f.DevMode {
-		isDevMode = true
-	}
+	// If neither specified, defaults to dev mode (backward compatible).
+	// Resolved once per process via the shared routeraddr.Mode (issue #103 R2).
+	mode := routeraddr.ResolveMode(f.DevMode, f.ProdMode)
 
 	// Dev-mode default: when --router is not provided, use the router's
 	// default address (http://127.0.0.1:8080) so the worker registers via
 	// HTTP instead of silently falling back to mDNS. This matches the
 	// router's default --addr :8080 and avoids the silent registration
 	// failure when the router runs on a non-default port.
-	if isDevMode && f.Router == "" {
+	if mode.IsDev() && f.Router == "" {
 		f.Router = "http://127.0.0.1:8080"
 	}
 
@@ -129,7 +126,7 @@ func runWorker(args []string) int {
 		Backend:              f.Backend,
 		BackendURL:           f.BackendURL,
 		Port:                 f.Port,
-		DevMode:              isDevMode,
+		DevMode:              mode.IsDev(),
 		MTLSCert:             f.MTLSCert,
 		MTLSKey:              f.MTLSKey,
 		CertDir:              f.CertDir,

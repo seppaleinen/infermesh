@@ -69,7 +69,7 @@ func TestEffectiveBaseURL(t *testing.T) {
 		{
 			name:    "bare addr normalised, no supervisor",
 			baseURL: ":8080",
-			want:    "http://:8080",
+			want:    "http://127.0.0.1:8080",
 		},
 		{
 			name:    "http unchanged without supervisor",

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/seppaleinen/infermesh/pkg/routeraddr"
 	"github.com/seppaleinen/infermesh/pkg/security"
 )
 
@@ -32,21 +33,7 @@ const (
 // supervisorServiceName is the Wails service name surfaced to the frontend.
 const supervisorServiceName = "Supervisor"
 
-// defaultRouterAddr is the fallback router listen address when Settings is
-// empty. It mirrors RouterClient's defaultRouterURL minus the scheme.
-const defaultRouterAddr = "127.0.0.1:8080"
-
-// Secret refs and env-var names used when building child process args. The
-// refs mirror knownSecretRefs in config_service.go so the YAML only ever holds
-// references; values come from the keyring at process-launch time.
 const (
-	secretRefRouterAPIKey     = "router/apikey"
-	secretRefWorkerCustomAuth = "worker/customauth"
-	secretRefMTLSCert         = "mtls/cert"
-	secretRefMTLSKey          = "mtls/key"
-	secretRefMTLSCACert       = "mtls/ca-cert"
-	secretRefMTLSCAKey        = "mtls/ca-key"
-	envWorkerCustomAuth       = "INFERMESH_WORKER_CUSTOM_AUTH"
 	roleRouter                = "router"
 	roleWorker                = "worker"
 )
@@ -234,42 +221,26 @@ func (s *Supervisor) binaryPath(configured, defaultName string) string {
 }
 
 // routerURLForWorker normalises the router listen address into the base URL
-// the worker needs for dev-mode HTTP registration, e.g. ":8080" ->
-// "http://127.0.0.1:8080".
+// the worker needs for dev-mode HTTP registration. Delegates to
+// pkg/routeraddr.Normalize (issue #103 R2).
 func routerURLForWorker(routerAddr string) string {
-	a := strings.TrimSpace(routerAddr)
-	if a == "" {
-		return "http://" + defaultRouterAddr
-	}
-	if strings.Contains(a, "://") {
-		return strings.TrimRight(a, "/")
-	}
-	if strings.HasPrefix(a, ":") {
-		a = "127.0.0.1" + a
-	}
-	return "http://" + strings.TrimRight(a, "/")
+	return routeraddr.Normalize(routerAddr)
 }
 
-// routerBaseURL normalises an address for HTTP health probes; bare ":8080"
-// becomes "http://127.0.0.1:8080", a bare "host:8080" becomes
-// "http://host:8080".
+// routerBaseURL normalises an address for HTTP health probes. Delegates to
+// pkg/routeraddr.Normalize (issue #103 R2).
 func routerBaseURL(addr string) string {
-	a := strings.TrimSpace(addr)
-	if a == "" {
-		return "http://" + defaultRouterAddr
-	}
-	if strings.Contains(a, "://") {
-		return strings.TrimRight(a, "/")
-	}
-	if strings.HasPrefix(a, ":") {
-		a = "127.0.0.1" + a
-	}
-	return "http://" + strings.TrimRight(a, "/")
+	return routeraddr.Normalize(addr)
 }
 
-// isDevMode reports whether the saved settings request dev mode (the default).
-func isDevMode(s Settings) bool {
-	return s.DevMode == nil || *s.DevMode
+// modeFromSettings resolves the dev/prod tri-state from Settings into a
+// single routeraddr.Mode (issue #103 R2). nil DevMode means "old file /
+// no opinion" → dev mode (the default).
+func modeFromSettings(s Settings) routeraddr.Mode {
+	if s.DevMode != nil && !*s.DevMode {
+		return routeraddr.ModeProd
+	}
+	return routeraddr.ModeDev
 }
 
 // ---- arg / env building -----------------------------------------------------
@@ -278,7 +249,7 @@ func isDevMode(s Settings) bool {
 // saved Settings. No secrets are logged here.
 func (s *Supervisor) buildRouterArgs(settings Settings) ([]string, error) {
 	var args []string
-	if isDevMode(settings) {
+	if modeFromSettings(settings).IsDev() {
 		args = append(args, "--dev-mode")
 	} else {
 		args = append(args, "--prod-mode")
@@ -304,7 +275,7 @@ func (s *Supervisor) buildRouterArgs(settings Settings) ([]string, error) {
 			args = append(args, "--model-alias", strings.Join(parts, ","))
 		}
 	}
-	if !isDevMode(settings) {
+	if !modeFromSettings(settings).IsDev() {
 		apiKey, err := s.resolveSecret(secretRefRouterAPIKey)
 		if err != nil {
 			return nil, err
@@ -345,7 +316,7 @@ func (s *Supervisor) buildRouterArgs(settings Settings) ([]string, error) {
 // buildWorkerArgs constructs the CLI flags for the worker binary.
 func (s *Supervisor) buildWorkerArgs(settings Settings) ([]string, error) {
 	var args []string
-	if isDevMode(settings) {
+	if modeFromSettings(settings).IsDev() {
 		args = append(args, "--dev-mode")
 	} else {
 		args = append(args, "--prod-mode")
@@ -359,7 +330,7 @@ func (s *Supervisor) buildWorkerArgs(settings Settings) ([]string, error) {
 	if settings.WorkerPort > 0 {
 		args = append(args, "--port", strconv.Itoa(settings.WorkerPort))
 	}
-	if isDevMode(settings) {
+	if modeFromSettings(settings).IsDev() {
 		// dev-mode HTTP registration against the local router (skips mDNS).
 		args = append(args, "--router", routerURLForWorker(settings.RouterAddr))
 	} else {
@@ -372,7 +343,7 @@ func (s *Supervisor) buildWorkerArgs(settings Settings) ([]string, error) {
 	if settings.WorkerEnableHealthChecks != nil {
 		args = append(args, "--enable-health-checks", strconv.FormatBool(*settings.WorkerEnableHealthChecks))
 	}
-	if !isDevMode(settings) {
+	if !modeFromSettings(settings).IsDev() {
 		cert, key, err := s.writeMTLSFiles()
 		if err != nil {
 			return nil, err

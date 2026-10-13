@@ -664,11 +664,11 @@ func TestSaveSettingsNoSecretsKeyringDown(t *testing.T) {
 }
 
 // TestNewRouterClientNormalizesBareHostPort verifies that NewRouterClient
-// normalises a bare ":8080" to "http://:8080" (the workersPath will include it).
+// normalises a bare ":8080" to "http://127.0.0.1:8080" via routeraddr.Normalize.
 func TestNewRouterClientNormalizesBareHostPort(t *testing.T) {
 	c := NewRouterClient(":8080")
-	if c.workersPath() != "http://:8080/v1/workers" {
-		t.Errorf("workersPath: got %q want %q", c.workersPath(), "http://:8080/v1/workers")
+	if c.workersPath() != "http://127.0.0.1:8080/v1/workers" {
+		t.Errorf("workersPath: got %q want %q", c.workersPath(), "http://127.0.0.1:8080/v1/workers")
 	}
 }
 
