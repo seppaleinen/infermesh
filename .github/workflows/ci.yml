@@ -70,3 +70,58 @@ jobs:
           echo "Coverage ${TOTAL}% is below the 50% threshold"
           exit 1
         fi
+
+  # Type-check and build the Wails app frontend. The frontend is its own
+  # Go-independent module; `npm run build` is `vue-tsc && vite build`, so this
+  # single step gates both the type-check and the production bundle.
+  app-frontend:
+    name: App frontend type-check + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: app/frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: app/frontend
+        run: npm ci
+      - name: Type-check and build frontend (vue-tsc && vite build)
+        working-directory: app/frontend
+        run: npm run build
+
+  # Fail if the committed Wails bindings drift from freshly generated output.
+  # Ubuntu (not macOS) because the wails3 CLI is a pure-Go binary with no
+  # webkit2gtk/GTK dependency; the trade-off is that CI does not compile the
+  # full app (that is macOS/CGO only and verified locally on the primary
+  # platform).
+  app-bindings:
+    name: App Wails bindings drift check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies for wails3 (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libgtk-4-dev libwebkitgtk-6.0-dev
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          cache-dependency-path: app/go.sum
+      - name: Install wails3 (pinned to Makefile WAILS3_VERSION)
+        run: go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.24
+      - name: Regenerate Wails bindings
+        working-directory: app
+        run: wails3 generate bindings -f '' -clean=true -ts -i
+      - name: Fail if committed bindings drift from generator output
+        run: |
+          if [ -n "$(git status --porcelain -- app/frontend/bindings)" ]; then
+            echo "::error::Committed Wails bindings are stale. Run 'cd app && wails3 generate bindings -f \"\" -clean=true -ts -i' locally and commit the result."
+            git status --porcelain -- app/frontend/bindings
+            git --no-pager diff -- app/frontend/bindings
+            exit 1
+          fi
+          echo "Bindings match generator output."

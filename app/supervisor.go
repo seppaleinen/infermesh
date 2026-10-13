@@ -160,6 +160,13 @@ func (*Supervisor) ServiceName() string { return supervisorServiceName }
 // SetRouterClient wires the desktop RouterClient into the Supervisor so the
 // transport can be updated when the router starts/stops in prod mode. The
 // client itself has zero knowledge of the Supervisor (issue #103 R1).
+//
+// This is Go-side wiring only and is not frontend-invocable; the binding
+// generator is told to skip it so *RouterClient is not emitted as both a
+// service (value) and an empty model interface (type), which would produce
+// duplicate TS exports (TS2300).
+//
+//wails:ignore
 func (s *Supervisor) SetRouterClient(rc *RouterClient) {
 	s.routerClient = rc
 }

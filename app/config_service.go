@@ -18,6 +18,13 @@ func NewConfigService(kr Keyring, path string) *ConfigService {
 	return &ConfigService{kr: kr, path: path}
 }
 
+// SetSupervisor wires the Supervisor into the ConfigService so settings saves
+// can start the worker. Go-side wiring only (not frontend-invocable); skipped
+// by the binding generator so *Supervisor is not emitted as both a service
+// (value) and an empty model interface (type), which would produce duplicate
+// TS exports (TS2300).
+//
+//wails:ignore
 func (cs *ConfigService) SetSupervisor(sv *Supervisor) { cs.sv = sv }
 
 // ServiceName implements the Wails service interface for ConfigService.

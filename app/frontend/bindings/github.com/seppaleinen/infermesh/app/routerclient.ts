@@ -3,14 +3,21 @@
 
 /**
  * RouterClient is a Wails service bound to the frontend. It talks to the
- * router's HTTP API over plain HTTP (dev mode). No auth, no mTLS here —
- * that is prod-mode scope (#9/#10), not the desktop MVP.
+ * router's HTTP API over plain HTTP (dev mode) or mTLS (prod mode).
+ * 
+ * The client has zero knowledge of the Supervisor (issue #103 R1). In prod
+ * mode the Supervisor builds the TLS transport and injects it via
+ * SetTransport; the client simply uses it for all requests.
  * @module
  */
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
+
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as http$0 from "../../../../net/http/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -58,6 +65,7 @@ export function GetRouterURL(): $CancellablePromise<string> {
  * GetWorkers fetches the connected-workers list from the router. It returns
  * an empty (non-nil) slice when the router is reachable but idle, and a
  * typed error when the router is unreachable or returns a bad body.
+ * This is a pure read: no side-effects on the Supervisor (issue #103 R1).
  */
 export function GetWorkers(): $CancellablePromise<$models.WorkerView[] | null> {
     return $Call.ByID(207224501);
@@ -83,6 +91,12 @@ export function SetRouterURL(url: string): $CancellablePromise<void> {
     return $Call.ByID(1269668880, url);
 }
 
-export function SetSupervisor(sv: $models.Supervisor | null): $CancellablePromise<void> {
-    return $Call.ByID(4066847928, sv);
+/**
+ * SetTransport updates the HTTP transport. When client is non-nil the
+ * client switches to prod mode: the base URL is upgraded to https. When
+ * client is nil it reverts to dev mode (plain http). The Supervisor calls
+ * this when the router starts/stops in prod mode (issue #103 R1).
+ */
+export function SetTransport(client: http$0.Client | null): $CancellablePromise<void> {
+    return $Call.ByID(46756515, client);
 }

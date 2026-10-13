@@ -2,48 +2,42 @@ import { ref } from 'vue'
 import { ConfigService, type Settings } from '@bindings/github.com/seppaleinen/infermesh/app'
 
 /**
- * Secret reference mapping from config_service.go knownSecretRefs.
- * Each ref corresponds to a field on Settings; the value is stored in the
- * OS keyring, never in the YAML file.
+ * Keyring secret reference keys (mirror `SecretRefs` in app/secretrefs.go).
+ * Each is resolved from the OS keyring at process-launch time; secret values
+ * are never persisted in the YAML file.
  */
-const SECRET_REFS = {
-  'router/apikey': 'router_apikey',
-  'worker/customauth': 'worker_custom_auth',
-  'mtls/cert': 'worker_mtls_cert',
-  'mtls/key': 'worker_mtls_key',
-  'mtls/ca-cert': 'ca_cert',
-  'mtls/ca-key': 'ca_key',
-} as const
+const SECRET_REFS = [
+  'router/apikey',
+  'worker/customauth',
+  'mtls/cert',
+  'mtls/key',
+  'mtls/ca-cert',
+  'mtls/ca-key',
+] as const
 
-export type SecretRefKey = keyof typeof SECRET_REFS
+export type SecretRefKey = (typeof SECRET_REFS)[number]
 
 export function emptySettings(): Settings {
   return {
     router_addr: '',
-    router_apikey: '',
     router_binary_path: '',
-    worker_addr: '',
-    worker_apikey: '',
     worker_backend: 'llama-cpp',
     worker_model_path: '',
     worker_port: 0,
     worker_binary_path: '',
-    worker_custom_auth: '',
-    worker_mtls_cert: '',
-    worker_mtls_key: '',
-    relay_url: '',
-    dev_mode: null,
     worker_enable_health_checks: null,
-    auto_start_on_login: null,
+    relay_url: '',
+    model_aliases: {},
+    dev_mode: null,
     client_cert_cn: 'infermesh-desktop',
+    auto_start_on_login: null,
     secrets: {},
     secret_refs: {},
-    model_aliases: {},
   }
 }
 
 export function secretRefsForForm(): string[] {
-  return Object.keys(SECRET_REFS) as SecretRefKey[]
+  return [...SECRET_REFS]
 }
 
 export function useSettings() {
