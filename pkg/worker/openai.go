@@ -7,125 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
-	"log/slog"
 )
-
-// Backend defines the interface for backend adapters that handle
-// OpenAI-compatible API calls and model lifecycle operations.
-type Backend interface {
-	Name() string
-	LoadModel(path string) (bool, error)
-	UnloadModel() error
-	CompleteChat(ctx context.Context, model string, req ChatRequest) (ChatResponse, error)
-	CompleteCompletions(ctx context.Context, model string, req CompletionRequest) (CompletionResponse, error)
-	ListModels() ([]protocol.ModelInfo, error)
-	GetMetrics() (Metrics, error)
-	// Health check
-	IsHealthy() bool
-	HealthCheck() error
-	// Circuit breaker status
-	GetCircuitState() CircuitState
-	// Streaming methods
-	StreamChat(ctx context.Context, model string, req ChatRequest) (<-chan ChatChunk, <-chan error)
-	StreamCompletions(ctx context.Context, model string, req CompletionRequest) (<-chan CompletionChunk, <-chan error)
-}
-
-// CircuitState represents the state of the circuit breaker.
-type CircuitState int
-
-const (
-	CircuitClosed   CircuitState = iota // Normal operation
-	CircuitHalfOpen                     // Testing if backend recovered
-	CircuitOpen                         // Backend is down, fail fast
-)
-
-func (cs CircuitState) String() string {
-	return [...]string{"closed", "half-open", "open"}[cs]
-}
-
-// CircuitBreaker implements the circuit breaker pattern for resilience.
-type CircuitBreaker struct {
-	mu               sync.RWMutex
-	state            CircuitState
-	failureCount     int
-	failureThreshold int
-	successThreshold int
-	lastFailureTime  time.Time
-	cooldownPeriod   time.Duration
-}
-
-// NewCircuitBreaker creates a new circuit breaker.
-func NewCircuitBreaker(failureThreshold int, cooldownPeriod time.Duration) *CircuitBreaker {
-	return &CircuitBreaker{
-		state:            CircuitClosed,
-		failureThreshold: failureThreshold,
-		successThreshold: 1,
-		cooldownPeriod:   cooldownPeriod,
-	}
-}
-
-// RecordSuccess records a successful operation.
-func (cb *CircuitBreaker) RecordSuccess() {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-	if cb.state == CircuitHalfOpen {
-		cb.state = CircuitClosed
-		cb.failureCount = 0
-	}
-}
-
-// RecordFailure records a failed operation.
-func (cb *CircuitBreaker) RecordFailure() {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-	cb.failureCount++
-	cb.lastFailureTime = time.Now()
-	if cb.failureCount >= cb.failureThreshold {
-		cb.state = CircuitOpen
-	}
-}
-
-// CanExecute checks if an operation can be executed.
-//
-// State machine:
-//   - CircuitClosed  → true (normal operation).
-//   - CircuitHalfOpen → true (one probe request allowed).
-//   - CircuitOpen    → false while cooldown has not elapsed.
-//     After cooldown elapses, transitions to CircuitHalfOpen and returns true
-//     (the probe request). The caller must call RecordSuccess or RecordFailure
-//     to resolve the half-open state.
-func (cb *CircuitBreaker) CanExecute() bool {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-	switch cb.state {
-	case CircuitClosed:
-		return true
-	case CircuitHalfOpen:
-		return true // Allow one request through
-	case CircuitOpen:
-		// Check if cooldown period has passed
-		if time.Since(cb.lastFailureTime) > cb.cooldownPeriod {
-			// Transition to half-open: allow one probe request through.
-			cb.state = CircuitHalfOpen
-			return true
-		}
-		return false
-	}
-	return true
-}
-
-// GetState returns the current circuit breaker state.
-func (cb *CircuitBreaker) GetState() CircuitState {
-	cb.mu.RLock()
-	defer cb.mu.RUnlock()
-	return cb.state
-}
 
 // healthProbeURL returns the endpoint used to probe backend health.
 //
@@ -189,61 +77,6 @@ func (b *OpenAICompatibleBackend) HealthCheckDetails() (HealthStatus, ModelMetri
 // GetCircuitState returns the current circuit breaker state.
 func (b *OpenAICompatibleBackend) GetCircuitState() CircuitState {
 	return b.circuitBreaker.GetState()
-}
-
-// retryWithBackoff implements exponential backoff retry logic.
-func retryWithBackoff(ctx context.Context, maxRetries int, fn func() error) error {
-	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if err := fn(); err != nil {
-			lastErr = err
-			backoff := time.Duration(1<<attempt) * time.Second
-			select {
-			case <-time.After(backoff):
-				continue
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-		return nil
-	}
-	return fmt.Errorf("max retries (%d) exceeded: %w", maxRetries, lastErr)
-}
-
-// Metrics represents backend performance metrics.
-type Metrics struct {
-	Requests      int   `json:"requests_total"`
-	Errors        int   `json:"errors_total"`
-	LatencyMs     int64 `json:"latency_ms_total"`
-	ModelLoads    int   `json:"model_loads_total"`
-	ModelUnloads  int   `json:"model_unloads_total"`
-	MemoryUsageMB int   `json:"memory_usage_mb"`
-	GPUUsagePct   int   `json:"gpu_usage_pct"`
-}
-
-// ChatResponse represents a chat completion response from a backend.
-type ChatResponse struct {
-	ID      string   `json:"id"`
-	Object  string   `json:"object"`
-	Created int64    `json:"created"`
-	Choices []Choice `json:"choices"`
-	Usage   *Usage   `json:"usage,omitempty"`
-}
-
-// CompletionResponse represents a completion response from a backend.
-type CompletionResponse struct {
-	ID      string   `json:"id"`
-	Object  string   `json:"object"`
-	Created int64    `json:"created"`
-	Choices []Choice `json:"choices"`
-	Usage   *Usage   `json:"usage,omitempty"`
-}
-
-// Usage represents token usage statistics.
-type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
 }
 
 // OpenAICompatibleBackend implements Backend for OpenAI-compatible APIs.
