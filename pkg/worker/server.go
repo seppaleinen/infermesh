@@ -467,11 +467,6 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 
 // chatCompletions handles the /v1/chat/completions HTTP endpoint.
 func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
-	// Set SSE headers
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
 	// Parse request
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -497,7 +492,30 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create streaming response
+	ctx := r.Context()
+
+	// Non-streaming: return the full response as application/json.
+	if !req.Stream {
+		w.Header().Set("Content-Type", "application/json")
+		chatResp, err := s.backend.CompleteChat(ctx, req.Model, req)
+		if err != nil {
+			s.log.Error("backend error", "error", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := json.NewEncoder(w).Encode(chatResp); err != nil {
+			s.log.Error("failed to encode response", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		return
+	}
+
+	// Streaming: forward ChatChunks as OpenAI-compatible SSE frames.
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		s.log.Error("streaming unsupported")
@@ -505,41 +523,11 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Process the request via backend
-	ctx := r.Context()
-	respChan := make(chan interface{}, 10)
-	errChan := make(chan error, 1)
-
-	go func() {
-		defer close(respChan)
-		defer close(errChan)
-
-		if req.Stream {
-			// For streaming, we need to handle chunks
-			// This would require the backend to support streaming responses
-			// For now, we'll fall back to non-streaming
-			s.log.Warn("streaming requested but falling back to non-streaming")
-		}
-
-		chatResp, err := s.backend.CompleteChat(ctx, req.Model, req)
-		if err != nil {
-			errChan <- err
-			return
-		}
-		respChan <- chatResp
-	}()
-
-	// Send SSE response
+	chatCh, errCh := s.backend.StreamChat(ctx, req.Model, req)
 	for {
 		select {
-		case err, ok := <-errChan:
-			if !ok {
-				// Channel closed, stop processing
-				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
-				flusher.Flush()
-				return
-			}
-			if err != nil {
+		case err, ok := <-errCh:
+			if ok && err != nil {
 				s.log.Error("backend error", "error", err)
 				errorData := map[string]string{"error": err.Error()}
 				jsonErr, _ := json.Marshal(errorData)
@@ -547,33 +535,22 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				flusher.Flush()
 				return
 			}
-		case resp, ok := <-respChan:
+			// errCh closed without error — keep waiting for chunks.
+		case chunk, ok := <-chatCh:
 			if !ok {
-				// Stream ended
 				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
 				return
 			}
-			switch v := resp.(type) {
-			case ChatResponse:
-				jsonResp, err := json.Marshal(v)
-				if err != nil {
-					s.log.Error("failed to marshal response", "error", err)
-					http.Error(w, "internal server error", http.StatusInternalServerError)
-					return
-				}
-				_, _ = fmt.Fprintf(w, "data: %s\n\n", string(jsonResp))
+			jsonChunk, err := json.Marshal(chunk)
+			if err != nil {
+				s.log.Error("failed to marshal chunk", "error", err)
+				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
-			case CompletionResponse:
-				jsonResp, err := json.Marshal(v)
-				if err != nil {
-					s.log.Error("failed to marshal response", "error", err)
-					http.Error(w, "internal server error", http.StatusInternalServerError)
-					return
-				}
-				_, _ = fmt.Fprintf(w, "data: %s\n\n", string(jsonResp))
-				flusher.Flush()
+				return
 			}
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(jsonChunk))
+			flusher.Flush()
 		case <-ctx.Done():
 			return
 		}
@@ -582,11 +559,6 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 // completions handles the /v1/completions HTTP endpoint.
 func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
-	// Set SSE headers
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
 	// Parse request
 	var req CompletionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -609,7 +581,30 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create streaming response
+	ctx := r.Context()
+
+	// Non-streaming: return the full response as application/json.
+	if !req.Stream {
+		w.Header().Set("Content-Type", "application/json")
+		compResp, err := s.backend.CompleteCompletions(ctx, req.Model, req)
+		if err != nil {
+			s.log.Error("backend error", "error", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := json.NewEncoder(w).Encode(compResp); err != nil {
+			s.log.Error("failed to encode response", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		return
+	}
+
+	// Streaming: forward CompletionChunks as OpenAI-compatible SSE frames.
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		s.log.Error("streaming unsupported")
@@ -617,38 +612,11 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Process the request via backend
-	ctx := r.Context()
-	respChan := make(chan interface{}, 10)
-	errChan := make(chan error, 1)
-
-	go func() {
-		defer close(respChan)
-		defer close(errChan)
-
-		if req.Stream {
-			s.log.Warn("streaming requested but falling back to non-streaming")
-		}
-
-		compResp, err := s.backend.CompleteCompletions(ctx, req.Model, req)
-		if err != nil {
-			errChan <- err
-			return
-		}
-		respChan <- compResp
-	}()
-
-	// Send SSE response
+	compCh, errCh := s.backend.StreamCompletions(ctx, req.Model, req)
 	for {
 		select {
-		case err, ok := <-errChan:
-			if !ok {
-				// Channel closed, stop processing
-				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
-				flusher.Flush()
-				return
-			}
-			if err != nil {
+		case err, ok := <-errCh:
+			if ok && err != nil {
 				s.log.Error("backend error", "error", err)
 				errorData := map[string]string{"error": err.Error()}
 				jsonErr, _ := json.Marshal(errorData)
@@ -656,24 +624,22 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 				flusher.Flush()
 				return
 			}
-		case resp, ok := <-respChan:
+			// errCh closed without error — keep waiting for chunks.
+		case chunk, ok := <-compCh:
 			if !ok {
-				// Stream ended
 				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
 				return
 			}
-			switch v := resp.(type) {
-			case CompletionResponse:
-				jsonResp, err := json.Marshal(v)
-				if err != nil {
-					s.log.Error("failed to marshal response", "error", err)
-					http.Error(w, "internal server error", http.StatusInternalServerError)
-					return
-				}
-				_, _ = fmt.Fprintf(w, "data: %s\n\n", string(jsonResp))
+			jsonChunk, err := json.Marshal(chunk)
+			if err != nil {
+				s.log.Error("failed to marshal chunk", "error", err)
+				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
+				return
 			}
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(jsonChunk))
+			flusher.Flush()
 		case <-ctx.Done():
 			return
 		}

@@ -433,6 +433,214 @@ func TestChatCompletionsHandler(t *testing.T) {
 	}
 }
 
+// TestChatCompletionsHandler_NonStreaming verifies that a non-streaming
+// chat request returns application/json with the full ChatResponse and no
+// SSE framing (issue #115).
+func TestChatCompletionsHandler_NonStreaming(t *testing.T) {
+	server := NewServer(testLogger(), "", security.Config{DevMode: true})
+	server.SetBackend(newMockBackend(), "gpt-4")
+
+	chatReq := ChatRequest{
+		Model:    "gpt-4",
+		Messages: []ChatMessage{{Role: "user", Content: "Hello"}},
+		Stream:   false,
+	}
+
+	body, err := json.Marshal(chatReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	server.chatCompletions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected Content-Type 'application/json', got '%s'", ct)
+	}
+
+	respBody := w.Body.String()
+	if strings.Contains(respBody, "data:") {
+		t.Errorf("non-streaming response must not contain SSE framing, got: %s", respBody)
+	}
+
+	var chatResp ChatResponse
+	if err := json.Unmarshal([]byte(respBody), &chatResp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if chatResp.ID != "chatcmpl-test" {
+		t.Errorf("expected ID 'chatcmpl-test', got '%s'", chatResp.ID)
+	}
+	if len(chatResp.Choices) != 1 || chatResp.Choices[0].Message.Content != "Mock response" {
+		t.Errorf("unexpected choices: %+v", chatResp.Choices)
+	}
+}
+
+// TestChatCompletionsHandler_StreamingChunkFormat verifies that a streaming
+// chat request returns OpenAI-compatible SSE frames (issue #115): each
+// "data:" frame is a ChatChunk JSON object, terminated by "data: [DONE]".
+func TestChatCompletionsHandler_StreamingChunkFormat(t *testing.T) {
+	server := NewServer(testLogger(), "", security.Config{DevMode: true})
+	server.SetBackend(newMockBackend(), "gpt-4")
+
+	chatReq := ChatRequest{
+		Model:    "gpt-4",
+		Messages: []ChatMessage{{Role: "user", Content: "Hello"}},
+		Stream:   true,
+	}
+
+	body, err := json.Marshal(chatReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	server.chatCompletions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	respBody := w.Body.String()
+	if !strings.Contains(respBody, "data: [DONE]") {
+		t.Errorf("streaming response must end with 'data: [DONE]', got: %s", respBody)
+	}
+
+	// Every non-[DONE] data frame must decode as a ChatChunk.
+	frames := strings.Split(strings.TrimRight(respBody, "\n"), "\n\n")
+	foundChunk := false
+	for _, frame := range frames {
+		if !strings.HasPrefix(frame, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(frame, "data: ")
+		if payload == "[DONE]" {
+			continue
+		}
+		var chunk ChatChunk
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			t.Fatalf("SSE frame is not valid ChatChunk JSON: %v\nframe: %s", err, payload)
+		}
+		foundChunk = true
+	}
+	if !foundChunk {
+		t.Errorf("expected at least one chunk frame, got: %s", respBody)
+	}
+}
+
+// TestCompletionsHandler_NonStreaming verifies that a non-streaming
+// completion request returns application/json with the full
+// CompletionResponse and no SSE framing (issue #115).
+func TestCompletionsHandler_NonStreaming(t *testing.T) {
+	server := NewServer(testLogger(), "", security.Config{DevMode: true})
+	server.SetBackend(newMockBackend(), "gpt-4")
+
+	completionReq := CompletionRequest{
+		Model:     "gpt-4",
+		Prompt:    "Hello",
+		MaxTokens: 100,
+		Stream:    false,
+	}
+
+	body, err := json.Marshal(completionReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	server.completions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected Content-Type 'application/json', got '%s'", ct)
+	}
+
+	respBody := w.Body.String()
+	if strings.Contains(respBody, "data:") {
+		t.Errorf("non-streaming response must not contain SSE framing, got: %s", respBody)
+	}
+
+	var compResp CompletionResponse
+	if err := json.Unmarshal([]byte(respBody), &compResp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if compResp.ID != "cmpl-test" {
+		t.Errorf("expected ID 'cmpl-test', got '%s'", compResp.ID)
+	}
+	if len(compResp.Choices) != 1 || compResp.Choices[0].Text != "Mock completion" {
+		t.Errorf("unexpected choices: %+v", compResp.Choices)
+	}
+}
+
+// TestCompletionsHandler_StreamingChunkFormat verifies that a streaming
+// completion request returns OpenAI-compatible SSE frames (issue #115).
+func TestCompletionsHandler_StreamingChunkFormat(t *testing.T) {
+	server := NewServer(testLogger(), "", security.Config{DevMode: true})
+	server.SetBackend(newMockBackend(), "gpt-4")
+
+	completionReq := CompletionRequest{
+		Model:     "gpt-4",
+		Prompt:    "Hello",
+		MaxTokens: 100,
+		Stream:    true,
+	}
+
+	body, err := json.Marshal(completionReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	server.completions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	respBody := w.Body.String()
+	if !strings.Contains(respBody, "data: [DONE]") {
+		t.Errorf("streaming response must end with 'data: [DONE]', got: %s", respBody)
+	}
+
+	frames := strings.Split(strings.TrimRight(respBody, "\n"), "\n\n")
+	foundChunk := false
+	for _, frame := range frames {
+		if !strings.HasPrefix(frame, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(frame, "data: ")
+		if payload == "[DONE]" {
+			continue
+		}
+		var chunk CompletionChunk
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			t.Fatalf("SSE frame is not valid CompletionChunk JSON: %v\nframe: %s", err, payload)
+		}
+		foundChunk = true
+	}
+	if !foundChunk {
+		t.Errorf("expected at least one chunk frame, got: %s", respBody)
+	}
+}
+
 func TestCompletionsHandler(t *testing.T) {
 	server := NewServer(testLogger(), "", security.Config{DevMode: true})
 	server.SetBackend(newMockBackend(), "gpt-4")
