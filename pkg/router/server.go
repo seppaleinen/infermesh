@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -34,6 +36,17 @@ type PopularModelInfo struct {
 // PopularModelsResponse is the response from the /meta/models/popular endpoint.
 type PopularModelsResponse struct {
 	Models []PopularModelInfo `json:"models"`
+}
+
+// SetAliasesRequest is the body for POST /meta/aliases. The caller sends the
+// FULL alias map — not a delta — so the router replaces atomically.
+type SetAliasesRequest struct {
+	Aliases map[string]string `json:"aliases"`
+}
+
+// SetAliasesResponse is the body for a successful POST /meta/aliases.
+type SetAliasesResponse struct {
+	OK bool `json:"ok"`
 }
 
 // autoModelAlias is the logical model name that triggers auto routing.
@@ -176,7 +189,8 @@ type Server struct {
 	// routed with the literal model name the client sent (backward
 	// compatible). When active, any request model that is an alias key is
 	// rewritten to its Canonical before worker selection.
-	modelAliases *ModelAliasConfig
+	modelAliases   *ModelAliasConfig
+	modelAliasesMu sync.RWMutex
 
 	// connections is the count of currently active HTTP connections to the
 	// router. It is the number of open TCP connections, NOT a distinct-client
@@ -401,12 +415,16 @@ func (s *Server) resolveAutoModelCompletion(req *CompletionRequest) (string, err
 // that is an alias key is rewritten to its Canonical so the rest of the
 // pipeline sees the concrete model name and requires no changes.
 func (s *Server) SetModelAliases(cfg *ModelAliasConfig) {
+	s.modelAliasesMu.Lock()
+	defer s.modelAliasesMu.Unlock()
 	s.modelAliases = cfg
 }
 
 // modelAliasesActive reports whether alias resolution is enabled and at
 // least one alias has a non-empty Canonical.
 func (s *Server) modelAliasesActive() bool {
+	s.modelAliasesMu.RLock()
+	defer s.modelAliasesMu.RUnlock()
 	return modelAliasesActive(s.modelAliases)
 }
 
@@ -419,7 +437,9 @@ func (s *Server) modelAliasesActive() bool {
 // This is called after the model="auto" resolution and before marshal &
 // dispatch so the rest of the pipeline sees the canonical model name.
 func (s *Server) resolveAliasModel(model string) string {
-	if !s.modelAliasesActive() {
+	s.modelAliasesMu.RLock()
+	defer s.modelAliasesMu.RUnlock()
+	if !modelAliasesActive(s.modelAliases) {
 		return model
 	}
 	target, ok := s.modelAliases.Aliases[model]
@@ -495,6 +515,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/workers", s.handleWorkersList)
 	mux.HandleFunc("/v1/dev/register", s.handleDevRegister)
 	mux.HandleFunc("/meta/models/popular", s.handlePopularModels)
+	mux.HandleFunc("/meta/aliases", s.handleSetAliases)
 	mux.HandleFunc("/meta/connections/count", s.handleConnectionCount)
 	mux.HandleFunc("/v1/queue/stats", s.handleQueueStats)
 
@@ -633,7 +654,7 @@ func (s *Server) wrapInferenceEndpoints(next http.Handler, apiKey string) http.H
 	apiKeyMW := security.NewAPIKeyMiddleware(apiKey, apiKey != "")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/chat/completions", "/v1/completions":
+		case "/v1/chat/completions", "/v1/completions", "/meta/aliases":
 			apiKeyMW(next).ServeHTTP(w, r)
 		default:
 			next.ServeHTTP(w, r)
@@ -869,10 +890,11 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 	// Build a set of canonical model names that are targets of an active
 	// alias. These are hidden from the worker-model list so the alias (short
 	// name) is advertised instead — an alias is a rename, not additive.
-	// modelAliases is not touched by the cache lock, so computing the set
-	// before acquiring the RLock is safe.
+	// modelAliases is protected by its own mutex, so we read it under RLock
+	// before acquiring the cache RLock.
 	var hideCanonical map[string]bool
-	if s.modelAliasesActive() {
+	s.modelAliasesMu.RLock()
+	if modelAliasesActive(s.modelAliases) {
 		hideCanonical = make(map[string]bool, len(s.modelAliases.Aliases))
 		for _, target := range s.modelAliases.Aliases {
 			if target.Canonical != "" {
@@ -880,6 +902,7 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	s.modelAliasesMu.RUnlock()
 
 	// Get capabilities from cache
 	s.cache.mu.RLock()
@@ -920,7 +943,8 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 	// model before worker selection. Only aliases with a non-empty Canonical
 	// are advertised — a dangling alias key would advertise a model that
 	// resolves to nothing.
-	if s.modelAliasesActive() {
+	s.modelAliasesMu.RLock()
+	if modelAliasesActive(s.modelAliases) {
 		for alias, target := range s.modelAliases.Aliases {
 			if target.Canonical == "" {
 				continue
@@ -933,6 +957,7 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+	s.modelAliasesMu.RUnlock()
 
 	response := ModelsResponse{Object: "list", Data: models}
 	if err := json.NewEncoder(w).Encode(response); err != nil {
@@ -1015,6 +1040,57 @@ func (s *Server) handlePopularModels(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(PopularModelsResponse{Models: popularModels}); err != nil {
 		s.log.Error("failed to encode popular models", "error", err)
 	}
+}
+
+// handleSetAliases handles the POST /meta/aliases HTTP endpoint. It atomically
+// replaces the router's model alias configuration with the full map sent by
+// the caller. The endpoint is replace-all, not a delta: the caller (frontend)
+// must merge new aliases into the existing map before calling.
+func (s *Server) handleSetAliases(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error", "method_not_allowed")
+		return
+	}
+
+	var req SetAliasesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.log.Error("failed to parse set-aliases request", "error", err)
+		writeErrorResponse(w, http.StatusBadRequest, "invalid request", "invalid_request_error", "parse_error")
+		return
+	}
+
+	// Build *ModelAliasConfig from the full map.
+	// Filter out entries with empty canonical — a dangling alias key advertises nothing.
+	cfg := buildAliasConfig(req.Aliases)
+	s.SetModelAliases(cfg)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(SetAliasesResponse{OK: true}); err != nil {
+		s.log.Error("failed to encode set-aliases response", "error", err)
+	}
+}
+
+// buildAliasConfig converts a plain string map into *ModelAliasConfig.
+// Returns nil for empty/nil maps so aliasing is disabled (backward compatible).
+// Trims alias and canonical values; skips entries with empty values.
+func buildAliasConfig(raw map[string]string) *ModelAliasConfig {
+	if len(raw) == 0 {
+		return nil
+	}
+	aliases := make(map[string]AliasTarget, len(raw))
+	for alias, canonical := range raw {
+		alias = strings.TrimSpace(alias)
+		canonical = strings.TrimSpace(canonical)
+		if alias == "" || canonical == "" {
+			continue
+		}
+		aliases[alias] = AliasTarget{Canonical: canonical}
+	}
+	if len(aliases) == 0 {
+		return nil
+	}
+	return &ModelAliasConfig{Aliases: aliases}
 }
 
 // handleConnectionCount handles the /meta/connections/count HTTP endpoint. It reports

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -345,6 +346,60 @@ func parsePopularModelsResponse(body []byte) ([]PopularModelView, error) {
 		})
 	}
 	return out, nil
+}
+
+type setAliasesRequest struct {
+	Aliases map[string]string `json:"aliases"`
+}
+
+// aliasesPath builds the full /meta/aliases URL for the configured base.
+func (c *RouterClient) aliasesPath() string {
+	return c.baseURL + "/meta/aliases"
+}
+
+// SetModelAliases POSTs the FULL alias map to the router's /meta/aliases
+// endpoint, applying aliases live without a router restart. The caller must
+// merge new aliases into the existing map before calling — this is a
+// replace-all, not a delta.
+// Mirrors GetPopularModels: pure HTTP, no Supervisor knowledge (issue #103 R1).
+func (c *RouterClient) SetModelAliases(ctx context.Context, aliases map[string]string) error {
+	body, err := json.Marshal(setAliasesRequest{Aliases: aliases})
+	if err != nil {
+		return fmt.Errorf("marshal aliases: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.aliasesPath(), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("router unreachable at %s: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return fmt.Errorf("router /meta/aliases returned %d: %s", resp.StatusCode, truncateBody(raw))
+	}
+
+	// Verify response body.
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read aliases response: %w", err)
+	}
+	var respBody struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal(raw, &respBody); err != nil {
+		return fmt.Errorf("decode aliases response: %w (body: %q)", err, truncateBody(raw))
+	}
+	if !respBody.OK {
+		return fmt.Errorf("router /meta/aliases returned ok=false")
+	}
+	return nil
 }
 
 // ErrRouterUnreachable is the sentinel error returned when the router host
