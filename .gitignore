@@ -62,6 +62,9 @@ cover/
 # Helm chart packaging byproduct (produced by `make pkg-helm`)
 *.tgz
 
+# e2e docker tests: temp mock dirs (issue #121)
+tests/e2e/imesh-mock*/
+
 # Wails/app build artifacts
 /app/build/frontend
 /frontend
