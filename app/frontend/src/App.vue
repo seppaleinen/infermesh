@@ -164,11 +164,43 @@ const routerState = computed(() => {
   return status.router?.state ?? null
 })
 
+async function handleStartWorker() {
+  try {
+    await supervisor.startWorker()
+  } catch (e) {
+    console.error('start worker failed', e)
+  }
+}
+
+async function handleStopWorker() {
+  try {
+    await supervisor.stopWorker()
+  } catch (e) {
+    console.error('stop worker failed', e)
+  }
+}
+
 async function handleRestartWorker() {
   try {
     await supervisor.restartWorker()
   } catch (e) {
     console.error('restart worker failed', e)
+  }
+}
+
+async function handleStartRouter() {
+  try {
+    await supervisor.startRouter()
+  } catch (e) {
+    console.error('start router failed', e)
+  }
+}
+
+async function handleStopRouter() {
+  try {
+    await supervisor.stopRouter()
+  } catch (e) {
+    console.error('stop router failed', e)
   }
 }
 
@@ -346,6 +378,7 @@ function prevModelPage() {
           <!-- Supervisor controls (compact) -->
           <div class="sidebar-block supervisor-block" v-if="workerState !== null">
             <div class="supervisor-title">Supervisor</div>
+
             <div class="supervisor-status">
               <span class="supervisor-label">Worker</span>
               <span class="supervisor-value" :class="{ 'running': workerState === 'running' }">
@@ -353,19 +386,55 @@ function prevModelPage() {
               </span>
             </div>
             <div class="supervisor-actions">
-              <button class="supervisor-btn" @click="handleRestartWorker" :disabled="workerState !== 'running'" title="Restart Worker">
-                <svg viewBox="0 0 24 24" fill="none" width="14" height="14" aria-hidden="true">
-                  <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.4 2.6M3 5v4h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                  <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.4-2.6M21 19v-4h-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+              <!-- Stopped/error: Start -->
+              <button v-if="workerState !== 'running'" class="supervisor-btn" @click="handleStartWorker" title="Start Worker">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" aria-hidden="true">
+                  <path d="M8 5v14l11-7z" />
                 </svg>
-                Worker
+                Start
               </button>
-              <button class="supervisor-btn" @click="handleRestartRouter" :disabled="routerState !== 'running'" title="Restart Router">
+              <!-- Running: Restart -->
+              <button v-else class="supervisor-btn" @click="handleRestartWorker" title="Restart Worker">
                 <svg viewBox="0 0 24 24" fill="none" width="14" height="14" aria-hidden="true">
                   <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.4 2.6M3 5v4h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
                   <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.4-2.6M21 19v-4h-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
                 </svg>
-                Router
+                Restart
+              </button>
+              <!-- Running: Stop -->
+              <button v-if="workerState === 'running'" class="supervisor-btn" @click="handleStopWorker" title="Stop Worker">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" aria-hidden="true">
+                  <rect x="6" y="6" width="12" height="12" rx="1" />
+                </svg>
+                Stop
+              </button>
+            </div>
+
+            <div class="supervisor-status router-status">
+              <span class="supervisor-label">Router</span>
+              <span class="supervisor-value" :class="{ 'running': routerState === 'running' }">
+                {{ routerState }}
+              </span>
+            </div>
+            <div class="supervisor-actions">
+              <button v-if="routerState !== 'running'" class="supervisor-btn" @click="handleStartRouter" title="Start Router">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" aria-hidden="true">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+                Start
+              </button>
+              <button v-else class="supervisor-btn" @click="handleRestartRouter" title="Restart Router">
+                <svg viewBox="0 0 24 24" fill="none" width="14" height="14" aria-hidden="true">
+                  <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 6.4 2.6M3 5v4h4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                  <path d="M21 12a9 9 0 0 1-9 9 9 9 0 0 1-6.4-2.6M21 19v-4h-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                Restart
+              </button>
+              <button v-if="routerState === 'running'" class="supervisor-btn" @click="handleStopRouter" title="Stop Router">
+                <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14" aria-hidden="true">
+                  <rect x="6" y="6" width="12" height="12" rx="1" />
+                </svg>
+                Stop
               </button>
             </div>
           </div>
