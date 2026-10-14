@@ -40,11 +40,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/seppaleinen/infermesh/pkg/security"
 )
 
 // desktopAuthPorts holds the ports for this test. Distinct from every other
@@ -118,25 +119,30 @@ func TestDesktopProdAuthFlow(t *testing.T) {
 
 	certs := generateProdMTLSCerts(t)
 
-	// Fake model file for prod mode (--model-path is required).
-	modelPath := filepath.Join(t.TempDir(), "model.bin")
-	if err := os.WriteFile(modelPath, []byte("fake"), 0o644); err != nil {
-		t.Fatalf("creating fake model: %v", err)
+	// Mint the desktop's client cert with the CN the desktop actually uses.
+	// app/config.go defaults ClientCertCN to "infermesh-desktop", and
+	// app/args.go::buildRouterArgs() launches the router WITHOUT --trusted-cn,
+	// so the router accepts any CA-signed cert (no CN allowlist). This mirrors
+	// the real desktop flow; the stricter --trusted-cn=router-1,worker-1
+	// variant is exercised by TestProdMTLS_e2e.
+	clientDir := t.TempDir()
+	clientCert, clientKey, err := security.GenerateNodeCert(clientDir, certs.caCert, certs.caKey, "infermesh-desktop")
+	if err != nil {
+		t.Fatalf("failed to generate desktop client cert: %v", err)
 	}
 
-	// Start router in prod mode. --trusted-cn=router-1,worker-1 admits the
-	// desktop's client cert (CN "router-1" — the desktop mints its client
-	// cert from the same CA; see app.Supervisor.writeClientCert) and the
-	// worker's registration cert. No worker is started: all four endpoints
-	// are router-side and respond with 200 on an idle pool, which keeps the
-	// test fast and deterministic.
+	// Start router in prod mode. Mirrors what app/args.go::buildRouterArgs()
+	// actually emits: --prod-mode, --addr, --mtls-cert/--mtls-key, --cert-dir,
+	// --api-key. No --trusted-cn: the router accepts any CA-signed cert, so
+	// the desktop's client cert (CN "infermesh-desktop") is admitted.
+	// No worker is started: all four endpoints are router-side and respond
+	// with 200 on an idle pool, which keeps the test fast and deterministic.
 	routerCmd, routerLog := startCmdLog(t, "router", routerBin,
 		"--prod-mode",
 		"--addr", fmt.Sprintf("127.0.0.1:%d", desktopAuthRouterPort),
 		"--mtls-cert", certs.routerCert,
 		"--mtls-key", certs.routerKey,
 		"--cert-dir", certs.caDir,
-		"--trusted-cn", "router-1,worker-1",
 		"--api-key", apiKey,
 	)
 
@@ -144,7 +150,7 @@ func TestDesktopProdAuthFlow(t *testing.T) {
 	// the router's CA pool, server cert verified against the same CA pool,
 	// no InsecureSkipVerify (mirrors app.Supervisor.buildTLSClient via
 	// makeMTLSClient).
-	mtlsClient := makeMTLSClient(t, certs.clientCert, certs.clientKey, certs.caCert)
+	mtlsClient := makeMTLSClient(t, clientCert, clientKey, certs.caCert)
 
 	// Wait for the router to answer /v1/workers over mTLS — proves the prod
 	// TLS config is active, not merely that the port is bound.
