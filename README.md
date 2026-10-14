@@ -302,6 +302,34 @@ The router binary accepts the following flags:
 | `--auto-medium-max-tokens <N>` | Estimated-token threshold below which prompts are classified medium (0 = default 600)
 | `--auto-reasoning-keywords <list>` | Comma-separated substrings whose presence in a prompt bumps it one complexity tier (reasoning signal)
 | `--model-alias <list>` | Comma-separated model aliases as `alias=canonical[@quant]` (e.g. `"gemma-4-12b=google/gemma-4-12b,qwen-coder-7b=qwen2.5-coder-7b-instruct-mlx@4bit"`); empty disables
+
+## Worker CLI flags
+
+The worker binary accepts the following flags:
+
+| Flag | Description |
+|------|-------------|
+| `--dev-mode` | Run in development mode (no auth, loopback only) |
+| `--prod-mode` | Run in production mode (mTLS required) |
+| `--port <N>` | Listen port for the worker HTTP server (default `8081`) |
+| `--backend <name>` | Backend adapter (`llama-cpp`, `ollama`, `lmstudio`, `vllm`, `custom`; default `llama-cpp`) |
+| `--backend-url <url>` | Backend adapter base URL (overrides the adapter's default endpoint) |
+| `--backend-timeout <duration>` | Timeout for backend HTTP requests (default `30s`); inference calls that exceed this duration are aborted by the worker's HTTP client to the backend |
+| `--model-path <path>` | Path to the model file (required in production mode for `llama-cpp`) |
+| `--router <url>` | Router base URL for HTTP registration in dev mode (e.g. `http://127.0.0.1:8080`) |
+| `--prod-router <url>` | Router base URL for mTLS registration in production mode (e.g. `https://127.0.0.1:8080`) |
+| `--relay-url <url>` | Relay URL for outbound-only WebSocket connectivity (dev mode only) |
+| `--mtls-cert <path>` | Path to mTLS certificate file |
+| `--mtls-key <path>` | Path to mTLS key file |
+| `--cert-dir <path>` | Path to certificate directory |
+| `--trusted-cn <list>` | Comma-separated list of trusted client certificate CNs for mTLS (empty = any) |
+| `--api-key <key>` | API key for authenticating inference requests (dev and prod mode) |
+| `--allowed-models <list>` | Comma-separated list of models this worker is WILLING to serve (whitelist); empty = all |
+| `--excluded-models <list>` | Comma-separated list of models this worker is NOT WILLING to serve (blacklist; applies only when `--allowed-models` is empty) |
+| `--model-refresh-interval <duration>` | Cadence for re-querying the backend's model catalogue; 0 uses the default 10s |
+| `--enable-health-checks` | Enable periodic backend health checks (default on) |
+| `--capabilities` | Print detected capabilities and exit |
+
 ## Worker Protocol
 
 Workers expose a small, standardized HTTP interface:

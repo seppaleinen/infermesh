@@ -76,6 +76,10 @@ type RunConfig struct {
 	// When non-empty, /v1/chat/completions and /v1/completions require a valid
 	// X-API-Key header. Mirrors the router's --api-key behavior (issue #81).
 	APIKey string
+	// BackendTimeout is the HTTP client timeout for backend requests
+	// (default 30s). Inference calls that exceed this duration are
+	// aborted by the worker's HTTP client to the backend.
+	BackendTimeout time.Duration
 }
 
 // Handle represents a running worker: HTTP server, registration loop (or
@@ -175,7 +179,7 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 	srv := NewServer(log, addr, secCfg)
 
 	// Set up backend adapter based on --backend flag
-	backendImpl, err := NewBackendFromName(cfg.Backend, cfg.ModelPath, cfg.BackendURL)
+	backendImpl, err := NewBackendFromName(cfg.Backend, cfg.ModelPath, cfg.BackendURL, cfg.BackendTimeout)
 	if err != nil {
 		log.Warn("failed to create backend", "backend", cfg.Backend, "error", err)
 	} else {
@@ -359,7 +363,9 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 // Unknown names fall back to the llama-cpp backend (preserving the historical
 // CLI behavior of the old createBackend helper). backendURL overrides the
 // adapter's base URL when non-empty (used for mocks and custom endpoints).
-func NewBackendFromName(backendName, modelPath, backendURL string) (Backend, error) {
+// timeout is the HTTP client timeout for backend requests; a zero or
+// negative value falls back to the default 30s.
+func NewBackendFromName(backendName, modelPath, backendURL string, timeout time.Duration) (Backend, error) {
 	// Resolve the default endpoint for each backend; --backend-url overrides
 	// it (the llama-cpp default http://localhost:8080 collides with the
 	// router port, so tests and custom setups pass an explicit URL).
@@ -383,17 +389,17 @@ func NewBackendFromName(backendName, modelPath, backendURL string) (Backend, err
 	}
 	switch backendName {
 	case "llama-cpp":
-		return NewLlamaCppBackend(defaultURL, 2048, 4, 1), nil
+		return NewLlamaCppBackend(defaultURL, 2048, 4, 1, timeout), nil
 	case "ollama":
-		return NewOllamaBackend(defaultURL, modelPath), nil
+		return NewOllamaBackend(defaultURL, modelPath, timeout), nil
 	case "lmstudio":
-		return NewLMStudioBackend(defaultURL, modelPath), nil
+		return NewLMStudioBackend(defaultURL, modelPath, timeout), nil
 	case "vllm":
-		return NewVLLMBackend(defaultURL, modelPath), nil
+		return NewVLLMBackend(defaultURL, modelPath, timeout), nil
 	case "custom":
-		return NewCustomBackend(defaultURL, "", "custom"), nil
+		return NewCustomBackend(defaultURL, "", "custom", timeout), nil
 	default:
-		return NewLlamaCppBackend(defaultURL, 2048, 4, 1), nil
+		return NewLlamaCppBackend(defaultURL, 2048, 4, 1, timeout), nil
 	}
 }
 

@@ -87,13 +87,23 @@ type OpenAICompatibleBackend struct {
 	circuitBreaker *CircuitBreaker
 }
 
+// defaultBackendTimeout is the HTTP client timeout used when a caller does
+// not specify one (zero or negative). It matches the historical hardcoded
+// value of 30s on the OpenAI-compatible backend's HTTP client.
+const defaultBackendTimeout = 30 * time.Second
+
 // NewOpenAICompatibleBackend creates a new OpenAI-compatible backend.
-func NewOpenAICompatibleBackend(baseURL, apiKey string) *OpenAICompatibleBackend {
+// timeout is the HTTP client timeout for backend requests; a zero or
+// negative value falls back to defaultBackendTimeout (30s).
+func NewOpenAICompatibleBackend(baseURL, apiKey string, timeout time.Duration) *OpenAICompatibleBackend {
+	if timeout <= 0 {
+		timeout = defaultBackendTimeout
+	}
 	return &OpenAICompatibleBackend{
 		baseURL: baseURL,
 		apiKey:  apiKey,
 		client: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: timeout,
 		},
 		circuitBreaker: NewCircuitBreaker(5, 30*time.Second),
 	}
@@ -526,9 +536,11 @@ type LlamaCppBackend struct {
 }
 
 // NewLlamaCppBackend creates a new llama.cpp backend.
-func NewLlamaCppBackend(endpoint string, contextSize, threads, gpuLayers int) *LlamaCppBackend {
+// timeout is the HTTP client timeout for backend requests; a zero or
+// negative value falls back to the default 30s.
+func NewLlamaCppBackend(endpoint string, contextSize, threads, gpuLayers int, timeout time.Duration) *LlamaCppBackend {
 	return &LlamaCppBackend{
-		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(endpoint, ""),
+		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(endpoint, "", timeout),
 		contextSize:             contextSize,
 		threads:                 threads,
 		gpuLayers:               gpuLayers,
@@ -547,9 +559,11 @@ type OllamaBackend struct {
 }
 
 // NewOllamaBackend creates a new Ollama backend.
-func NewOllamaBackend(endpoint, model string) *OllamaBackend {
+// timeout is the HTTP client timeout for backend requests; a zero or
+// negative value falls back to the default 30s.
+func NewOllamaBackend(endpoint, model string, timeout time.Duration) *OllamaBackend {
 	return &OllamaBackend{
-		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(endpoint, ""),
+		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(endpoint, "", timeout),
 		model:                   model,
 	}
 }
@@ -566,9 +580,11 @@ type LMStudioBackend struct {
 }
 
 // NewLMStudioBackend creates a new LM Studio backend.
-func NewLMStudioBackend(endpoint, modelPath string) *LMStudioBackend {
+// timeout is the HTTP client timeout for backend requests; a zero or
+// negative value falls back to the default 30s.
+func NewLMStudioBackend(endpoint, modelPath string, timeout time.Duration) *LMStudioBackend {
 	return &LMStudioBackend{
-		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(endpoint, ""),
+		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(endpoint, "", timeout),
 		modelPath:               modelPath,
 	}
 }
@@ -585,9 +601,11 @@ type VLLMBackend struct {
 }
 
 // NewVLLMBackend creates a new vLLM backend.
-func NewVLLMBackend(endpoint, modelName string) *VLLMBackend {
+// timeout is the HTTP client timeout for backend requests; a zero or
+// negative value falls back to the default 30s.
+func NewVLLMBackend(endpoint, modelName string, timeout time.Duration) *VLLMBackend {
 	return &VLLMBackend{
-		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(endpoint, ""),
+		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(endpoint, "", timeout),
 		modelName:               modelName,
 	}
 }
@@ -612,9 +630,9 @@ type CustomBackend struct {
 // baseURL: The base URL of the OpenAI-compatible API endpoint
 // apiKey: The API key for authentication (if required)
 // providerName: A human-readable name for the provider (e.g., "llama-swap", "localai")
-func NewCustomBackend(baseURL, apiKey, providerName string) *CustomBackend {
+func NewCustomBackend(baseURL, apiKey, providerName string, timeout time.Duration) *CustomBackend {
 	return &CustomBackend{
-		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(baseURL, apiKey),
+		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(baseURL, apiKey, timeout),
 		providerName:            providerName,
 	}
 }

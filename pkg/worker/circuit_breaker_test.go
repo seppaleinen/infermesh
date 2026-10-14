@@ -154,7 +154,7 @@ func TestCanExecute(t *testing.T) {
 // Metrics value (issue #103). It is not wired to any real collection path;
 // callers must not interpret the returned zero value as "no metrics".
 func TestGetMetrics(t *testing.T) {
-	b := NewOpenAICompatibleBackend("http://127.0.0.1:1234", "")
+	b := NewOpenAICompatibleBackend("http://127.0.0.1:1234", "", 0)
 	m, err := b.GetMetrics()
 	if err != nil {
 		t.Fatalf("GetMetrics() returned error: %v", err)
