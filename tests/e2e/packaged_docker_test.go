@@ -222,6 +222,10 @@ func TestRouterWorkerDockerE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolving mock mount dir: %v", err)
 	}
+	// Clean up the temp mock dir on test teardown (issue #121).
+	// Uses RemoveAll so a killed/failed run doesn't leak imesh-mock* dirs
+	// into tests/e2e/.
+	t.Cleanup(func() { _ = os.RemoveAll(mockDir) })
 	mockScriptPath := filepath.Join(mockDir, "mock_backend.py")
 	if err := copyFile(mockScript, mockScriptPath); err != nil {
 		t.Fatalf("copying mock backend script: %v", err)
