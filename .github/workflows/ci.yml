@@ -45,6 +45,13 @@ jobs:
           exit 1
         fi
 
+    # Cross-reference contract docs against source. Catches stale claims
+    # (CLI flags, file:line references, "no auth" scoping) that manual
+    # review misses. Added after the #123/#128/#129 post-mortems found
+    # docs/contracts drifting from code across four merged PRs.
+    - name: Validate contract docs
+      run: make validate-contracts
+
     - name: Run Go vet
       run: go vet ./...
 
