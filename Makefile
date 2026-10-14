@@ -247,6 +247,13 @@ test-all-platforms: test-platform
 lint:
 	golangci-lint run
 
+# Validate contract docs against source. Catches stale claims (CLI flags,
+# file:line references, "no auth" claims) at PR time. See
+# hack/validate-contracts.sh for the rules. Added after the #123/#128/#129
+# post-mortems found contract docs drifting from code across four merged PRs.
+validate-contracts:
+	hack/validate-contracts.sh
+
 vet-app:
 	@echo "⟶ Running TypeScript type check on the Wails app…"
 	cd app/frontend && ./node_modules/.bin/vue-tsc --noEmit
@@ -287,4 +294,4 @@ coverage:
 		sort
 	@echo "Coverage report: cover/coverage.out"
 
-.PHONY: build build-router build-worker build-static build-app package-app package-app-dmg package-app-linux package-app-windows relay test test-security test-integration test-e2e test-packaged test-static test-platform test-all-platforms lint install-hooks tidy clean app coverage test-app-smoke pkg-docker pkg-docker-push pkg-helm pkg-compose
+.PHONY: build build-router build-worker build-static build-app package-app package-app-dmg package-app-linux package-app-windows relay test test-security test-integration test-e2e test-packaged test-static test-platform test-all-platforms lint validate-contracts install-hooks tidy clean app coverage test-app-smoke pkg-docker pkg-docker-push pkg-helm pkg-compose
