@@ -51,11 +51,29 @@ func (s *Supervisor) buildTLSClient() *http.Client {
 // clears it when the router stops. This is called from StartRouter/StopRouter
 // so the UI's live poll always talks to the router over the right transport
 // (issue #103 R1).
+//
+// It also syncs the prod-mode API key (issue #119): the router enforces
+// X-API-Key on /v1/workers, /meta/models/popular, /meta/aliases and the
+// inference endpoints, so the desktop must send it. The key is resolved
+// from the keyring (router/apikey) and cleared when the transport is
+// cleared, preserving dev-mode behaviour (no header when no key).
 func (s *Supervisor) updateRouterClientTransport() {
 	if s.routerClient == nil {
 		return
 	}
-	s.routerClient.SetTransport(s.buildTLSClient())
+	client := s.buildTLSClient()
+	s.routerClient.SetTransport(client)
+	if client == nil {
+		// Dev mode (or no mTLS provisioned): no key, no header.
+		s.routerClient.SetAPIKey("")
+		return
+	}
+	key, err := s.resolveSecret(secretRefRouterAPIKey)
+	if err != nil || key == "" {
+		s.routerClient.SetAPIKey("")
+		return
+	}
+	s.routerClient.SetAPIKey(key)
 }
 
 // writeCertDir creates a temp directory containing ca.crt from the

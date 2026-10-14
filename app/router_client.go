@@ -50,6 +50,7 @@ type RouterClient struct {
 	baseURL       string
 	localHostname string
 	client        *http.Client // nil = plain HTTP (dev mode)
+	apiKey        string       // prod-mode router API key; empty = no header (dev mode)
 }
 
 // ServiceName implements application.ServiceName so the binding generator
@@ -122,6 +123,28 @@ func (c *RouterClient) httpClient() *http.Client {
 	return http.DefaultClient
 }
 
+// SetAPIKey sets the prod-mode router API key used to authenticate the
+// desktop's outbound requests. An empty key means no X-API-Key header is
+// sent, preserving dev-mode behaviour (the router only enforces when a key
+// is actually configured). Called by the Supervisor when the router starts
+// in prod mode (issue #119).
+func (c *RouterClient) SetAPIKey(key string) {
+	c.apiKey = key
+}
+
+// GetAPIKey returns the currently configured API key (empty in dev mode).
+func (c *RouterClient) GetAPIKey() string {
+	return c.apiKey
+}
+
+// applyAuth injects the X-API-Key header when a key is configured. A missing
+// or empty key is a no-op, so dev-mode behaviour is preserved exactly.
+func (c *RouterClient) applyAuth(req *http.Request) {
+	if c.apiKey != "" {
+		req.Header.Set("X-API-Key", c.apiKey)
+	}
+}
+
 // IsLocalWorker reports whether the worker identified by hostname/port is the
 // one this desktop app supervises. Used by the UI to tag the local worker
 // card with a "You" badge (issue #90). Hostname match is primary; port match
@@ -163,6 +186,7 @@ func (c *RouterClient) GetWorkers(ctx context.Context) ([]WorkerView, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
+	c.applyAuth(req)
 
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
@@ -299,6 +323,7 @@ func (c *RouterClient) GetPopularModels(ctx context.Context) ([]PopularModelView
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
+	c.applyAuth(req)
 
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
@@ -372,6 +397,7 @@ func (c *RouterClient) SetModelAliases(ctx context.Context, aliases map[string]s
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
+	c.applyAuth(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient().Do(req)
@@ -421,6 +447,7 @@ func (c *RouterClient) GetConnectionCount(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("build request: %w", err)
 	}
+	c.applyAuth(req)
 
 	resp, err := c.httpClient().Do(req)
 	if err != nil {

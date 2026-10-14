@@ -265,6 +265,119 @@ func TestGetWorkersNullWorkers(t *testing.T) {
 	}
 }
 
+// TestApplyAuth verifies the X-API-Key contract (issue #119): the header is
+// present when a key is set and absent when empty. An empty key is a no-op,
+// so dev-mode behaviour (no header) is preserved exactly.
+func TestApplyAuth(t *testing.T) {
+	cases := []struct {
+		name string
+		key  string
+		want string
+	}{
+		{"empty key sends no header", "", ""},
+		{"configured key sends X-API-Key", "s3cr3t", "s3cr3t"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewRouterClient("http://127.0.0.1:8080")
+			c.SetAPIKey(tc.key)
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/workers", nil)
+			if err != nil {
+				t.Fatalf("build request: %v", err)
+			}
+			c.applyAuth(req)
+			if got := req.Header.Get("X-API-Key"); got != tc.want {
+				t.Errorf("X-API-Key = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRouterClientSendsAPIKey verifies every RouterClient method carries the
+// X-API-Key header when one is configured. This is the regression guard for
+// issue #119: before the fix, the desktop sent no auth and every router call
+// returned 401 in prod mode (including the new POST /meta/aliases from #105).
+func TestRouterClientSendsAPIKey(t *testing.T) {
+	const apiKey = "prod-router-key"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/workers", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-API-Key") != apiKey {
+			http.Error(w, "missing X-API-Key", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(router.WorkersResponse{Workers: []router.WorkerInfo{}})
+	})
+	mux.HandleFunc("/meta/models/popular", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-API-Key") != apiKey {
+			http.Error(w, "missing X-API-Key", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(router.PopularModelsResponse{Models: []router.PopularModelInfo{}})
+	})
+	mux.HandleFunc("/meta/aliases", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-API-Key") != apiKey {
+			http.Error(w, "missing X-API-Key", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	mux.HandleFunc("/meta/connections/count", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-API-Key") != apiKey {
+			http.Error(w, "missing X-API-Key", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"connections":0}`))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	c := NewRouterClient(ts.URL)
+	c.SetAPIKey(apiKey)
+
+	ctx := context.Background()
+
+	if _, err := c.GetWorkers(ctx); err != nil {
+		t.Fatalf("GetWorkers: %v", err)
+	}
+	if _, err := c.GetPopularModels(ctx); err != nil {
+		t.Fatalf("GetPopularModels: %v", err)
+	}
+	if err := c.SetModelAliases(ctx, map[string]string{"foo": "bar"}); err != nil {
+		t.Fatalf("SetModelAliases: %v", err)
+	}
+	if n, err := c.GetConnectionCount(ctx); err != nil {
+		t.Fatalf("GetConnectionCount: %v", err)
+	} else if n != 0 {
+		t.Errorf("GetConnectionCount = %d, want 0", n)
+	}
+}
+
+// TestRouterClientNoKeyWhenEmpty verifies that with no API key configured the
+// desktop sends no X-API-Key header, preserving dev-mode behaviour exactly
+// (the router only enforces when a key is actually configured).
+func TestRouterClientNoKeyWhenEmpty(t *testing.T) {
+	var gotAuth string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("X-API-Key")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(router.WorkersResponse{Workers: []router.WorkerInfo{}})
+	}))
+	defer ts.Close()
+
+	c := NewRouterClient(ts.URL) // no key: dev-mode behaviour
+	if _, err := c.GetWorkers(context.Background()); err != nil {
+		t.Fatalf("GetWorkers: %v", err)
+	}
+	if gotAuth != "" {
+		t.Errorf("X-API-Key = %q with no key configured, want empty (dev mode)", gotAuth)
+	}
+}
+
 // TestGetWorkersTruncatedBody verifies a 200 whose body is cut short (the
 // connection is torn down mid-stream, so the client reads EOF before the
 // JSON object closes) is surfaced as an error rather than a partial worker
