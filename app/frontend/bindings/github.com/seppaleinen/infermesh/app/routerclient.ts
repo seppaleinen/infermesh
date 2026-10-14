@@ -24,6 +24,13 @@ import * as http$0 from "../../../../net/http/models.js";
 import * as $models from "./models.js";
 
 /**
+ * GetAPIKey returns the currently configured API key (empty in dev mode).
+ */
+export function GetAPIKey(): $CancellablePromise<string> {
+    return $Call.ByID(78941877);
+}
+
+/**
  * GetConnectionCount fetches the number of currently active HTTP connections
  * to the router from /meta/connections/count. It returns 0 when the router is
  * reachable but idle, and a typed error when the router is unreachable or
@@ -79,6 +86,17 @@ export function GetWorkers(): $CancellablePromise<$models.WorkerView[] | null> {
  */
 export function IsLocalWorker(workerPort: number, hostname: string, port: number): $CancellablePromise<boolean> {
     return $Call.ByID(3475487091, workerPort, hostname, port);
+}
+
+/**
+ * SetAPIKey sets the prod-mode router API key used to authenticate the
+ * desktop's outbound requests. An empty key means no X-API-Key header is
+ * sent, preserving dev-mode behaviour (the router only enforces when a key
+ * is actually configured). Called by the Supervisor when the router starts
+ * in prod mode (issue #119).
+ */
+export function SetAPIKey(key: string): $CancellablePromise<void> {
+    return $Call.ByID(3608046617, key);
 }
 
 /**

@@ -17,6 +17,8 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+
+	"github.com/seppaleinen/infermesh/pkg/security"
 )
 
 // ---- fake childCmd ----------------------------------------------------------
@@ -481,6 +483,91 @@ func TestSupervisorStartRouterProdModeArgs(t *testing.T) {
 	}
 	if _, err := os.Stat(keyPath); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("key temp file still exists after StopAll (stat err: %v)", err)
+	}
+}
+
+// TestSupervisorProdModeSyncsAPIKey verifies that StartRouter in prod mode
+// syncs the router API key into the desktop RouterClient (issue #119): the
+// router enforces X-API-Key on every endpoint the UI calls, so the desktop
+// must carry it. StopRouter clears the key (and the transport) so the UI
+// falls back to dev-mode behaviour (no header).
+func TestSupervisorProdModeSyncsAPIKey(t *testing.T) {
+	fx := newTestSupervisor(t)
+
+	const apiKey = "prod-router-key"
+	// Provision a real CA + client cert so buildTLSClient can load them
+	// (the supervisor mints a client cert signed by the CA key on startup).
+	caDir := t.TempDir()
+	caCertPath, caKeyPath, err := security.GenerateSelfSignedCA(caDir)
+	if err != nil {
+		t.Fatalf("generate CA: %v", err)
+	}
+	caCertData, err := os.ReadFile(caCertPath)
+	if err != nil {
+		t.Fatalf("read CA cert: %v", err)
+	}
+	caKeyData, err := os.ReadFile(caKeyPath)
+	if err != nil {
+		t.Fatalf("read CA key: %v", err)
+	}
+
+	fx.kr.Set(secretRefRouterAPIKey, apiKey)
+	fx.kr.Set(secretRefMTLSCACert, string(caCertData))
+	fx.kr.Set(secretRefMTLSCAKey, string(caKeyData))
+
+	prod := false
+	fx.settings.DevMode = &prod
+	fx.settings.ClientCertCN = "infermesh-desktop"
+	fx.save(t)
+
+	// Wire a desktop RouterClient so updateRouterClientTransport has a target.
+	rc := NewRouterClient("http://127.0.0.1:8080")
+	fx.s.SetRouterClient(rc)
+
+	if err := fx.s.StartRouter(); err != nil {
+		t.Fatalf("StartRouter: %v", err)
+	}
+	if got := rc.GetAPIKey(); got != apiKey {
+		t.Errorf("RouterClient API key after StartRouter = %q, want %q", got, apiKey)
+	}
+	if rc.GetRouterURL() != "https://127.0.0.1:8080" {
+		t.Errorf("RouterClient base URL = %q, want https upgrade (prod mode)", rc.GetRouterURL())
+	}
+
+	// StopRouter clears the transport and the API key (dev-mode fallback).
+	fx.builder.last().finish(nil)
+	if err := fx.s.StopRouter(); err != nil {
+		t.Fatalf("StopRouter: %v", err)
+	}
+	if got := rc.GetAPIKey(); got != "" {
+		t.Errorf("RouterClient API key after StopRouter = %q, want empty (dev mode)", got)
+	}
+	if rc.GetRouterURL() != "http://127.0.0.1:8080" {
+		t.Errorf("RouterClient base URL after StopRouter = %q, want http (dev mode)", rc.GetRouterURL())
+	}
+}
+
+// TestSupervisorDevModeDoesNotSyncAPIKey verifies that in dev mode the
+// desktop RouterClient carries no API key (the router only enforces when a
+// key is actually configured, so dev mode must send no header).
+func TestSupervisorDevModeDoesNotSyncAPIKey(t *testing.T) {
+	fx := newTestSupervisor(t)
+	fx.save(t)
+
+	rc := NewRouterClient("http://127.0.0.1:8080")
+	fx.s.SetRouterClient(rc)
+
+	if err := fx.s.StartRouter(); err != nil {
+		t.Fatalf("StartRouter: %v", err)
+	}
+	if got := rc.GetAPIKey(); got != "" {
+		t.Errorf("RouterClient API key in dev mode = %q, want empty", got)
+	}
+
+	fx.builder.last().finish(nil)
+	_ = fx.s.StopRouter()
+	if got := rc.GetAPIKey(); got != "" {
+		t.Errorf("RouterClient API key after StopRouter in dev mode = %q, want empty", got)
 	}
 }
 
