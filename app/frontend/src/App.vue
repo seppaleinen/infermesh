@@ -4,6 +4,7 @@ import { Events } from '@wailsio/runtime'
 import WorkerCard from './components/WorkerCard.vue'
 import SettingsForm from './components/SettingsForm.vue'
 import PopularModelsTable from './components/PopularModelsTable.vue'
+import AliasModal from './components/AliasModal.vue'
 import { useWorkers, relativeLastSeen, formatAbsolute } from './composables/useWorkers'
 import { usePopularModels } from './composables/usePopularModels'
 import { useConnectionCount } from './composables/useConnectionCount'
@@ -62,6 +63,10 @@ const activeView = ref<'dashboard' | 'settings'>('dashboard')
 // not navigate away from the settings view. No modals exist today.
 const modalOpen = ref(false)
 
+// Track alias modal state
+const aliasModalOpen = ref(false)
+const aliasSaveError = ref<string | null>(null)
+
 // Track which worker is expanded in the list
 const expandedWorkerId = ref<string | null>(null)
 
@@ -77,6 +82,48 @@ function onSettingsSaved(): void {
   activeView.value = 'dashboard'
   workers.retry() // re-fetch from new router URL immediately
   popular.retry() // popular models depend on the same router URL
+}
+
+function openAliasModal(): void {
+  aliasSaveError.value = null
+  aliasModalOpen.value = true
+  modalOpen.value = true
+}
+
+function closeAliasModal(): void {
+  aliasModalOpen.value = false
+  modalOpen.value = false
+  aliasSaveError.value = null
+}
+
+async function handleAliasConfirm(payload: { alias: string; canonical: string }): Promise<void> {
+  aliasSaveError.value = null
+  
+  try {
+    // 1. Merge into the in-memory settings model_aliases map
+    const merged = { ...settings.settings.value?.model_aliases }
+    merged[payload.alias] = payload.canonical
+    
+    // 2. Apply live: send FULL merged map to router (replace-all, not delta)
+    await RouterClient.SetModelAliases(merged)
+    
+    // 3. Update in-memory settings
+    const current = settings.settings.value
+    if (!current) {
+      throw new Error('settings not loaded')
+    }
+    current.model_aliases = merged
+
+    // 4. Persist to YAML
+    await settings.save(current)
+
+    // 5. Close modal and refresh
+    closeAliasModal()
+    popular.retry() // refresh models so new alias appears
+    workers.retry() // refresh workers (may show new model in capabilities)
+  } catch (e: unknown) {
+    aliasSaveError.value = e instanceof Error ? e.message : String(e)
+  }
 }
 
 // A worker is "local" when its hostname matches this desktop's hostname;
@@ -386,6 +433,19 @@ function prevModelPage() {
             <div class="models-head">
               <h2 class="models-title">Models</h2>
               <span class="models-count" v-if="totalModels">{{ totalModels }} total</span>
+              <button
+                v-if="totalModels > 0"
+                class="models-cog"
+                @click="openAliasModal"
+                title="Create model alias"
+                aria-label="Create model alias"
+              >
+                <svg viewBox="0 0 24 24" fill="none" width="16" height="16" aria-hidden="true">
+                  <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 15 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" stroke="currentColor" stroke-width="1.5"/>
+                </svg>
+              </button>
+              <span v-if="aliasSaveError" class="alias-error">{{ aliasSaveError }}</span>
             </div>
             <PopularModelsTable
               v-if="totalModels > 0"
@@ -409,6 +469,14 @@ function prevModelPage() {
               </button>
             </div>
           </div>
+
+          <AliasModal
+            v-if="aliasModalOpen"
+            :popular-models="popular.state.value.kind === 'ready' ? popular.state.value.data : []"
+            @confirm="handleAliasConfirm"
+            @cancel="closeAliasModal"
+          />
+
         </section>
 
         <!-- Right: worker hostnames with per-host expand -->
@@ -756,6 +824,31 @@ function prevModelPage() {
   align-items: baseline;
   justify-content: space-between;
   margin-bottom: 10px;
+}
+
+.models-cog {
+  background: transparent;
+  border: 1px solid var(--border-strong, #333);
+  border-radius: 8px;
+  padding: 4px;
+  color: var(--text-muted, #888);
+  cursor: pointer;
+  margin-left: 8px;
+  transition: color 0.15s ease, background 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.models-cog:hover {
+  color: var(--text, #e0e0e0);
+  background: var(--surface-2, #2a2a3e);
+}
+
+.alias-error {
+  font-size: 12px;
+  color: #ef4444;
+  margin-left: 4px;
 }
 
 .models-title {

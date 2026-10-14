@@ -82,6 +82,17 @@ export function IsLocalWorker(workerPort: number, hostname: string, port: number
 }
 
 /**
+ * SetModelAliases POSTs the FULL alias map to the router's /meta/aliases
+ * endpoint, applying aliases live without a router restart. The caller must
+ * merge new aliases into the existing map before calling — this is a
+ * replace-all, not a delta.
+ * Mirrors GetPopularModels: pure HTTP, no Supervisor knowledge (issue #103 R1).
+ */
+export function SetModelAliases(aliases: { [_ in string]?: string } | null): $CancellablePromise<void> {
+    return $Call.ByID(1457601041, aliases);
+}
+
+/**
  * SetRouterURL re-points the client to a new router base URL. It is safe to
  * call at any time; subsequent GetWorkers() calls use the new URL. An empty
  * or malformed url falls back to defaultRouterURL (same normalisation as the
