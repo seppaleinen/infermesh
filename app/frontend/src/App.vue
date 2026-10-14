@@ -10,9 +10,14 @@ import { usePopularModels } from './composables/usePopularModels'
 import { useConnectionCount } from './composables/useConnectionCount'
 import { useSettings } from './composables/useSettings'
 import { useSupervisor } from './composables/useSupervisor'
+import { useRouterAuth } from './composables/useRouterAuth'
 import { RouterClient } from '@bindings/github.com/seppaleinen/infermesh/app'
 
 const version = 'v0.1.0'
+
+// Auth status (issue #124). Mirrors the router auth state managed by the
+// Supervisor (issue #119).
+const routerAuth = useRouterAuth()
 
 // Live heartbeat: the Go side emits `time` every 5s with an RFC1123 stamp
 // as `{ data: string }`. Mirrors the scaffold's footer pattern.
@@ -192,6 +197,9 @@ onMounted(async () => {
   } catch {
     localHostname.value = null
   }
+  // Read router auth status for the sidebar indicator (issue #124).
+  // Failures are swallowed — the label falls back to "No API key".
+  routerAuth.fetch()
 })
 
 onBeforeUnmount(() => {
@@ -328,6 +336,10 @@ function prevModelPage() {
             <div class="router-url mono">{{ workers.state.value.routerURL || '—' }}</div>
             <div v-if="connectionCount.state.value.kind === 'ready'" class="router-connections">
               {{ connectionCount.state.value.data }} connection<span v-if="connectionCount.state.value.data !== 1">s</span>
+            </div>
+            <div class="router-auth" :class="{ 'auth-on': routerAuth.apiKey.value !== '' }">
+              <span class="router-auth-dot" aria-hidden="true"></span>
+              <span class="router-auth-label">{{ routerAuth.label }}</span>
             </div>
           </div>
 
@@ -728,6 +740,33 @@ function prevModelPage() {
   margin-top: 6px;
   font-size: 11.5px;
   color: var(--text-muted);
+}
+
+/* Router auth status (issue #124). Green dot = X-API-Key set; amber dot = no key. */
+.router-auth {
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.router-auth-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.04);
+}
+.router-auth-label {
+  color: var(--text-faint);
+}
+.router-auth.auth-on .router-auth-dot {
+  background: var(--accent-green, #4ade80);
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.55);
+}
+.router-auth.auth-on .router-auth-label {
+  color: var(--accent-green, #4ade80);
 }
 
 /* Compact supervisor block */
