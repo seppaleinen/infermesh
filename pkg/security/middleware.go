@@ -112,7 +112,7 @@ func NewMTLSMiddleware(caCertPool *x509.CertPool, required bool, allowedCN ...st
 // NewAPIKeyMiddleware creates a middleware that enforces API key authentication
 // on inference endpoints. When required is false (dev mode) it passes through.
 // When required is true every request must present a valid key in the
-// X-API-Key header.
+// X-API-Key header or the Authorization: Bearer <key> header.
 func NewAPIKeyMiddleware(apiKey string, required bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +122,13 @@ func NewAPIKeyMiddleware(apiKey string, required bool) func(http.Handler) http.H
 			}
 			key := r.Header.Get("X-API-Key")
 			if key == "" {
-				logAudit(r.Context(), "API key denied: missing X-API-Key header", r)
+				auth := r.Header.Get("Authorization")
+				if strings.HasPrefix(auth, "Bearer ") {
+					key = strings.TrimPrefix(auth, "Bearer ")
+				}
+			}
+			if key == "" {
+				logAudit(r.Context(), "API key denied: missing API key header", r)
 				http.Error(w, "API key required", http.StatusUnauthorized)
 				return
 			}

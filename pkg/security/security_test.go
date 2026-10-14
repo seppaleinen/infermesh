@@ -946,6 +946,50 @@ func TestNewAPIKeyMiddlewareDevMode(t *testing.T) {
 	}
 }
 
+// TestNewAPIKeyMiddlewareBearer verifies the API key middleware accepts
+// the Authorization: Bearer <key> header as a fallback when X-API-Key
+// is absent, matching the OpenAI-compatible SDK convention.
+func TestNewAPIKeyMiddlewareBearer(t *testing.T) {
+	mw := NewAPIKeyMiddleware("secret-key", true)
+	testHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	})
+
+	tests := []struct {
+		name           string
+		method         string
+		xAPIKey        string
+		authorization  string
+		expectedStatus int
+	}{
+		{"bearer valid key", http.MethodGet, "", "Bearer secret-key", http.StatusOK},
+		{"bearer wrong key", http.MethodGet, "", "Bearer wrong", http.StatusUnauthorized},
+		{"bearer empty prefix", http.MethodGet, "", "Bearer ", http.StatusUnauthorized},
+		{"bearer without prefix", http.MethodGet, "", "secret-key", http.StatusUnauthorized},
+		{"x-api-key takes precedence", http.MethodGet, "secret-key", "Bearer wrong", http.StatusOK},
+		{"no headers", http.MethodGet, "", "", http.StatusUnauthorized},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := mw(testHandler)
+			req := httptest.NewRequest(tt.method, "/v1/chat/completions", nil)
+			if tt.xAPIKey != "" {
+				req.Header.Set("X-API-Key", tt.xAPIKey)
+			}
+			if tt.authorization != "" {
+				req.Header.Set("Authorization", tt.authorization)
+			}
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+			if w.Code != tt.expectedStatus {
+				t.Errorf("expected status %d, got %d, body: %s", tt.expectedStatus, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 // TestSplitCNs verifies SplitCNs handles empty, single, and comma-separated
 // CN lists correctly.
 func TestSplitCNs(t *testing.T) {
