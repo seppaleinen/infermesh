@@ -41,7 +41,13 @@ On invalid method (non-GET), returns HTTP 405 with JSON error body per the route
   - `http.StateIdle` (keep-alive connections waiting for next request) — left untouched to avoid double-count on subsequent requests
   - `http.StateHijacked` (WebSocket upgrades) — left untouched; the connection is still counted until the underlying TCP socket closes
 - **Staleness**: the count is real-time, updated atomically on each connection state transition.
-- **Prod/dev**: the endpoint is available in both dev and prod mode; no auth is required for this metrics endpoint.
+- **Prod/dev**: the endpoint is available in both dev and prod mode. In
+  prod mode the router wraps the entire HTTP mux with
+  `security.NewMTLSMiddleware` (`pkg/router/server.go:562`), so every request
+  — including this metrics endpoint — must present a valid client
+  certificate signed by the CA. No *additional* API-key auth is required
+  (this endpoint is not in `wrapInferenceEndpoints`), but mTLS alone is not
+  sufficient to reach it in prod mode. In dev mode no auth is required.
 - **Interpretation**: in the supervised desktop app, a baseline of 1 connection is expected (the app itself). Higher numbers indicate additional load (e.g. external API clients, worker registration traffic, probing).
 
 ## 6. Examples

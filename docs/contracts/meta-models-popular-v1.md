@@ -8,7 +8,11 @@
 
 The `/meta/models/popular` endpoint returns a rolling-window popularity summary of models across the InferMesh pool, sorted by how many workers advertise each model (worker count). It is used by the Wails desktop app to display a "Popular Models" table in the Dashboard.
 
-The data is derived from the router's in-memory capability cache, which is updated on worker registry events (heartbeats, registrations, unregistrations). The window is not time-based; it reflects the current state of the pool at query time.
+The data is derived from the router's in-memory capability cache, which is
+updated on worker registry events (heartbeats, registrations,
+unregistrations). The popularity summary is computed over a rolling 10-minute
+window maintained by `pkg/router/call_counter.go`; events older than the
+window are pruned (not decayed) on each record and on a periodic ticker.
 
 ## 2. Endpoint
 
@@ -45,9 +49,18 @@ The array is sorted in descending order by `worker_count`. Ties are broken by mo
 ## 5. Semantics
 
 - **Worker count**: reflects how many workers have this model in their `Capabilities.Models` advertisement. A worker may advertise a model it does not currently have loaded (e.g. due to eviction or prefetch).
-- **Call count**: maintained by `pkg/router/call_counter.go`; increments on each inference request, decays over a 10-minute sliding window.
+- **Call count**: maintained by `pkg/router/call_counter.go`; increments on
+  each inference request and is pruned (events older than the 10-minute
+  rolling window removed, counts decremented) on each record and on a
+  periodic ticker — it does not decay.
 - **Staleness**: the data is as fresh as the last capability-cache update (typically within the worker heartbeat TTL, 30s by default).
-- **Prod/dev**: the endpoint is available in both dev and prod mode; no auth is required for this metrics endpoint.
+- **Prod/dev**: the endpoint is available in both dev and prod mode. In
+  prod mode the router wraps the entire HTTP mux with
+  `security.NewMTLSMiddleware` (`pkg/router/server.go:562`), so every request
+  — including this metrics endpoint — must present a valid client
+  certificate signed by the CA. No *additional* API-key auth is required
+  (this endpoint is not in `wrapInferenceEndpoints`), but mTLS alone is not
+  sufficient to reach it in prod mode. In dev mode no auth is required.
 
 ## 6. Examples
 

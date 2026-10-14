@@ -144,8 +144,11 @@ type Server struct {
 
 	// scorer is the deterministic weighted scoring algorithm used by
 	// selectWorker. Never nil after NewServer; tests may replace it.
-	scorer        scheduler.ScoringAlgorithm
-	scorerWeights schedulerWeights
+	// Protected by scorerWeightsMu; replaced atomically in the same critical
+	// section as scorerWeights.
+	scorer          scheduler.ScoringAlgorithm
+	scorerWeights   schedulerWeights
+	scorerWeightsMu sync.RWMutex
 
 	// loadSnapshot returns per-worker queue-load data for scoring. Defaults to
 	// reading the hub; tests may override it with deterministic values.
@@ -182,7 +185,9 @@ type Server struct {
 	// treated as a literal model name (backward compatible). When set,
 	// requests with model="auto" are classified by prompt complexity and
 	// rewritten to a tiered concrete model before worker selection.
-	autoRouting *AutoRoutingConfig
+	// Protected by autoRoutingMu.
+	autoRouting   *AutoRoutingConfig
+	autoRoutingMu sync.RWMutex
 
 	// modelAliases maps user-facing model aliases to canonical model names.
 	// When nil or empty, alias resolution is disabled and requests are
@@ -354,12 +359,15 @@ func (s *Server) SetRetryBudget(d time.Duration) {
 // selection, classifies prompt complexity, and rewrites the model to a
 // tiered concrete model name.
 func (s *Server) SetAutoRouting(cfg *AutoRoutingConfig) {
+	s.autoRoutingMu.Lock()
+	defer s.autoRoutingMu.Unlock()
 	s.autoRouting = cfg
 }
 
-// autoRoutingActive reports whether the model="auto" alias is enabled
-// and has at least one tier model configured.
-func (s *Server) autoRoutingActive() bool {
+// autoRoutingActiveLocked is the caller-holds-RLock form of the auto-routing
+// check. It is used inside resolveAutoModel* where the caller already holds
+// autoRoutingMu to avoid a re-entrant lock.
+func (s *Server) autoRoutingActiveLocked() bool {
 	if s.autoRouting == nil || s.autoRouting.Models == nil {
 		return false
 	}
@@ -379,7 +387,10 @@ func (s *Server) autoRoutingActive() bool {
 // This is called before marshal & dispatch so the rest of the pipeline
 // sees a concrete model name and requires no changes.
 func (s *Server) resolveAutoModelChat(req *ChatRequest) (string, error) {
-	if req.Model != autoModelAlias || !s.autoRoutingActive() {
+	s.autoRoutingMu.RLock()
+	defer s.autoRoutingMu.RUnlock()
+
+	if req.Model != autoModelAlias || !s.autoRoutingActiveLocked() {
 		return req.Model, nil
 	}
 	tier := s.autoRouting.Classify(*req)
@@ -394,7 +405,10 @@ func (s *Server) resolveAutoModelChat(req *ChatRequest) (string, error) {
 // resolveAutoModelCompletion is the completion-requests counterpart of
 // resolveAutoModelChat.
 func (s *Server) resolveAutoModelCompletion(req *CompletionRequest) (string, error) {
-	if req.Model != autoModelAlias || !s.autoRoutingActive() {
+	s.autoRoutingMu.RLock()
+	defer s.autoRoutingMu.RUnlock()
+
+	if req.Model != autoModelAlias || !s.autoRoutingActiveLocked() {
 		return req.Model, nil
 	}
 	tier := s.autoRouting.ClassifyCompletion(*req)
@@ -466,6 +480,9 @@ type schedulerWeights struct {
 // call is a no-op and the built-in defaults survive; maxQueueDepth <= 0 keeps
 // the current threshold (defaultMaxQueueDepth when unset).
 func (s *Server) SetScorerWeights(quantMatch, vramFree, gpuUtil, queueDepth, latency float64, maxQueueDepth int) {
+	s.scorerWeightsMu.Lock()
+	defer s.scorerWeightsMu.Unlock()
+
 	w := s.scorerWeights
 	if quantMatch > 0 {
 		w.QuantMatch = quantMatch
@@ -494,7 +511,19 @@ func (s *Server) SetScorerWeights(quantMatch, vramFree, gpuUtil, queueDepth, lat
 
 // ScorerWeights returns the current scorer weight configuration.
 func (s *Server) ScorerWeights() schedulerWeights {
+	s.scorerWeightsMu.RLock()
+	defer s.scorerWeightsMu.RUnlock()
 	return s.scorerWeights
+}
+
+// currentScorer returns the scoring algorithm in use, read under
+// scorerWeightsMu so it is consistent with ScorerWeights(). The returned
+// interface is immutable after construction (NewWeightedScorer* never mutates
+// its weights), so callers may retain it safely.
+func (s *Server) currentScorer() scheduler.ScoringAlgorithm {
+	s.scorerWeightsMu.RLock()
+	defer s.scorerWeightsMu.RUnlock()
+	return s.scorer
 }
 
 // RunRelay maintains the outbound relay connection, dialing immediately and
@@ -929,7 +958,9 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 
 	// When auto routing is enabled, advertise the synthetic "auto" alias so
 	// OpenAI-compatible clients discover it alongside concrete models.
-	if s.autoRoutingActive() {
+	// autoRouting is protected by its own mutex.
+	s.autoRoutingMu.RLock()
+	if s.autoRoutingActiveLocked() {
 		models = append(models, protocol.ModelInfo{
 			Name:      autoModelAlias,
 			Backend:   "auto",
@@ -937,6 +968,7 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 			Loaded:    true,
 		})
 	}
+	s.autoRoutingMu.RUnlock()
 
 	// Advertise configured user-facing aliases so clients can request them
 	// by their short name and have the router rewrite them to the canonical
@@ -1334,7 +1366,7 @@ func (s *Server) selectWorkerExcluding(model string, excluded map[string]struct{
 		// Deterministic ordering before scoring so equal scores resolve to the
 		// lowest worker ID.
 		sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID < candidates[j].ID })
-		if s.scorer != nil {
+		if s.currentScorer() != nil {
 			sel, err := s.scoreCandidates(model, candidates, s.loadSnapshot())
 			if err == nil && sel != nil {
 				for _, w := range candidates {
@@ -1650,7 +1682,11 @@ func (s *Server) scoreCandidates(model string, candidates []protocol.WorkerInfo,
 		l, ok := load[w.ID]
 		workers = append(workers, s.toSchedulerWorker(w, l, ok))
 	}
-	return scheduler.SelectWorker(context.Background(), s.scorer, scheduler.ModelRequest{Model: model}, workers, s.scorer.GetUnavailableTTL())
+	// Snapshot the scorer under the read lock so the algorithm and its
+	// unavailable-TTL come from the same instance (SetScorerWeights replaces
+	// both atomically).
+	sc := s.currentScorer()
+	return scheduler.SelectWorker(context.Background(), sc, scheduler.ModelRequest{Model: model}, workers, sc.GetUnavailableTTL())
 }
 
 // loadModelOnWorker attempts to load a model on a worker using HTTP proxy
