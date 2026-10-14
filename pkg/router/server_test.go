@@ -2475,6 +2475,73 @@ func TestDispatchWithFailover_NonRetryableErrorStops(t *testing.T) {
 	}
 }
 
+// TestDispatchWithFailover_WSWorkerBackendErrorFailover verifies that a
+// WebSocket worker backend error (errWorkerInferenceError) triggers failover
+// to the next worker advertising the same model.
+func TestDispatchWithFailover_WSWorkerBackendErrorFailover(t *testing.T) {
+	workers := []protocol.WorkerInfo{
+		mkWorker("worker-a", "failover-model"),
+		mkWorker("worker-b", "failover-model"),
+	}
+	tr, srv, fc := failoverTestServer(t, workers)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+
+	// Simulate a WS worker backend error (e.g. LM Studio 404, model not loaded).
+	fc.results["worker-a"] = mockResult{
+		err: fmt.Errorf("%w: %w", errWorkerInferenceError, errors.New("model not loaded")),
+	}
+	fc.results["worker-b"] = mockResult{
+		body: []byte(`{"id":"chatcmpl-2","object":"chat.completion","choices":[{"message":{"content":"success"}}]}`),
+	}
+
+	body := []byte(`{"model":"failover-model","messages":[{"role":"user","content":"hi"}]}`)
+	resp, err := srv.dispatchWithFailover(context.Background(), "failover-model", body, "chat", 3, 10*time.Second)
+	if err != nil {
+		t.Fatalf("dispatchWithFailover failed: %v", err)
+	}
+	if !bytes.Contains(resp, []byte("success")) {
+		t.Errorf("expected response from worker-b, got: %s", string(resp))
+	}
+	if fc.calls["worker-a"] != 1 {
+		t.Errorf("expected 1 call to worker-a, got %d", fc.calls["worker-a"])
+	}
+	if fc.calls["worker-b"] != 1 {
+		t.Errorf("expected 1 call to worker-b, got %d", fc.calls["worker-b"])
+	}
+}
+
+// TestDispatchWithFailover_WSWorkerBackendErrorExhausted verifies the loop
+// exhausts all attempts when every worker returns a WS backend error.
+func TestDispatchWithFailover_WSWorkerBackendErrorExhausted(t *testing.T) {
+	workers := []protocol.WorkerInfo{
+		mkWorker("worker-a", "failover-model"),
+		mkWorker("worker-b", "failover-model"),
+	}
+	tr, srv, fc := failoverTestServer(t, workers)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+
+	fc.results["worker-a"] = mockResult{
+		err: fmt.Errorf("%w: %w", errWorkerInferenceError, errors.New("backend crashed")),
+	}
+	fc.results["worker-b"] = mockResult{
+		err: fmt.Errorf("%w: %w", errWorkerInferenceError, errors.New("backend crashed")),
+	}
+
+	body := []byte(`{"model":"failover-model","messages":[{"role":"user","content":"hi"}]}`)
+	_, err := srv.dispatchWithFailover(context.Background(), "failover-model", body, "chat", 2, 10*time.Second)
+	if err == nil {
+		t.Fatal("expected error after exhausted attempts")
+	}
+	if !errors.Is(err, errWorkerInferenceError) && !errors.Is(err, errAllAttemptsFailed) {
+		t.Errorf("expected errWorkerInferenceError or errAllAttemptsFailed, got %v", err)
+	}
+	if fc.calls["worker-a"] != 1 || fc.calls["worker-b"] != 1 {
+		t.Errorf("expected 1 call to each worker, got a=%d b=%d", fc.calls["worker-a"], fc.calls["worker-b"])
+	}
+}
+
 // TestSelectWorkerExcluding_FiltersExcluded_FiltersExcluded verifies that the exclusion
 // set filters out workers from selection.
 func TestSelectWorkerExcluding_FiltersExcluded(t *testing.T) {
@@ -2525,6 +2592,8 @@ func TestIsRetryableError_Taxonomy(t *testing.T) {
 		{"worker429", &WorkerHTTPError{StatusCode: 429}, true},
 		{"worker400", &WorkerHTTPError{StatusCode: 400}, false},
 		{"worker404", &WorkerHTTPError{StatusCode: 404}, false},
+		{"workerInferenceError", errWorkerInferenceError, true},
+		{"workerInferenceError_wrapped", fmt.Errorf("%w: %w", errWorkerInferenceError, errors.New("model not found")), true},
 		{"noMatchingWorkers", scheduler.ErrNoMatchingWorkers, false},
 		{"allWorkersUnavailable", scheduler.ErrAllWorkersUnavailable, false},
 		{"canceled", context.Canceled, false},

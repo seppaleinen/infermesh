@@ -24,6 +24,12 @@ import (
 // errConnClosed is delivered to in-flight calls when their connection dies.
 var errConnClosed = errors.New("websocket connection closed")
 
+// errWorkerInferenceError is wrapped around errors reported by a WebSocket
+// worker's backend (e.g. LM Studio 404, model not loaded, backend crash).
+// It is a retryable sentinel so dispatchWithFailover can fail over to the
+// next worker advertising the same model.
+var errWorkerInferenceError = errors.New("worker reported inference error")
+
 // errRelayDisconnected is returned when a relay worker request cannot be
 // sent because the relay connection is down.
 var errRelayDisconnected = errors.New("relay connection unavailable")
@@ -1589,16 +1595,16 @@ func awaitResponse(ctx context.Context, respCh chan protocol.Message, errCh chan
 				return nil, fmt.Errorf("decode inference response: %w", err)
 			}
 			if p.Error != "" {
-				return nil, errors.New(p.Error)
+				return nil, fmt.Errorf("%w: %w", errWorkerInferenceError, errors.New(p.Error))
 			}
 			if len(p.Response) > 0 {
 				return append([]byte(nil), p.Response...), nil
 			}
 			if p.Done {
-				return nil, errors.New("worker returned empty response")
+				return nil, fmt.Errorf("%w: worker returned empty response", errWorkerInferenceError)
 			}
 		case err := <-errCh:
-			return nil, err
+			return nil, fmt.Errorf("%w: %w", errWorkerInferenceError, err)
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}

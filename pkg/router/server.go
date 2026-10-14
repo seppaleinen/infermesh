@@ -1466,6 +1466,9 @@ func isRetryableError(err error) bool {
 	if errors.Is(err, errRateLimited) {
 		return true
 	}
+	if errors.Is(err, errWorkerInferenceError) {
+		return true
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
