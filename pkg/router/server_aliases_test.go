@@ -31,9 +31,9 @@ func TestHandleSetAliases(t *testing.T) {
 			wantStatus: http.StatusOK,
 		},
 		{
-			name:   "empty map disables aliasing",
-			method: http.MethodPost,
-			body:   SetAliasesRequest{Aliases: map[string]string{}},
+			name:       "empty map disables aliasing",
+			method:     http.MethodPost,
+			body:       SetAliasesRequest{Aliases: map[string]string{}},
 			wantStatus: http.StatusOK,
 		},
 		{
@@ -64,7 +64,7 @@ func TestHandleSetAliases(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := NewServer(nil, testLogger(), ":0", security.Config{DevMode: true})
-			
+
 			var reqBody []byte
 			var err error
 			if tt.body != nil {
