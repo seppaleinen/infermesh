@@ -2046,6 +2046,73 @@ func TestChatCompletionsTimeoutRecords504(t *testing.T) {
 	}
 }
 
+// TestProxyStreamContextTimeout verifies that proxyStream's ctx.Done() branch
+// fires when the dispatch timeout expires and the worker never surfaces an
+// error. The worker client returns two never-closing channels, so the only
+// way to exit is the ctx.Done() case, which should render a 504.
+func TestProxyStreamContextTimeout(t *testing.T) {
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+
+	srv := tr.Server()
+	srv.SetProxyTimeout(50 * time.Millisecond)
+
+	info := protocol.WorkerInfo{
+		ID: "ctx-timeout-worker", Hostname: "ctx-timeout-worker", IP: "127.0.0.1", Port: 8081,
+		Status: protocol.StatusAvailable, Version: "v1",
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "ctx-timeout-model", Quantization: "Q4_K_M", Loaded: true},
+			},
+		},
+	}
+
+	// A client that never sends chunks or errors — simulates a worker that
+	// is completely silent (e.g., a proxy or network stall that never
+	// surfaces ctx cancellation). proxyStream must handle ctx.Done() itself.
+	stalledClient := &stalledClient{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	wrec := httptest.NewRecorder()
+
+	start := time.Now()
+	srv.proxyStream(wrec, req, stalledClient, info, "chat", []byte(`{"model":"ctx-timeout-model","messages":[]}`))
+	elapsed := time.Since(start)
+
+	if wrec.Code != http.StatusGatewayTimeout {
+		t.Errorf("expected status %d, got %d, body: %s", http.StatusGatewayTimeout, wrec.Code, wrec.Body.String())
+	}
+	if elapsed < 40*time.Millisecond || elapsed > 200*time.Millisecond {
+		t.Errorf("proxyStream returned too quickly (%.2fms) — ctx.Done() branch may not have fired", float64(elapsed.Milliseconds()))
+	}
+}
+
+// stalledClient implements WorkerClient: Stream returns two never-closed,
+// never-producing channels, simulating a worker that stalls indefinitely
+// without surfacing an error. This forces proxyStream to rely on ctx.Done()
+// for termination.
+type stalledClient struct{}
+
+func (c *stalledClient) Transport() string { return "http" }
+func (c *stalledClient) Stream(ctx context.Context, worker protocol.WorkerInfo, kind string, body []byte) (<-chan StreamEvent, <-chan error) {
+	ch := make(chan StreamEvent)
+	errCh := make(chan error)
+	return ch, errCh
+}
+func (c *stalledClient) Complete(ctx context.Context, worker protocol.WorkerInfo, kind string, body []byte) ([]byte, error) {
+	return nil, nil
+}
+func (c *stalledClient) LoadModel(ctx context.Context, worker protocol.WorkerInfo, model string) (bool, error) {
+	return false, nil
+}
+func (c *stalledClient) Capabilities(ctx context.Context, worker protocol.WorkerInfo) (protocol.Capabilities, error) {
+	return protocol.Capabilities{}, nil
+}
+func (c *stalledClient) Close() error                  { return nil }
+func (c *stalledClient) RecordTimeout(workerID string) {}
+
 // timeoutClient implements WorkerClient: it never streams a chunk and reports
 // a deadline-exceeded error as soon as its context is cancelled, mimicking a
 // worker whose backend stalls past the dispatch timeout. Its RecordTimeout

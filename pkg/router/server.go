@@ -1798,6 +1798,16 @@ func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client Work
 				}
 			}
 			return
+		case <-ctx.Done():
+			if !started {
+				writeErrorResponse(w, http.StatusGatewayTimeout, "request timeout", "server_error", "timeout_error")
+			} else if !sawDone {
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			return
 		}
 	}
 }
