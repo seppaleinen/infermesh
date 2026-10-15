@@ -76,7 +76,11 @@ func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	fs.StringVar(&f.ExcludedModels, "excluded-models", "", "comma-separated list of models this worker is NOT WILLING to serve (blacklist); applies only when --allowed-models is empty")
 	fs.DurationVar(&f.ModelRefreshInterval, "model-refresh-interval", 0, "cadence for re-querying the backend's model catalogue; 0 uses the default 10s")
 	fs.StringVar(&f.APIKey, "api-key", "", "API key for authenticating inference requests (dev and prod mode)")
-	fs.DurationVar(&f.BackendTimeout, "backend-timeout", 120*time.Second, "timeout for backend HTTP requests")
+	// Idle timeout for streaming backends: abort if no SSE line arrives for this
+	// long. The timer resets on every line received, so active streaming is
+	// not bounded by this value. First-byte wait is also bounded by it.
+	// Non-streaming calls still use this as an absolute deadline.
+	fs.DurationVar(&f.BackendTimeout, "backend-timeout", 120*time.Second, "idle timeout for backend streaming: abort if no SSE line arrives for this long (does not count against active streaming; first-byte wait also bounded by this value)")
 }
 
 // workerFlagUsage prints the worker flag help to w.

@@ -147,7 +147,10 @@ func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
 	fs.IntVar(&f.MaxConnections, "max-connections", 0, "max concurrent worker WebSocket connections (0 = default of 256); rejects excess with a protocol error frame")
 	fs.IntVar(&f.MaxAttempts, "max-attempts", 3, "max dispatch attempts per non-streaming request (1 disables failover)")
 	fs.DurationVar(&f.RetryBudget, "retry-budget", 60*time.Second, "global deadline across all failover attempts for a non-streaming request")
-	fs.DurationVar(&f.ProxyTimeout, "proxy-timeout", 120*time.Second, "timeout for streaming proxy requests (default 120s)")
+	// Idle timeout for streaming proxy: abort if no chunk arrives for this
+	// long. The timer resets on every chunk received, so active streaming is
+	// not bounded by this value. First-byte wait is also bounded by it.
+	fs.DurationVar(&f.ProxyTimeout, "proxy-timeout", 120*time.Second, "idle timeout for streaming proxy: abort if no chunk arrives for this long (does not count against active streaming; first-byte wait also bounded by this value)")
 	fs.Float64Var(&f.ScorerQuantMatch, "scorer-quant-match", 0, "weight for quantization match in weighted scoring (0 = keep default of 0.40)")
 	fs.Float64Var(&f.ScorerVRAMFree, "scorer-vram-free", 0, "weight for free VRAM ratio in weighted scoring (0 = keep default of 0.25)")
 	fs.Float64Var(&f.ScorerGPUUtil, "scorer-gpu-util", 0, "weight for GPU utilization in weighted scoring (0 = keep default of 0.15)")

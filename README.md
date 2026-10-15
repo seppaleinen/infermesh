@@ -294,7 +294,7 @@ The router binary accepts the following flags:
 | `--scorer-queue-depth <weight>` | Weight for queue depth in weighted scoring (0 = keep default of 0.10)
 | `--scorer-latency <weight>` | Weight for latency in weighted scoring (0 = keep default of 0.10)
 | `--scorer-max-queue-depth <N>` | Queue depth treated as fully loaded when normalizing queue depth score (0 = default of 10)
-| `--proxy-timeout <duration>` | Timeout for streaming proxy requests (default `120s`)
+| `--proxy-timeout <duration>` | Idle timeout for streaming proxy: abort if no chunk arrives for this long (default `120s`). The timer resets on every chunk received, so active streaming is not bounded by this value; first-byte wait is also bounded by it |
 | `--auto-tier-simple <model>` | Model name to route simple prompts to when `model="auto"` (empty = alias disabled)
 | `--auto-tier-medium <model>` | Model name to route medium-complexity prompts to when `model="auto"`
 | `--auto-tier-complex <model>` | Model name to route complex prompts to when `model="auto"`
@@ -314,7 +314,7 @@ The worker binary accepts the following flags:
 | `--port <N>` | Listen port for the worker HTTP server (default `8081`) |
 | `--backend <name>` | Backend adapter (`llama-cpp`, `ollama`, `lmstudio`, `vllm`, `custom`; default `llama-cpp`) |
 | `--backend-url <url>` | Backend adapter base URL (overrides the adapter's default endpoint) |
-| `--backend-timeout <duration>` | Timeout for backend HTTP requests (default `30s`); inference calls that exceed this duration are aborted by the worker's HTTP client to the backend |
+| `--backend-timeout <duration>` | Idle timeout for backend streaming: abort if no SSE line arrives for this long (default `120s`). The timer resets on every line received, so active streaming is not bounded by this value; first-byte wait is also bounded by it. Non-streaming calls still use this as an absolute deadline |
 | `--model-path <path>` | Path to the model file (required in production mode for `llama-cpp`) |
 | `--router <url>` | Router base URL for HTTP registration in dev mode (e.g. `http://127.0.0.1:8080`) |
 | `--prod-router <url>` | Router base URL for mTLS registration in production mode (e.g. `https://127.0.0.1:8080`) |

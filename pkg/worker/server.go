@@ -468,7 +468,9 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 }
 
 // isBackendTimeout reports whether err is a context deadline exceeded or a
-// timeout error, indicating the backend took too long to respond.
+// timeout error, indicating the backend took too long to respond. This covers
+// both absolute deadlines (http.Client.Timeout) and idle timeouts (reset on
+// activity) emitted by the streaming backends.
 func isBackendTimeout(err error) bool {
 	if err == nil {
 		return false
@@ -480,6 +482,7 @@ func isBackendTimeout(err error) bool {
 	return strings.Contains(msg, "deadline exceeded") ||
 		strings.Contains(msg, "context deadline exceeded") ||
 		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "idle timeout") ||
 		strings.Contains(msg, "TLS handshake timeout") ||
 		strings.Contains(msg, "i/o timeout")
 }

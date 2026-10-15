@@ -1816,23 +1816,27 @@ func (s *Server) proxyCompletionStream(w http.ResponseWriter, r *http.Request, w
 // proxyStream relays an inference request to the worker via the transport
 // appropriate for it and streams the response back to the client as SSE.
 //
-// The dispatch is bounded by the per-request context plus proxyTimeout. Real
-// worker clients surface errTimeout on the errCh channel when the dispatch
-// context expires, so the 504 branch below handles the timeout and bumps the
-// per-worker 504 counter (issue #54). Matching on the sentinel rather than on
-// ctx.Err() is deliberate: a client may surface the timeout before the
-// server-side context has actually expired, in which case ctx.Err() would
-// still be nil and the 504 branch would be skipped. The ctx.Done() case is
-// intentionally absent for the same reason. Clients that never surface a
-// timeout error must close chunkCh themselves to terminate the stream.
+// The dispatch is bounded by an **idle timeout** (proxyTimeout): the timer
+// resets on every chunk received, so a slow-but-healthy stream that keeps
+// producing tokens is never killed; only prolonged silence (no chunk for
+// proxyTimeout) triggers the timeout. The first-byte wait is also bounded by
+// the same value: if the backend doesn't answer within that window, the idle
+// timer fires and the request is aborted.
 func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client WorkerClient, worker protocol.WorkerInfo, kind string, body []byte) {
-	// Apply context-based timeout (default 30s, overridable via SetProxyTimeout).
+	// Idle timeout for streaming proxy: abort if no chunk arrives for this
+	// long. The timer resets on every chunk received, so active streaming
+	// is not bounded by this value. First-byte wait is also bounded by it.
 	timeout := s.proxyTimeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+
+	// Start the idle timer before the dispatch so model loading (no bytes
+	// yet) still has a budget equal to the configured timeout.
+	idleTimer := time.NewTimer(timeout)
+	defer idleTimer.Stop()
 
 	chunks, errs := client.Stream(ctx, worker, kind, body)
 	flusher, _ := w.(http.Flusher)
@@ -1854,6 +1858,16 @@ func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client Work
 				}
 				return
 			}
+			// Reset the idle timer on every chunk received (including the
+			// Done sentinel handling — stop the timer before returning).
+			// The canonical Stop+drain+Reset pattern: if Stop returns false
+			// the timer already fired, so the value is in the channel and
+			// the blocking drain is guaranteed to make progress.
+			if !idleTimer.Stop() {
+				<-idleTimer.C
+			}
+			idleTimer.Reset(timeout)
+
 			if !started {
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.Header().Set("Cache-Control", "no-cache")
@@ -1896,7 +1910,11 @@ func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client Work
 				}
 			}
 			return
-		case <-ctx.Done():
+		case <-idleTimer.C:
+			// Idle timeout fired: no chunk arrived for `timeout`. Cancel the
+			// worker-side request so the underlying transport is aborted.
+			cancel()
+			s.log.Warn("stream idle timeout", "worker", worker.ID, "idle", timeout)
 			if !started {
 				writeErrorResponse(w, http.StatusGatewayTimeout, "request timeout", "server_error", "timeout_error")
 			} else if !sawDone {
@@ -1905,6 +1923,10 @@ func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client Work
 					flusher.Flush()
 				}
 			}
+			return
+		case <-r.Context().Done():
+			// Client hung up: just return. The derived ctx is already
+			// cancelled via cancel(), so the worker request is aborted.
 			return
 		}
 	}

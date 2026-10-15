@@ -2503,6 +2503,283 @@ func (c *timeoutClient) RecordTimeout(workerID string) {
 	}
 }
 
+// activeStreamClient implements WorkerClient: Stream emits a chunk every
+// tickMs until ctx is done, then closes. Used to verify that the idle timer
+// resets on activity so a slow-but-healthy stream is never killed.
+type activeStreamClient struct {
+	tickMs int
+	chunks int
+}
+
+func (c *activeStreamClient) Transport() string { return "http" }
+func (c *activeStreamClient) Stream(ctx context.Context, _ protocol.WorkerInfo, _ string, _ []byte) (<-chan StreamEvent, <-chan error) {
+	chunkCh := make(chan StreamEvent, 16)
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(chunkCh)
+		defer close(errCh)
+		interval := time.Duration(c.tickMs) * time.Millisecond
+		for i := 0; i < c.chunks; i++ {
+			select {
+			case chunkCh <- StreamEvent{Data: []byte(fmt.Sprintf("data: chunk %d\n\n", i))}:
+			case <-ctx.Done():
+				return
+			}
+			select {
+			case <-time.After(interval):
+			case <-ctx.Done():
+				return
+			}
+		}
+		chunkCh <- StreamEvent{Data: []byte("data: [DONE]\n\n"), Done: true}
+	}()
+	return chunkCh, errCh
+}
+func (c *activeStreamClient) Complete(ctx context.Context, _ protocol.WorkerInfo, _ string, _ []byte) ([]byte, error) {
+	return nil, ctx.Err()
+}
+func (c *activeStreamClient) LoadModel(ctx context.Context, _ protocol.WorkerInfo, _ string) (bool, error) {
+	return false, ctx.Err()
+}
+func (c *activeStreamClient) Capabilities(ctx context.Context, _ protocol.WorkerInfo) (protocol.Capabilities, error) {
+	return protocol.Capabilities{}, ctx.Err()
+}
+func (c *activeStreamClient) Close() error               { return nil }
+func (c *activeStreamClient) RecordTimeout(workerID string) {}
+
+// silentAfterClient implements WorkerClient: Stream emits one chunk then goes
+// silent for silenceMs, after which it closes without a Done sentinel. Used
+// to verify that mid-stream silence trips the idle timer and terminates the
+// SSE stream cleanly with data: [DONE] (no 504).
+type silentAfterClient struct {
+	silenceMs int
+}
+
+func (c *silentAfterClient) Transport() string { return "http" }
+func (c *silentAfterClient) Stream(ctx context.Context, _ protocol.WorkerInfo, _ string, _ []byte) (<-chan StreamEvent, <-chan error) {
+	chunkCh := make(chan StreamEvent, 16)
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(chunkCh)
+		defer close(errCh)
+		select {
+		case chunkCh <- StreamEvent{Data: []byte("data: first\n\n")}:
+		case <-ctx.Done():
+			return
+		}
+		// Go silent: the idle timer must fire before the channel closes,
+		// and the handler must terminate the stream cleanly.
+		<-ctx.Done()
+	}()
+	return chunkCh, errCh
+}
+func (c *silentAfterClient) Complete(ctx context.Context, _ protocol.WorkerInfo, _ string, _ []byte) ([]byte, error) {
+	return nil, ctx.Err()
+}
+func (c *silentAfterClient) LoadModel(ctx context.Context, _ protocol.WorkerInfo, _ string) (bool, error) {
+	return false, ctx.Err()
+}
+func (c *silentAfterClient) Capabilities(ctx context.Context, _ protocol.WorkerInfo) (protocol.Capabilities, error) {
+	return protocol.Capabilities{}, ctx.Err()
+}
+func (c *silentAfterClient) Close() error               { return nil }
+func (c *silentAfterClient) RecordTimeout(workerID string) {}
+
+// TestProxyStreamIdleTimeoutSlowActive verifies the core regression: a
+// stream that keeps producing chunks (every 50ms) for well over the idle
+// timeout (300ms) must complete without truncation. Under the old absolute
+// deadline this would have been killed at 300ms.
+func TestProxyStreamIdleTimeoutSlowActive(t *testing.T) {
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+
+	srv := tr.Server()
+	srv.SetProxyTimeout(300 * time.Millisecond)
+
+	info := protocol.WorkerInfo{
+		ID: "idle-active-worker", Hostname: "idle-active-worker", IP: "127.0.0.1", Port: 8081,
+		Status: protocol.StatusAvailable, Version: "v1",
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "idle-model", Quantization: "Q4_K_M", Loaded: true},
+			},
+		},
+	}
+
+	// 15 chunks every 50ms = 700ms+ total, well beyond the 300ms idle timeout.
+	client := &activeStreamClient{tickMs: 50, chunks: 15}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	wrec := httptest.NewRecorder()
+
+	start := time.Now()
+	srv.proxyStream(wrec, req, client, info, "chat", []byte(`{"model":"idle-model","messages":[]}`))
+	elapsed := time.Since(start)
+
+	body := wrec.Body.String()
+	// All 15 chunks plus the Done sentinel must have been relayed.
+	for i := 0; i < 15; i++ {
+		if !strings.Contains(body, fmt.Sprintf("data: chunk %d\n\n", i)) {
+			t.Errorf("expected chunk %d in body, got: %s", i, body)
+			break
+		}
+	}
+	if !strings.Contains(body, "data: [DONE]\n\n") {
+		t.Errorf("expected final [DONE] marker, got: %s", body)
+	}
+	if wrec.Header().Get("Content-Type") != "text/event-stream" {
+		t.Errorf("expected SSE content type, got %q", wrec.Header().Get("Content-Type"))
+	}
+	// The stream must have taken the full ~700ms — the 300ms idle timeout
+	// must not have cut it off.
+	if elapsed < 600*time.Millisecond {
+		t.Errorf("stream ended after %.0fms — idle timer may not be resetting on activity", float64(elapsed.Milliseconds()))
+	}
+}
+
+// TestProxyStreamIdleTimeoutSilentMidStream verifies that once chunks start
+// flowing and then silence exceeds the idle timeout, the stream terminates
+// cleanly with data: [DONE] (no 504, since the response already started).
+func TestProxyStreamIdleTimeoutSilentMidStream(t *testing.T) {
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+
+	srv := tr.Server()
+	srv.SetProxyTimeout(300 * time.Millisecond)
+
+	info := protocol.WorkerInfo{
+		ID: "idle-silent-worker", Hostname: "idle-silent-worker", IP: "127.0.0.1", Port: 8081,
+		Status: protocol.StatusAvailable, Version: "v1",
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "idle-model", Quantization: "Q4_K_M", Loaded: true},
+			},
+		},
+	}
+
+	client := &silentAfterClient{silenceMs: 2000}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	wrec := httptest.NewRecorder()
+
+	start := time.Now()
+	srv.proxyStream(wrec, req, client, info, "chat", []byte(`{"model":"idle-model","messages":[]}`))
+	elapsed := time.Since(start)
+
+	body := wrec.Body.String()
+	if wrec.Code != http.StatusOK {
+		t.Errorf("expected status 200 (stream already started), got %d, body: %s", wrec.Code, body)
+	}
+	if !strings.Contains(body, "data: first\n\n") {
+		t.Errorf("expected first chunk in body, got: %s", body)
+	}
+	if !strings.Contains(body, "data: [DONE]\n\n") {
+		t.Errorf("expected clean [DONE] termination after mid-stream silence, got: %s", body)
+	}
+	// Should have waited for the idle timeout (~300ms) before terminating,
+	// not returned immediately and not hung.
+	if elapsed < 250*time.Millisecond || elapsed > 2*time.Second {
+		t.Errorf("proxyStream took %.0fms — expected ~300ms idle wait", float64(elapsed.Milliseconds()))
+	}
+}
+
+// TestProxyStreamIdleTimeoutSilentFromStart verifies that when the worker
+// produces no chunks at all and the idle timeout fires, the response is a
+// 504 JSON error (no SSE headers), matching the old pre-chunk timeout
+// behavior.
+func TestProxyStreamIdleTimeoutSilentFromStart(t *testing.T) {
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+
+	srv := tr.Server()
+	srv.SetProxyTimeout(200 * time.Millisecond)
+
+	info := protocol.WorkerInfo{
+		ID: "idle-cold-worker", Hostname: "idle-cold-worker", IP: "127.0.0.1", Port: 8081,
+		Status: protocol.StatusAvailable, Version: "v1",
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "idle-model", Quantization: "Q4_K_M", Loaded: true},
+			},
+		},
+	}
+
+	// stalledClient never produces chunks or errors: the idle timer is the
+	// only way out.
+	stalled := &stalledClient{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	wrec := httptest.NewRecorder()
+
+	start := time.Now()
+	srv.proxyStream(wrec, req, stalled, info, "chat", []byte(`{"model":"idle-model","messages":[]}`))
+	elapsed := time.Since(start)
+
+	if wrec.Code != http.StatusGatewayTimeout {
+		t.Errorf("expected status 504, got %d, body: %s", wrec.Code, wrec.Body.String())
+	}
+	if ct := wrec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected application/json before first chunk, got %q", ct)
+	}
+	if elapsed < 150*time.Millisecond || elapsed > 2*time.Second {
+		t.Errorf("proxyStream took %.0fms — expected ~200ms idle wait", float64(elapsed.Milliseconds()))
+	}
+}
+
+// TestProxyStreamClientCancellation verifies that client cancellation
+// (r.Context() cancelled) still returns promptly and leaves no response
+// written.
+func TestProxyStreamClientCancellation(t *testing.T) {
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+
+	srv := tr.Server()
+	srv.SetProxyTimeout(10 * time.Second) // long enough that only the client cancels
+
+	info := protocol.WorkerInfo{
+		ID: "idle-cancel-worker", Hostname: "idle-cancel-worker", IP: "127.0.0.1", Port: 8081,
+		Status: protocol.StatusAvailable, Version: "v1",
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "idle-model", Quantization: "Q4_K_M", Loaded: true},
+			},
+		},
+	}
+
+	stalled := &stalledClient{}
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
+	wrec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.proxyStream(wrec, req, stalled, info, "chat", []byte(`{"model":"idle-model","messages":[]}`))
+	}()
+
+	// Give proxyStream time to enter its select loop, then cancel the client.
+	time.Sleep(50 * time.Millisecond)
+	start := time.Now()
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxyStream did not return after client cancellation")
+	}
+	elapsed := time.Since(start)
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("proxyStream took %.0fms after client cancel — expected prompt return", float64(elapsed.Milliseconds()))
+	}
+}
+
 // scorerTestWorkers returns two identical workers advertising the same model,
 // so every static scoring signal ties and only load data can break symmetry.
 func scorerTestWorkers() []protocol.WorkerInfo {
