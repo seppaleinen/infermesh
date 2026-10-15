@@ -294,7 +294,7 @@ The router binary accepts the following flags:
 | `--scorer-queue-depth <weight>` | Weight for queue depth in weighted scoring (0 = keep default of 0.10)
 | `--scorer-latency <weight>` | Weight for latency in weighted scoring (0 = keep default of 0.10)
 | `--scorer-max-queue-depth <N>` | Queue depth treated as fully loaded when normalizing queue depth score (0 = default of 10)
-| `--proxy-timeout <duration>` | Timeout for streaming proxy requests (default 30s)
+| `--proxy-timeout <duration>` | Timeout for streaming proxy requests (default `120s`)
 | `--auto-tier-simple <model>` | Model name to route simple prompts to when `model="auto"` (empty = alias disabled)
 | `--auto-tier-medium <model>` | Model name to route medium-complexity prompts to when `model="auto"`
 | `--auto-tier-complex <model>` | Model name to route complex prompts to when `model="auto"`

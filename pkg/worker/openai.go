@@ -88,13 +88,13 @@ type OpenAICompatibleBackend struct {
 }
 
 // defaultBackendTimeout is the HTTP client timeout used when a caller does
-// not specify one (zero or negative). It matches the historical hardcoded
-// value of 30s on the OpenAI-compatible backend's HTTP client.
-const defaultBackendTimeout = 30 * time.Second
+// not specify one (zero or negative). It matches the default for the
+// worker's --backend-timeout flag.
+const defaultBackendTimeout = 120 * time.Second
 
 // NewOpenAICompatibleBackend creates a new OpenAI-compatible backend.
 // timeout is the HTTP client timeout for backend requests; a zero or
-// negative value falls back to defaultBackendTimeout (30s).
+// negative value falls back to defaultBackendTimeout (120s).
 func NewOpenAICompatibleBackend(baseURL, apiKey string, timeout time.Duration) *OpenAICompatibleBackend {
 	if timeout <= 0 {
 		timeout = defaultBackendTimeout

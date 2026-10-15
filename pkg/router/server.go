@@ -289,7 +289,7 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 		cfg:          cfg,
 		hub:          hub,
 		counter:      NewCallCounter(10 * time.Minute),
-		proxyTimeout: 30 * time.Second,
+		proxyTimeout: 120 * time.Second,
 		scorer:       scorer,
 		scorerWeights: schedulerWeights{
 			QuantMatch:    scorer.QuantMatchWeight,
@@ -327,11 +327,11 @@ func (s *Server) SetMaxConnections(n int) {
 }
 
 // SetProxyTimeout overrides the per-dispatch timeout applied by proxyStream.
-// A value <= 0 falls back to 30s. Used by tests to drive the 504 path
+// A value <= 0 falls back to 120s. Used by tests to drive the 504 path
 // without sleeping.
 func (s *Server) SetProxyTimeout(d time.Duration) {
 	if d <= 0 {
-		d = 30 * time.Second
+		d = 120 * time.Second
 	}
 	s.proxyTimeout = d
 }

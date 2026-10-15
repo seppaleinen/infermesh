@@ -32,6 +32,15 @@ type mockBackend struct {
 	mu          sync.Mutex
 	models      []protocol.ModelInfo
 	healthCheck error
+
+	// streamError, when non-nil, is sent on the streaming error channel.
+	// streamErrorBeforeChunks controls whether the error is emitted before
+	// any chunk (true) or after the first chunk (false). When beforeChunks
+	// is false the error is sent only after the handler has consumed the
+	// first chunk, which is deterministic because chatCh is unbuffered: the
+	// mock blocks on the chunk send until the handler reads it.
+	streamError             error
+	streamErrorBeforeChunks bool
 }
 
 func newMockBackend() *mockBackend {
@@ -42,6 +51,18 @@ func (m *mockBackend) SetHealthCheckError(err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.healthCheck = err
+}
+
+// SetStreamError configures the mock's streaming error behaviour. Pass nil
+// to clear it. When beforeChunks is true the error is emitted before any
+// chunk is sent (simulating a backend that fails during model loading); when
+// false the error is emitted after the first chunk (simulating a mid-stream
+// backend failure).
+func (m *mockBackend) SetStreamError(err error, beforeChunks bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.streamError = err
+	m.streamErrorBeforeChunks = beforeChunks
 }
 
 // SetMockModels replaces the catalogue the mock advertises on the next
@@ -106,12 +127,23 @@ func (m *mockBackend) HealthCheck() error {
 func (m *mockBackend) GetCircuitState() CircuitState { return CircuitClosed }
 
 // StreamChat implements the Backend interface.
+// The chunk channel is unbuffered so that a mid-stream error is emitted
+// only after the handler has consumed the first chunk, making the error
+// path deterministic.
 func (m *mockBackend) StreamChat(ctx context.Context, model string, req ChatRequest) (<-chan ChatChunk, <-chan error) {
-	chatCh := make(chan ChatChunk, 100)
+	chatCh := make(chan ChatChunk)
 	errCh := make(chan error, 1)
 	go func() {
 		defer close(chatCh)
 		defer close(errCh)
+		m.mu.Lock()
+		err := m.streamError
+		beforeChunks := m.streamErrorBeforeChunks
+		m.mu.Unlock()
+		if err != nil && beforeChunks {
+			errCh <- err
+			return
+		}
 		chatCh <- ChatChunk{
 			ID:      "chatcmpl-test",
 			Object:  "chat.completion.chunk",
@@ -125,6 +157,9 @@ func (m *mockBackend) StreamChat(ctx context.Context, model string, req ChatRequ
 				},
 			},
 		}
+		if err != nil {
+			errCh <- err
+		}
 	}()
 	return chatCh, errCh
 }
@@ -136,6 +171,14 @@ func (m *mockBackend) StreamCompletions(ctx context.Context, model string, req C
 	go func() {
 		defer close(compCh)
 		defer close(errCh)
+		m.mu.Lock()
+		err := m.streamError
+		beforeChunks := m.streamErrorBeforeChunks
+		m.mu.Unlock()
+		if err != nil && beforeChunks {
+			errCh <- err
+			return
+		}
 		compCh <- CompletionChunk{
 			ID:      "cmpl-test",
 			Object:  "text_completion",
@@ -148,6 +191,9 @@ func (m *mockBackend) StreamCompletions(ctx context.Context, model string, req C
 					FinishReason: "stop",
 				},
 			},
+		}
+		if err != nil {
+			errCh <- err
 		}
 	}()
 	return compCh, errCh
@@ -537,7 +583,177 @@ func TestChatCompletionsHandler_StreamingChunkFormat(t *testing.T) {
 	}
 }
 
-// TestCompletionsHandler_NonStreaming verifies that a non-streaming
+// TestChatCompletionsHandler_StreamErrorBeforeFirstChunk verifies that a
+// backend error that arrives before any chunk produces a proper JSON error
+// response with the correct HTTP status code, not a malformed SSE frame.
+func TestChatCompletionsHandler_StreamErrorBeforeFirstChunk(t *testing.T) {
+	server := NewServer(testLogger(), "", security.Config{DevMode: true})
+	backend := newMockBackend()
+	backend.SetStreamError(errors.New("backend request failed: context deadline exceeded"), true)
+	server.SetBackend(backend, "gpt-4")
+
+	chatReq := ChatRequest{
+		Model:    "gpt-4",
+		Messages: []ChatMessage{{Role: "user", Content: "Hello"}},
+		Stream:   true,
+	}
+
+	body, err := json.Marshal(chatReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	server.chatCompletions(w, req)
+
+	// Must return 504 (timeout) with JSON body, not SSE.
+	if w.Code != http.StatusGatewayTimeout {
+		t.Errorf("expected status %d, got %d", http.StatusGatewayTimeout, w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected Content-Type 'application/json', got '%s'", ct)
+	}
+	if strings.Contains(w.Body.String(), "data:") {
+		t.Errorf("error-before-chunk must not emit SSE frame, got: %s", w.Body.String())
+	}
+	var errResp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("response must be valid JSON: %v", err)
+	}
+	if errResp["error"] == "" {
+		t.Errorf("expected error message, got: %v", errResp)
+	}
+}
+
+// TestChatCompletionsHandler_StreamErrorMidStream verifies that a backend
+// error that arrives after the first chunk terminates the stream cleanly with
+// data: [DONE] and does NOT emit a bogus error frame.
+func TestChatCompletionsHandler_StreamErrorMidStream(t *testing.T) {
+	server := NewServer(testLogger(), "", security.Config{DevMode: true})
+	backend := newMockBackend()
+	backend.SetStreamError(errors.New("backend request failed"), false)
+	server.SetBackend(backend, "gpt-4")
+
+	chatReq := ChatRequest{
+		Model:    "gpt-4",
+		Messages: []ChatMessage{{Role: "user", Content: "Hello"}},
+		Stream:   true,
+	}
+
+	body, err := json.Marshal(chatReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	server.chatCompletions(w, req)
+
+	// Must return 200 (stream started) and end with [DONE].
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+	respBody := w.Body.String()
+	if !strings.Contains(respBody, "data: [DONE]") {
+		t.Errorf("stream must end with 'data: [DONE]', got: %s", respBody)
+	}
+	// The bogus error frame must NOT appear.
+	if strings.Contains(respBody, `"error":"backend request failed"`) {
+		t.Errorf("mid-stream error must not emit error frame, got: %s", respBody)
+	}
+}
+
+// TestCompletionsHandler_StreamErrorBeforeFirstChunk verifies that a
+// backend error that arrives before any chunk produces a proper JSON error
+// response with the correct HTTP status code, not a malformed SSE frame.
+func TestCompletionsHandler_StreamErrorBeforeFirstChunk(t *testing.T) {
+	server := NewServer(testLogger(), "", security.Config{DevMode: true})
+	backend := newMockBackend()
+	backend.SetStreamError(errors.New("backend request failed: context deadline exceeded"), true)
+	server.SetBackend(backend, "gpt-4")
+
+	completionReq := CompletionRequest{
+		Model:     "gpt-4",
+		Prompt:    "Hello",
+		MaxTokens: 100,
+		Stream:    true,
+	}
+
+	body, err := json.Marshal(completionReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	server.completions(w, req)
+
+	// Must return 504 (timeout) with JSON body, not SSE.
+	if w.Code != http.StatusGatewayTimeout {
+		t.Errorf("expected status %d, got %d", http.StatusGatewayTimeout, w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("expected Content-Type 'application/json', got '%s'", ct)
+	}
+	if strings.Contains(w.Body.String(), "data:") {
+		t.Errorf("error-before-chunk must not emit SSE frame, got: %s", w.Body.String())
+	}
+	var errResp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("response must be valid JSON: %v", err)
+	}
+	if errResp["error"] == "" {
+		t.Errorf("expected error message, got: %v", errResp)
+	}
+}
+
+// TestCompletionsHandler_StreamErrorMidStream verifies that a backend
+// error that arrives after the first chunk terminates the stream cleanly with
+// data: [DONE] and does NOT emit a bogus error frame.
+func TestCompletionsHandler_StreamErrorMidStream(t *testing.T) {
+	server := NewServer(testLogger(), "", security.Config{DevMode: true})
+	backend := newMockBackend()
+	backend.SetStreamError(errors.New("backend request failed"), false)
+	server.SetBackend(backend, "gpt-4")
+
+	completionReq := CompletionRequest{
+		Model:     "gpt-4",
+		Prompt:    "Hello",
+		MaxTokens: 100,
+		Stream:    true,
+	}
+
+	body, err := json.Marshal(completionReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+	server.completions(w, req)
+
+	// Must return 200 (stream started) and end with [DONE].
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+	respBody := w.Body.String()
+	if !strings.Contains(respBody, "data: [DONE]") {
+		t.Errorf("stream must end with 'data: [DONE]', got: %s", respBody)
+	}
+	// The bogus error frame must NOT appear.
+	if strings.Contains(respBody, `"error":"backend request failed"`) {
+		t.Errorf("mid-stream error must not emit error frame, got: %s", respBody)
+	}
+}
 // completion request returns application/json with the full
 // CompletionResponse and no SSE framing (issue #115).
 func TestCompletionsHandler_NonStreaming(t *testing.T) {
