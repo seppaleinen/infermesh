@@ -39,6 +39,8 @@ type WorkerInfo struct {
 	VRAMFreeMB    int
 	GPUUtilPct    float64 // 0-100
 	QueueDepth    int
+	InFlight      int     // active inference calls dispatched to this worker
+	MaxInFlight   int     // configured per-worker cap (0 = unknown)
 	AvgLatencyMS  float64 // Moving average
 	LastHeartbeat time.Time
 
@@ -80,7 +82,7 @@ type WeightedScorer struct {
 	QuantMatchWeight float64 // weight for exact quantization match bonus
 	VRAMFreeWeight   float64 // weight for free VRAM ratio
 	GPUUtilWeight    float64 // weight for GPU utilization (inverted)
-	QueueDepthWeight float64 // weight for queue depth (inverted)
+	QueueDepthWeight float64 // weight for queue load: queue depth AND in-flight ratio (inverted)
 	LatencyWeight    float64 // weight for latency (inverted)
 	// maxQueueDepth is the queue depth treated as fully loaded when normalizing
 	// queue depth into the 0-1 score range.
@@ -90,7 +92,10 @@ type WeightedScorer struct {
 }
 
 // NewWeightedScorer creates a new WeightedScorer with default weights.
-// Default weights: QuantMatch=0.40, VRAMFree=0.25, GPUUtil=0.15, QueueDepth=0.10, Latency=0.10
+// Default weights: QuantMatch=0.40, VRAMFree=0.25, GPUUtil=0.15,
+// QueueDepth=0.10, Latency=0.10. The queue-depth component also folds in the
+// in-flight ratio (see Score), so no separate weight is needed and the
+// five weights keep summing to 1.0.
 func NewWeightedScorer() *WeightedScorer {
 	return &WeightedScorer{
 		QuantMatchWeight: 0.40,
@@ -234,6 +239,27 @@ func (s *WeightedScorer) Score(ctx context.Context, request ModelRequest, worker
 	} else {
 		// If queue depth unknown, assume half of maxQueueDepth (neutral)
 		queueDepthScore = 0.5
+	}
+
+	// 4b. In-flight load (lower is better, so invert). The router tracks
+	// active inference calls per worker against the configured MaxInFlight cap
+	// (the same source /v1/queue/stats uses). Fold the in-flight ratio into
+	// the queue-load component by taking the worse of the two load ratios, so
+	// a busy-but-idle worker is still deprioritised. Unknown cap (0) or
+	// unknown in-flight (-1) leaves the component untouched — existing
+	// callers that never populate these fields are byte-for-byte unchanged.
+	if worker.InFlight >= 0 && worker.MaxInFlight > 0 {
+		inFlightRatio := math.Min(float64(worker.InFlight)/float64(worker.MaxInFlight), 1.0)
+		inFlightScore := 1.0 - inFlightRatio
+		if inFlightScore < 0 {
+			inFlightScore = 0
+		}
+		if inFlightScore > 1 {
+			inFlightScore = 1
+		}
+		if inFlightScore < queueDepthScore {
+			queueDepthScore = inFlightScore
+		}
 	}
 
 	// 5. Latency score (lower latency is better, so invert)
