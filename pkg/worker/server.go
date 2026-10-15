@@ -612,7 +612,6 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				}
 				if !started {
 					ensureSSEHeaders(w)
-					started = true
 				}
 				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
@@ -728,7 +727,6 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 				}
 				if !started {
 					ensureSSEHeaders(w)
-					started = true
 				}
 				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()

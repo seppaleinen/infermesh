@@ -754,6 +754,7 @@ func TestCompletionsHandler_StreamErrorMidStream(t *testing.T) {
 		t.Errorf("mid-stream error must not emit error frame, got: %s", respBody)
 	}
 }
+
 // completion request returns application/json with the full
 // CompletionResponse and no SSE framing (issue #115).
 func TestCompletionsHandler_NonStreaming(t *testing.T) {
