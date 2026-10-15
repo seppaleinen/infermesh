@@ -154,6 +154,11 @@ type Server struct {
 	// reading the hub; tests may override it with deterministic values.
 	loadSnapshot func() map[string]WorkerQueueStats
 
+	// busyLoadSnapshot returns the per-worker in-flight snapshot used by the
+	// busy-status overlay in handleWorkersList. Defaults to reading the hub;
+	// tests may override it with deterministic values.
+	busyLoadSnapshot func() map[string]WorkerQueueStats
+
 	// proxyTimeout bounds how long proxyStream waits for a worker response
 	// before emitting a 504. Defaults to 30s; tests override it to drive the
 	// 504 path without sleeping. See SetProxyTimeout.
@@ -296,6 +301,7 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 		},
 	}
 	srv.loadSnapshot = srv.hubLoadSnapshot
+	srv.busyLoadSnapshot = srv.hubBusySnapshot
 	// Default retry/failover configuration.
 	srv.maxAttempts = 3
 	srv.retryBudget = 60 * time.Second
@@ -871,6 +877,13 @@ func (s *Server) handleWorkersList(w http.ResponseWriter, r *http.Request) {
 		cached = s.reg.ListAvailable()
 	}
 
+	// Busy status is a load-derived overlay computed at projection time from
+	// the hub's live in-flight counts. It is intentionally NOT written back
+	// into the cache or registry — those keep their own status semantics
+	// (available/unassigned/unavailable) and the overlay only applies to
+	// workers that would otherwise be "available".
+	load := s.busyLoadSnapshot()
+
 	workers := make([]WorkerInfo, 0, len(cached))
 	for _, w := range cached {
 		workers = append(workers, WorkerInfo{
@@ -878,7 +891,7 @@ func (s *Server) handleWorkersList(w http.ResponseWriter, r *http.Request) {
 			Hostname:     w.Hostname,
 			IP:           w.IP,
 			Port:         w.Port,
-			Status:       w.Status,
+			Status:       busyStatus(w.Status, load[w.ID]),
 			Version:      w.Version,
 			LoadedModels: getLoadedModelNames(w.Capabilities.Models),
 			LastSeen:     w.LastSeen,
@@ -1642,6 +1655,51 @@ func (s *Server) hubLoadSnapshot() map[string]WorkerQueueStats {
 	return load
 }
 
+// hubBusySnapshot returns the per-worker in-flight snapshot used by the
+// busy-status overlay in handleWorkersList. It mirrors hubLoadSnapshot but
+// is safe to call from a read path: when no hub is configured (e.g. minimal
+// test servers) it returns an empty map so every worker keeps its cached
+// status unchanged.
+func (s *Server) hubBusySnapshot() map[string]WorkerQueueStats {
+	load := make(map[string]WorkerQueueStats)
+	if s.hub == nil {
+		return load
+	}
+	for _, ws := range s.hub.QueueStats().Workers {
+		load[ws.WorkerID] = ws
+	}
+	return load
+}
+
+// busyThresholdPct is the in-flight ratio at or above which a worker that
+// would otherwise be "available" is projected as "busy". Derived from the
+// configured cap (never a hardcode): default maxInFlight=4 -> busy at 3+
+// in-flight, cap 10 -> busy at 8+.
+const busyThresholdPct = 0.80
+
+// busyStatus projects a load-derived busy overlay onto a worker's cached
+// status. Only workers that would otherwise be "available" can become busy;
+// unavailable/unassigned workers keep their status so the overlay never
+// masks a real connectivity or provisioning state. When the hub reports no
+// load data for the worker (unknown cap or below threshold) the cached
+// status is returned unchanged.
+//
+// The threshold is the floor of busyThresholdPct * MaxInFlight so the brief's
+// examples hold exactly: cap 4 -> busy at 3+, cap 10 -> busy at 8+.
+func busyStatus(cached protocol.WorkerStatus, load WorkerQueueStats) protocol.WorkerStatus {
+	if cached != protocol.StatusAvailable {
+		return cached
+	}
+	if load.MaxInFlight <= 0 {
+		return cached
+	}
+	threshold := int(busyThresholdPct * float64(load.MaxInFlight))
+	if load.InFlight >= int64(threshold) {
+		return protocol.StatusBusy
+	}
+	return cached
+}
+
 // toSchedulerWorker converts a cached protocol worker into the scheduler's
 // view, attaching queue depth and wait latency from the hub snapshot when
 // available. Unknown signals are left negative so the scorer treats them as
@@ -1652,6 +1710,8 @@ func (s *Server) toSchedulerWorker(w protocol.WorkerInfo, load WorkerQueueStats,
 		Addr:          fmt.Sprintf("%s:%d", w.IP, w.Port),
 		GPUUtilPct:    -1, // unknown; scorer treats as neutral
 		QueueDepth:    -1, // unknown until the load snapshot says otherwise
+		InFlight:      -1, // unknown until the load snapshot says otherwise
+		MaxInFlight:   -1, // unknown until the load snapshot says otherwise
 		AvgLatencyMS:  -1, // unknown until the load snapshot says otherwise
 		LastHeartbeat: w.LastSeen,
 	}
@@ -1666,6 +1726,8 @@ func (s *Server) toSchedulerWorker(w protocol.WorkerInfo, load WorkerQueueStats,
 	sw.ExcludedModels = append(sw.ExcludedModels, w.Capabilities.ExcludedModels...)
 	if haveLoad {
 		sw.QueueDepth = int(load.QueueDepth)
+		sw.InFlight = int(load.InFlight)
+		sw.MaxInFlight = int(load.MaxInFlight)
 		if load.AvgWaitMs >= 0 {
 			sw.AvgLatencyMS = load.AvgWaitMs
 		}

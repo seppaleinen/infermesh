@@ -189,6 +189,14 @@ func (h *WSHub) maxInFlightFor() int {
 	return h.maxInFlight
 }
 
+// MaxInFlight returns the effective per-worker in-flight cap, resolving the
+// 0 sentinel to defaultMaxInFlight. Read-only; safe to call concurrently.
+// Exposed so the busy-status projection and scheduler can derive thresholds
+// from the configured cap rather than a hardcode.
+func (h *WSHub) MaxInFlight() int {
+	return h.maxInFlightFor()
+}
+
 // SetMaxConnections overrides the total worker WebSocket connection cap. A
 // value <= 0 falls back to defaultMaxConnections. The semaphore is created
 // lazily on first use so NewWSHub stays allocation-free when the cap is never
@@ -587,6 +595,7 @@ func (h *WSHub) QueueStats() QueueStatsResponse {
 			WorkerID:         c.id,
 			QueueDepth:       depth,
 			InFlight:         inFlight,
+			MaxInFlight:      int64(h.maxInFlightFor()),
 			AvgWaitMs:        avgWait,
 			Rejected429Total: rej429,
 			Rejected504Total: rej504,

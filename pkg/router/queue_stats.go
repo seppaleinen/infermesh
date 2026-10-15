@@ -16,6 +16,7 @@ type WorkerQueueStats struct {
 	WorkerID         string  `json:"worker_id"`
 	QueueDepth       int64   `json:"queue_depth"`
 	InFlight         int64   `json:"in_flight"`
+	MaxInFlight      int64   `json:"max_in_flight"` // configured per-worker cap (0 = unknown)
 	AvgWaitMs        float64 `json:"avg_wait_ms"`
 	Rejected429Total int64   `json:"rejected_429_total"`
 	Rejected504Total int64   `json:"rejected_504_total"`
