@@ -80,6 +80,10 @@ type WSHub struct {
 	// non-streaming + model-load). 0 means defaultMaxInFlight.
 	maxInFlight int
 
+	// workerMaxInFlight holds per-worker concurrency caps from capabilities.
+	// A value of 0 means "use hub default". Protected by mu.
+	workerMaxInFlight map[string]int
+
 	// maxConnections caps the total number of concurrent worker WebSocket
 	// connections (semaphore). 0 means defaultMaxConnections. Excess
 	// handshakes are rejected with a 503 before any per-connection state is
@@ -154,20 +158,21 @@ func (c *wsConnection) releaseSlot() {
 // registry. reg may be nil (events are then dropped).
 func NewWSHub(reg registry.Registry, log *slog.Logger) *WSHub {
 	return &WSHub{
-		log:              log,
-		reg:              reg,
-		conns:            make(map[string]*wsConnection),
-		relaySendCh:      make(chan []byte, wsutil.SendQueueSize),
-		relayDone:        make(chan struct{}),
-		relayPending:     make(map[string]*pendingCall),
-		relayInFlight:    make(map[string]int64),
-		relayRejected429: make(map[string]int64),
-		relayRejected504: make(map[string]int64),
-		qm:               newQueueMetrics(),
-		writeTimeout:     wsutil.WriteTimeout,
-		sendQueueSize:    wsutil.SendQueueSize,
-		maxInFlight:      defaultMaxInFlight,
-		maxConnections:   defaultMaxConnections,
+		log:                log,
+		reg:                reg,
+		conns:              make(map[string]*wsConnection),
+		relaySendCh:        make(chan []byte, wsutil.SendQueueSize),
+		relayDone:          make(chan struct{}),
+		relayPending:       make(map[string]*pendingCall),
+		relayInFlight:      make(map[string]int64),
+		relayRejected429:   make(map[string]int64),
+		relayRejected504:   make(map[string]int64),
+		qm:                 newQueueMetrics(),
+		writeTimeout:       wsutil.WriteTimeout,
+		sendQueueSize:      wsutil.SendQueueSize,
+		maxInFlight:        defaultMaxInFlight,
+		maxConnections:     defaultMaxConnections,
+		workerMaxInFlight:  make(map[string]int),
 	}
 }
 
@@ -181,8 +186,26 @@ func (h *WSHub) SetMaxInFlight(n int) {
 	h.maxInFlight = n
 }
 
+// SetWorkerMaxInFlight sets the concurrency cap for a specific worker.
+// A value <= 0 removes the override (falls back to hub default).
+func (h *WSHub) SetWorkerMaxInFlight(workerID string, cap int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if cap <= 0 {
+		delete(h.workerMaxInFlight, workerID)
+	} else {
+		h.workerMaxInFlight[workerID] = cap
+	}
+}
+
 // maxInFlightFor returns the effective cap for a worker connection.
-func (h *WSHub) maxInFlightFor() int {
+func (h *WSHub) maxInFlightFor(workerID string) int {
+	h.mu.RLock()
+	wcap, ok := h.workerMaxInFlight[workerID]
+	h.mu.RUnlock()
+	if ok && wcap > 0 {
+		return wcap
+	}
 	if h.maxInFlight <= 0 {
 		return defaultMaxInFlight
 	}
@@ -194,7 +217,7 @@ func (h *WSHub) maxInFlightFor() int {
 // Exposed so the busy-status projection and scheduler can derive thresholds
 // from the configured cap rather than a hardcode.
 func (h *WSHub) MaxInFlight() int {
-	return h.maxInFlightFor()
+	return h.maxInFlightFor("")
 }
 
 // SetMaxConnections overrides the total worker WebSocket connection cap. A
@@ -319,7 +342,7 @@ func (h *WSHub) registerRelayCall(id string, respCh chan protocol.Message, errCh
 	}
 	h.relayPendingMu.Lock()
 	defer h.relayPendingMu.Unlock()
-	if h.relayInFlight[workerID] >= int64(h.maxInFlightFor()) {
+	if h.relayInFlight[workerID] >= int64(h.maxInFlightFor(workerID)) {
 		h.relayRejected429[workerID]++
 		return nil, errRateLimited
 	}
@@ -386,7 +409,7 @@ func (h *WSHub) registerRelayStream(id string, chunkCh chan StreamEvent, errCh c
 	}
 	h.relayPendingMu.Lock()
 	defer h.relayPendingMu.Unlock()
-	if h.relayInFlight[workerID] >= int64(h.maxInFlightFor()) {
+	if h.relayInFlight[workerID] >= int64(h.maxInFlightFor(workerID)) {
 		h.relayRejected429[workerID]++
 		return nil, errRateLimited
 	}
@@ -424,9 +447,9 @@ func (h *WSHub) isRateLimited(workerID string) bool {
 	c, ok := h.conns[workerID]
 	h.mu.RUnlock()
 	if ok {
-		return c.workerInFlight() >= int64(h.maxInFlightFor())
+		return c.workerInFlight() >= int64(h.maxInFlightFor(workerID))
 	}
-	return h.relayInFlightAt(workerID) >= int64(h.maxInFlightFor())
+	return h.relayInFlightAt(workerID) >= int64(h.maxInFlightFor(workerID))
 }
 
 // relayInFlightAt returns the current in-flight count for worker id in relay
@@ -595,7 +618,7 @@ func (h *WSHub) QueueStats() QueueStatsResponse {
 			WorkerID:         c.id,
 			QueueDepth:       depth,
 			InFlight:         inFlight,
-			MaxInFlight:      int64(h.maxInFlightFor()),
+			MaxInFlight:      int64(h.maxInFlightFor(c.id)),
 			AvgWaitMs:        avgWait,
 			Rejected429Total: rej429,
 			Rejected504Total: rej504,
@@ -965,6 +988,10 @@ func (h *WSHub) dispatch(c *wsConnection, msg protocol.Message) {
 		w.Transport = protocol.TransportWS
 		c.setWorker(w)
 		h.bridge(protocol.DiscoveryEvent{Type: protocol.EventUpdated, Worker: w})
+		// Sync per-worker concurrency cap
+		if p.Capabilities.ConcurrencyCap > 0 {
+			h.SetWorkerMaxInFlight(c.id, p.Capabilities.ConcurrencyCap)
+		}
 
 	case protocol.MsgPing:
 		// Keepalive echo from the worker. lastRead is refreshed by the
@@ -1266,7 +1293,7 @@ func (c *wsConnection) addPending(pc *pendingCall) error {
 	if _, exists := c.pending[pc.id]; exists {
 		return fmt.Errorf("duplicate pending message id %s", pc.id)
 	}
-	if int64(len(c.pending)) >= int64(c.hub.maxInFlightFor()) {
+	if int64(len(c.pending)) >= int64(c.hub.maxInFlightFor(c.id)) {
 		c.hub.recordRejectionLocked(c)
 		return errRateLimited
 	}

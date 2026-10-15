@@ -193,7 +193,7 @@ func (b *OpenAICompatibleBackend) completeChatInternal(ctx context.Context, mode
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return ChatResponse{}, fmt.Errorf("backend returned %d: %s", resp.StatusCode, string(body))
+		return ChatResponse{}, &BackendHTTPError{StatusCode: resp.StatusCode, Message: string(body)}
 	}
 
 	var chatResp ChatResponse
@@ -349,7 +349,7 @@ func (b *OpenAICompatibleBackend) CompleteCompletions(ctx context.Context, model
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return CompletionResponse{}, fmt.Errorf("backend returned %d: %s", resp.StatusCode, string(body))
+		return CompletionResponse{}, &BackendHTTPError{StatusCode: resp.StatusCode, Message: string(body)}
 	}
 
 	var compResp CompletionResponse

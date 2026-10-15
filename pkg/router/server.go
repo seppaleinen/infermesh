@@ -1732,6 +1732,14 @@ func (s *Server) toSchedulerWorker(w protocol.WorkerInfo, load WorkerQueueStats,
 			sw.AvgLatencyMS = load.AvgWaitMs
 		}
 	}
+	// If the worker reports a concurrency cap, use it for scheduler scoring.
+	if w.Capabilities.ConcurrencyCap > 0 {
+		sw.MaxInFlight = w.Capabilities.ConcurrencyCap
+	}
+	// Override with hub-side cap if set (from capabilities update or CLI flag).
+	if haveLoad && load.MaxInFlight > 0 {
+		sw.MaxInFlight = int(load.MaxInFlight)
+	}
 	return sw
 }
 

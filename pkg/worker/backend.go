@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
 )
@@ -24,6 +25,16 @@ type Backend interface {
 	// Streaming methods
 	StreamChat(ctx context.Context, model string, req ChatRequest) (<-chan ChatChunk, <-chan error)
 	StreamCompletions(ctx context.Context, model string, req CompletionRequest) (<-chan CompletionChunk, <-chan error)
+}
+
+// BackendHTTPError carries an HTTP status code from a backend response.
+type BackendHTTPError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *BackendHTTPError) Error() string {
+	return fmt.Sprintf("backend returned %d: %s", e.StatusCode, e.Message)
 }
 
 // Metrics represents backend performance metrics.

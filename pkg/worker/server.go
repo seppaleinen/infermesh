@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -31,6 +32,10 @@ type Server struct {
 	config        security.Config
 	backend       Backend // Backend adapter for model inference
 	healthTracker *ModelHealthTracker
+
+	// concurrencyEstimator tracks backend 429s/latency to infer per-worker cap.
+	// Nil when no backend is configured.
+	concurrencyEstimator *ConcurrencyEstimator
 
 	// modelsMu protects concurrent access to the models field. The refresh
 	// goroutine (SetModels/GetModels) and HTTP handlers (handleCapabilities,
@@ -213,6 +218,11 @@ func NewServer(log *slog.Logger, addr string, cfg security.Config) *Server {
 func (s *Server) SetBackend(backend Backend, model string) {
 	s.backend = NewBackendAdapter(backend, model)
 
+	// Initialize concurrency estimator
+	if e := NewConcurrencyEstimator("/tmp/infermesh-concurrency-cache.json"); e != nil {
+		s.concurrencyEstimator = e
+	}
+
 	// Try to dynamically discover models from the backend
 	if discoveredModels, err := backend.ListModels(); err == nil && len(discoveredModels) > 0 {
 		s.log.Info("dynamically discovered models from backend",
@@ -358,6 +368,10 @@ func (s *Server) Start(ctx context.Context) error {
 			_ = s.server.Shutdown(context.Background())
 		}()
 
+		if s.concurrencyEstimator != nil {
+			go s.concurrencyEstimator.Start(ctx)
+		}
+
 		return s.server.ServeTLS(listener, "", "")
 	}
 
@@ -379,6 +393,10 @@ func (s *Server) Start(ctx context.Context) error {
 		<-ctx.Done()
 		_ = s.server.Shutdown(context.Background())
 	}()
+
+	if s.concurrencyEstimator != nil {
+		go s.concurrencyEstimator.Start(ctx)
+	}
 
 	return s.server.Serve(listener)
 }
@@ -445,6 +463,10 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	// CapabilityCache hydrates them and the scheduler can honour them.
 	s.ApplyModelFilters(&worker.Capabilities)
 
+	if s.concurrencyEstimator != nil {
+		worker.Capabilities.ConcurrencyCap = s.concurrencyEstimator.Cap()
+	}
+
 	if err := json.NewEncoder(w).Encode(worker); err != nil {
 		s.log.Error("failed to encode capabilities", "error", err)
 		http.Error(w, "failed to encode capabilities", http.StatusInternalServerError)
@@ -487,6 +509,9 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Check circuit breaker state
 	if !s.backend.IsHealthy() {
+		if s.concurrencyEstimator != nil {
+			s.concurrencyEstimator.RecordCircuitOpen()
+		}
 		s.log.Error("backend is unhealthy")
 		http.Error(w, "backend is unhealthy", http.StatusServiceUnavailable)
 		return
@@ -497,7 +522,20 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Non-streaming: return the full response as application/json.
 	if !req.Stream {
 		w.Header().Set("Content-Type", "application/json")
+		start := time.Now()
 		chatResp, err := s.backend.CompleteChat(ctx, req.Model, req)
+		if s.concurrencyEstimator != nil {
+			if err != nil {
+				var bhErr *BackendHTTPError
+				if errors.As(err, &bhErr) {
+					s.concurrencyEstimator.RecordRequest(start, bhErr.StatusCode)
+				} else {
+					s.concurrencyEstimator.RecordRequest(start, 0)
+				}
+			} else {
+				s.concurrencyEstimator.RecordRequest(start, http.StatusOK)
+			}
+		}
 		if err != nil {
 			s.log.Error("backend error", "error", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -576,6 +614,9 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 
 	// Check circuit breaker state
 	if !s.backend.IsHealthy() {
+		if s.concurrencyEstimator != nil {
+			s.concurrencyEstimator.RecordCircuitOpen()
+		}
 		s.log.Error("backend is unhealthy")
 		http.Error(w, "backend is unhealthy", http.StatusServiceUnavailable)
 		return
@@ -586,7 +627,20 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	// Non-streaming: return the full response as application/json.
 	if !req.Stream {
 		w.Header().Set("Content-Type", "application/json")
+		start := time.Now()
 		compResp, err := s.backend.CompleteCompletions(ctx, req.Model, req)
+		if s.concurrencyEstimator != nil {
+			if err != nil {
+				var bhErr *BackendHTTPError
+				if errors.As(err, &bhErr) {
+					s.concurrencyEstimator.RecordRequest(start, bhErr.StatusCode)
+				} else {
+					s.concurrencyEstimator.RecordRequest(start, 0)
+				}
+			} else {
+				s.concurrencyEstimator.RecordRequest(start, http.StatusOK)
+			}
+		}
 		if err != nil {
 			s.log.Error("backend error", "error", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -747,6 +801,12 @@ func (s *Server) StartHealthCheckLoop(ctx context.Context, interval time.Duratio
 				// and are not part of the health check path.
 				s.healthTracker.RecordHealthCheck(Healthy, ModelMetrics{})
 				s.log.Info("backend health check passed")
+			}
+			state := s.backend.GetCircuitState()
+			if state == CircuitOpen && s.concurrencyEstimator != nil {
+				s.concurrencyEstimator.RecordCircuitOpen()
+			} else if state == CircuitClosed && s.concurrencyEstimator != nil {
+				s.concurrencyEstimator.RecordCircuitClosed()
 			}
 		}
 	}

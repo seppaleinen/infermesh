@@ -73,6 +73,12 @@ type Capabilities struct {
 	// serve. It applies only when AllowedModels is empty; when AllowedModels is
 	// non-empty the whitelist governs and this field is ignored.
 	ExcludedModels []string `json:"excluded_models,omitempty"`
+
+	// ConcurrencyCap is the maximum number of concurrent inference calls
+	// this worker's backend can handle simultaneously. Derived from observed
+	// backend behavior (429s, latency spikes). 0 means unknown (fallback
+	// to router default of 4).
+	ConcurrencyCap int `json:"concurrency_cap,omitempty"`
 }
 
 // WorkerInfo is the canonical payload carried in mDNS TXT records.
