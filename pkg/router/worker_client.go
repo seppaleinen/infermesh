@@ -89,7 +89,7 @@ func truncate(s string, max int) string {
 // mode; when nil the client behaves exactly as before (plain HTTP, no TLS).
 type httpWorkerClient struct {
 	log          *slog.Logger
-	prodClient  *http.Client // non-nil in prod mode
+	prodClient   *http.Client // non-nil in prod mode
 	streamClient *http.Client // used only for Stream; Timeout: 0 (router idle timeout governs)
 }
 

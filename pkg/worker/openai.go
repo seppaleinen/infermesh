@@ -86,6 +86,7 @@ type OpenAICompatibleBackend struct {
 	client         *http.Client // used for non-streaming calls (CompleteChat, CompleteCompletions, LoadModel, health checks, ListModels)
 	streamClient   *http.Client // used ONLY for streaming calls (StreamChat, StreamCompletions); Timeout: 0 (idle timeout applied via context)
 	circuitBreaker *CircuitBreaker
+	maxTokens      int // default max_tokens to send when request omits it; 0 = no default
 }
 
 // defaultBackendTimeout is the HTTP client timeout used when a caller does
@@ -100,7 +101,10 @@ const defaultBackendTimeout = 120 * time.Second
 // negative value falls back to defaultBackendTimeout (120s). The timeout
 // applies as an absolute deadline for non-streaming calls, and as an idle
 // timeout (reset on activity) for streaming calls.
-func NewOpenAICompatibleBackend(baseURL, apiKey string, timeout time.Duration) *OpenAICompatibleBackend {
+// maxTokens is the default max_tokens to send to the backend when the
+// incoming request omits it. Zero means "no default" (the backend will
+// use its own built-in default).
+func NewOpenAICompatibleBackend(baseURL, apiKey string, timeout time.Duration, maxTokens int) *OpenAICompatibleBackend {
 	if timeout <= 0 {
 		timeout = defaultBackendTimeout
 	}
@@ -116,6 +120,7 @@ func NewOpenAICompatibleBackend(baseURL, apiKey string, timeout time.Duration) *
 			Timeout: 0,
 		},
 		circuitBreaker: NewCircuitBreaker(5, 30*time.Second),
+		maxTokens:      maxTokens,
 	}
 }
 
@@ -165,10 +170,15 @@ func (b *OpenAICompatibleBackend) CompleteChat(ctx context.Context, model string
 func (b *OpenAICompatibleBackend) completeChatInternal(ctx context.Context, model string, req ChatRequest) (ChatResponse, error) {
 	url := b.baseURL + "/v1/chat/completions"
 
-	// Set default max_tokens if not specified (LM Studio requires >= 1)
+	// Set default max_tokens if not specified. Use backend-configured default,
+	// falling back to 100 for backward compatibility with LM Studio.
 	maxTokens := req.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = 100 // reasonable default
+		if b.maxTokens > 0 {
+			maxTokens = b.maxTokens
+		} else {
+			maxTokens = 100 // fallback for LM Studio compatibility
+		}
 	}
 
 	// Convert ChatRequest to backend-specific request
@@ -313,10 +323,15 @@ func (b *OpenAICompatibleBackend) StreamChat(ctx context.Context, model string, 
 		req.Stream = true
 		url := b.baseURL + "/v1/chat/completions"
 
-		// Set default max_tokens if not specified (LM Studio requires >= 1)
+		// Set default max_tokens if not specified. Use backend-configured default,
+		// falling back to 100 for backward compatibility with LM Studio.
 		maxTokens := req.MaxTokens
 		if maxTokens <= 0 {
-			maxTokens = 100 // reasonable default
+			if b.maxTokens > 0 {
+				maxTokens = b.maxTokens
+			} else {
+				maxTokens = 100 // fallback for LM Studio compatibility
+			}
 		}
 
 		// Convert ChatRequest to backend-specific request
@@ -426,10 +441,15 @@ func (b *OpenAICompatibleBackend) StreamChat(ctx context.Context, model string, 
 func (b *OpenAICompatibleBackend) CompleteCompletions(ctx context.Context, model string, req CompletionRequest) (CompletionResponse, error) {
 	url := b.baseURL + "/v1/completions"
 
-	// Set default max_tokens if not specified
+	// Set default max_tokens if not specified. Use backend-configured default,
+	// falling back to 100 for backward compatibility.
 	maxTokens := req.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = 100 // reasonable default
+		if b.maxTokens > 0 {
+			maxTokens = b.maxTokens
+		} else {
+			maxTokens = 100 // fallback for backward compatibility
+		}
 	}
 
 	backendReq := map[string]interface{}{
@@ -500,10 +520,15 @@ func (b *OpenAICompatibleBackend) StreamCompletions(ctx context.Context, model s
 		req.Stream = true
 		url := b.baseURL + "/v1/completions"
 
-		// Set default max_tokens if not specified
+		// Set default max_tokens if not specified. Use backend-configured default,
+		// falling back to 100 for backward compatibility.
 		maxTokens := req.MaxTokens
 		if maxTokens <= 0 {
-			maxTokens = 100 // reasonable default
+			if b.maxTokens > 0 {
+				maxTokens = b.maxTokens
+			} else {
+				maxTokens = 100 // fallback for backward compatibility
+			}
 		}
 
 		backendReq := map[string]interface{}{
@@ -682,9 +707,11 @@ type LlamaCppBackend struct {
 // NewLlamaCppBackend creates a new llama.cpp backend.
 // timeout is the HTTP client timeout for backend requests; a zero or
 // negative value falls back to the default 30s.
-func NewLlamaCppBackend(endpoint string, contextSize, threads, gpuLayers int, timeout time.Duration) *LlamaCppBackend {
+// maxTokens is the default max_tokens to send to the backend when the
+// incoming request omits it. Zero means "no default".
+func NewLlamaCppBackend(endpoint string, contextSize, threads, gpuLayers int, timeout time.Duration, maxTokens int) *LlamaCppBackend {
 	return &LlamaCppBackend{
-		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(endpoint, "", timeout),
+		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(endpoint, "", timeout, maxTokens),
 		contextSize:             contextSize,
 		threads:                 threads,
 		gpuLayers:               gpuLayers,
@@ -705,9 +732,11 @@ type OllamaBackend struct {
 // NewOllamaBackend creates a new Ollama backend.
 // timeout is the HTTP client timeout for backend requests; a zero or
 // negative value falls back to the default 30s.
-func NewOllamaBackend(endpoint, model string, timeout time.Duration) *OllamaBackend {
+// maxTokens is the default max_tokens to send to the backend when the
+// incoming request omits it. Zero means "no default".
+func NewOllamaBackend(endpoint, model string, timeout time.Duration, maxTokens int) *OllamaBackend {
 	return &OllamaBackend{
-		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(endpoint, "", timeout),
+		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(endpoint, "", timeout, maxTokens),
 		model:                   model,
 	}
 }
@@ -726,9 +755,11 @@ type LMStudioBackend struct {
 // NewLMStudioBackend creates a new LM Studio backend.
 // timeout is the HTTP client timeout for backend requests; a zero or
 // negative value falls back to the default 30s.
-func NewLMStudioBackend(endpoint, modelPath string, timeout time.Duration) *LMStudioBackend {
+// maxTokens is the default max_tokens to send to the backend when the
+// incoming request omits it. Zero means "no default".
+func NewLMStudioBackend(endpoint, modelPath string, timeout time.Duration, maxTokens int) *LMStudioBackend {
 	return &LMStudioBackend{
-		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(endpoint, "", timeout),
+		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(endpoint, "", timeout, maxTokens),
 		modelPath:               modelPath,
 	}
 }
@@ -747,9 +778,11 @@ type VLLMBackend struct {
 // NewVLLMBackend creates a new vLLM backend.
 // timeout is the HTTP client timeout for backend requests; a zero or
 // negative value falls back to the default 30s.
-func NewVLLMBackend(endpoint, modelName string, timeout time.Duration) *VLLMBackend {
+// maxTokens is the default max_tokens to send to the backend when the
+// incoming request omits it. Zero means "no default".
+func NewVLLMBackend(endpoint, modelName string, timeout time.Duration, maxTokens int) *VLLMBackend {
 	return &VLLMBackend{
-		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(endpoint, "", timeout),
+		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(endpoint, "", timeout, maxTokens),
 		modelName:               modelName,
 	}
 }
@@ -774,9 +807,13 @@ type CustomBackend struct {
 // baseURL: The base URL of the OpenAI-compatible API endpoint
 // apiKey: The API key for authentication (if required)
 // providerName: A human-readable name for the provider (e.g., "llama-swap", "localai")
-func NewCustomBackend(baseURL, apiKey, providerName string, timeout time.Duration) *CustomBackend {
+// timeout is the HTTP client timeout for backend requests; a zero or
+// negative value falls back to the default 30s.
+// maxTokens is the default max_tokens to send to the backend when the
+// incoming request omits it. Zero means "no default".
+func NewCustomBackend(baseURL, apiKey, providerName string, timeout time.Duration, maxTokens int) *CustomBackend {
 	return &CustomBackend{
-		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(baseURL, apiKey, timeout),
+		OpenAICompatibleBackend: *NewOpenAICompatibleBackend(baseURL, apiKey, timeout, maxTokens),
 		providerName:            providerName,
 	}
 }

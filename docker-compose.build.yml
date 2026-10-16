@@ -1,0 +1,104 @@
+# InferMesh — build-from-source Docker Compose.
+#
+# Builds router, worker, and relay binaries from the local source tree
+# using docker/Dockerfile. No external image dependency — works on a fresh
+# clone with `docker compose -f docker-compose.build.yml up`.
+#
+# DEFAULT config works out of the box:
+#   docker compose -f docker-compose.build.yml build
+#   docker compose -f docker-compose.build.yml up -d
+#
+# GPU workers: add `--profile gpu` for NVIDIA runtime.
+# Relay:       add `--profile relay` for the WebSocket broker.
+
+version: "3.9"
+
+services:
+  router:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: router
+    container_name: infermesh-router
+    ports:
+      - "8080:8080"
+    environment:
+      ROUTER_ARGS: "--dev-mode"
+    restart: unless-stopped
+    depends_on: []
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: worker
+    container_name: infermesh-worker
+    ports:
+      - "8081:8081"
+    environment:
+      WORKER_ARGS: "--dev-mode --router http://router:8080 --backend lmstudio --model-path ${WORKER_MODEL_PATH:-}"
+    restart: unless-stopped
+    depends_on:
+      - router
+
+  # ---------------------------------------------------------------------------
+  # GPU worker (opt-in via `--profile gpu`).
+  #
+  # Requires the NVIDIA container runtime on the host. The inference backend
+  # (llama-cpp / ollama / vLLM) must be reachable from inside the container —
+  # either run it inside the container or point --backend-url at a host-side
+  # backend (e.g. http://host.docker.internal:11434).
+  #
+  # Usage: docker compose -f docker-compose.build.yml --profile gpu up -d
+  # ---------------------------------------------------------------------------
+  worker-gpu:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: worker
+    container_name: infermesh-worker-gpu
+    ports:
+      - "8082:8081"
+    environment:
+      WORKER_ARGS: "--dev-mode --router http://router:8080 --backend ollama --model-path ${WORKER_MODEL_PATH:-} --max-tokens ${WORKER_MAX_TOKENS:-4096}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    depends_on:
+      - router
+    profiles:
+      - gpu
+
+  # ---------------------------------------------------------------------------
+  # Relay broker (opt-in via `--profile relay`).
+  #
+  # The relay is a WebSocket broker that bridges workers and routers for
+  # hosts that cannot accept inbound connections. Workers connect OUTBOUND
+  # to the relay (no inbound port needed on the worker host). The router
+  # also connects outbound to the relay. The relay routes messages between
+  # them using the worker_id field in the message envelope.
+  #
+  # Workers on outbound-only hosts use:
+  #   --relay-url ws://relay:8090/v1/connect
+  # instead of --router http://router:8080.
+  #
+  # Usage: docker compose -f docker-compose.build.yml --profile relay up -d
+  # ---------------------------------------------------------------------------
+  relay:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: relay
+    container_name: infermesh-relay
+    ports:
+      - "8090:8090"
+    environment:
+      RELAY_ARGS: "--dev-mode --listen :8090"
+    restart: unless-stopped
+    profiles:
+      - relay

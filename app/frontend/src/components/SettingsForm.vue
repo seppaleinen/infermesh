@@ -189,6 +189,7 @@ const dirty = computed(() => {
     'worker_backend',
     'worker_model_path',
     'worker_port',
+    'worker_max_tokens',
     'relay_url',
     'dev_mode',
     'worker_enable_health_checks',
@@ -668,6 +669,19 @@ onMounted(() => {
               :true-value="true"
               :false-value="false"
               :disabled="saving"
+            />
+          </div>
+
+          <div class="field">
+            <label for="worker_max_tokens">Default max tokens</label>
+            <input
+              id="worker_max_tokens"
+              type="number"
+              min="1"
+              max="100000"
+              v-model.number="settings.worker_max_tokens"
+              :disabled="saving"
+              placeholder="4096"
             />
           </div>
         </div>

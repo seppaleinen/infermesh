@@ -42,7 +42,7 @@ func TestOpenAICompatibleBackendStreamChatIdleTimeoutSlowActive(t *testing.T) {
 	}))
 	defer server.Close()
 
-	backend := NewOpenAICompatibleBackend(server.URL, "", 300*time.Millisecond)
+	backend := NewOpenAICompatibleBackend(server.URL, "", 300*time.Millisecond, 0)
 	req := ChatRequest{
 		Model:       "test",
 		Messages:    []ChatMessage{{Role: "user", Content: "hi"}},
@@ -112,7 +112,7 @@ func TestOpenAICompatibleBackendStreamChatIdleTimeoutSilentMidStream(t *testing.
 	}))
 	defer server.Close()
 
-	backend := NewOpenAICompatibleBackend(server.URL, "", 300*time.Millisecond)
+	backend := NewOpenAICompatibleBackend(server.URL, "", 300*time.Millisecond, 0)
 	req := ChatRequest{
 		Model:       "test",
 		Messages:    []ChatMessage{{Role: "user", Content: "hi"}},
@@ -172,7 +172,7 @@ func TestOpenAICompatibleBackendStreamChatIdleTimeoutNeverResponds(t *testing.T)
 	}))
 	defer server.Close()
 
-	backend := NewOpenAICompatibleBackend(server.URL, "", 200*time.Millisecond)
+	backend := NewOpenAICompatibleBackend(server.URL, "", 200*time.Millisecond, 0)
 	req := ChatRequest{
 		Model:       "test",
 		Messages:    []ChatMessage{{Role: "user", Content: "hi"}},

@@ -9,33 +9,33 @@ import (
 )
 
 const (
-	defaultInitCap          = 4
-	minCap                  = 1
-	windowDuration          = 10 * time.Second
-	persistInterval         = 30 * time.Second
-	latencySpikeMultiplier  = 2.0
-	http429Threshold        = 2
+	defaultInitCap         = 4
+	minCap                 = 1
+	windowDuration         = 10 * time.Second
+	persistInterval        = 30 * time.Second
+	latencySpikeMultiplier = 2.0
+	http429Threshold       = 2
 )
 
 type ConcurrencyEstimator struct {
-	mu               sync.Mutex
-	cap              int
-	window429        []time.Time
-	latencies        []time.Duration
-	baselineLatency  time.Duration
-	lastCapChanged   time.Time
-	changedCh        chan struct{}
-	persistPath      string
-	persistTimer     *time.Timer
+	mu              sync.Mutex
+	cap             int
+	window429       []time.Time
+	latencies       []time.Duration
+	baselineLatency time.Duration
+	lastCapChanged  time.Time
+	changedCh       chan struct{}
+	persistPath     string
+	persistTimer    *time.Timer
 }
 
 func NewConcurrencyEstimator(persistPath string) *ConcurrencyEstimator {
 	e := &ConcurrencyEstimator{
-		cap:          defaultInitCap,
-		window429:    make([]time.Time, 0),
-		latencies:    make([]time.Duration, 0),
-		changedCh:    make(chan struct{}, 1),
-		persistPath:  persistPath,
+		cap:         defaultInitCap,
+		window429:   make([]time.Time, 0),
+		latencies:   make([]time.Duration, 0),
+		changedCh:   make(chan struct{}, 1),
+		persistPath: persistPath,
 	}
 	if c := e.LoadPersisted(persistPath); c > 0 {
 		if c < minCap {
