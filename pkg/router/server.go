@@ -160,7 +160,7 @@ type Server struct {
 	busyLoadSnapshot func() map[string]WorkerQueueStats
 
 	// proxyTimeout bounds how long proxyStream waits for a worker response
-	// before emitting a 504. Defaults to 30s; tests override it to drive the
+	// before emitting a 504. Defaults to 120s; tests override it to drive the
 	// 504 path without sleeping. See SetProxyTimeout.
 	proxyTimeout time.Duration
 
@@ -311,6 +311,7 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 	// Default retry/failover configuration.
 	srv.maxAttempts = 3
 	srv.retryBudget = 60 * time.Second
+	srv.proxyTimeout = 120 * time.Second
 	srv.modelLoadTimeout = 120 * time.Second
 	srv.clientFactory = srv.clientFor
 	return srv
