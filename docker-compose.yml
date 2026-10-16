@@ -1,26 +1,28 @@
 # InferMesh — local / homelab inference pool via Docker Compose.
 #
-# Consumes the PUBLISHED images from ghcr.io/seppaleinen/infermesh.
-# Both images default to --dev-mode (no auth, loopback-only).
+# Works out of the box with pre-built images:
+#   docker compose up -d
 #
-# DEFAULT config works out of the box: `docker compose up -d`.
-#   - router:  ghcr.io/seppaleinen/infermesh/router:latest  (--dev-mode)
-#   - worker:  ghcr.io/seppaleinen/infermesh/worker:latest  (--dev-mode
-#               --router http://router:8080 --backend lmstudio ...)
-#
-# Override flags at runtime via ROUTER_ARGS / WORKER_ARGS / RELAY_ARGS (the
-# images' CMD runs the binary with $ROUTER_ARGS / $WORKER_ARGS / $RELAY_ARGS).
-# See the commented production example below for mTLS.
+# Build from source (no pre-built image needed):
+#   docker compose --build up -d
 #
 # GPU workers: add `--profile gpu` to start the worker with the NVIDIA runtime.
 # Relay:       add `--profile relay` to start the relay broker for outbound-only
 #               workers that can't accept inbound connections.
+#
+# Override flags at runtime via ROUTER_ARGS / WORKER_ARGS / RELAY_ARGS (the
+# images' CMD runs the binary with $ROUTER_ARGS / $WORKER_ARGS / $RELAY_ARGS).
+# See the commented production example below for mTLS.
 
 version: "3.9"
 
 services:
   router:
     image: ghcr.io/seppaleinen/infermesh/router:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: router
     container_name: infermesh-router
     ports:
       - "8080:8080"
@@ -32,6 +34,10 @@ services:
 
   worker:
     image: ghcr.io/seppaleinen/infermesh/worker:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: worker
     container_name: infermesh-worker
     ports:
       - "8081:8081"
@@ -66,6 +72,10 @@ services:
   # ---------------------------------------------------------------------------
   worker-gpu:
     image: ghcr.io/seppaleinen/infermesh/worker:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: worker
     container_name: infermesh-worker-gpu
     ports:
       - "8082:8081"
@@ -101,6 +111,10 @@ services:
   # ---------------------------------------------------------------------------
   relay:
     image: ghcr.io/seppaleinen/infermesh/relay:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: relay
     container_name: infermesh-relay
     ports:
       - "8090:8090"
