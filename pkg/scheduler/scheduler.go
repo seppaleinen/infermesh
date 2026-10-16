@@ -84,6 +84,17 @@ type WeightedScorer struct {
 	GPUUtilWeight    float64 // weight for GPU utilization (inverted)
 	QueueDepthWeight float64 // weight for queue load: queue depth AND in-flight ratio (inverted)
 	LatencyWeight    float64 // weight for latency (inverted)
+	// LoadedModelBonusWeight is the bonus weight for workers with the model
+	// already loaded in VRAM. When > 0, unloaded workers are scored (with a
+	// penalty) instead of being rejected. When 0 (default), unloaded workers
+	// are rejected as before (backward compatible).
+	LoadedModelBonusWeight float64
+	// ColdLoadPenaltyWeight is the penalty weight applied to workers that
+	// advertise the model but have not yet loaded it. Compounds with the
+	// loaded bonus: a loaded worker gets +LoadedModelBonusWeight, an unloaded
+	// worker gets -ColdLoadPenaltyWeight (with extra penalty when busy).
+	// When 0 (default), no cold-load penalty is applied.
+	ColdLoadPenaltyWeight float64
 	// maxQueueDepth is the queue depth treated as fully loaded when normalizing
 	// queue depth into the 0-1 score range.
 	maxQueueDepth int
@@ -111,18 +122,21 @@ func NewWeightedScorer() *WeightedScorer {
 // NewWeightedScorerWithConfig creates a new WeightedScorer with custom weights.
 // Weights should sum to 1.0 for predictable scoring, but this is not enforced.
 // maxQueueDepth <= 0 falls back to defaultMaxQueueDepth.
-func NewWeightedScorerWithConfig(quantMatch, vramFree, gpuUtil, queueDepth, latency float64, unavailableTTL time.Duration, maxQueueDepth int) *WeightedScorer {
+// loadedModelBonus and coldLoadPenalty default to 0 (backward compatible).
+func NewWeightedScorerWithConfig(quantMatch, vramFree, gpuUtil, queueDepth, latency, loadedModelBonus, coldLoadPenalty float64, unavailableTTL time.Duration, maxQueueDepth int) *WeightedScorer {
 	if maxQueueDepth <= 0 {
 		maxQueueDepth = defaultMaxQueueDepth
 	}
 	return &WeightedScorer{
-		QuantMatchWeight: quantMatch,
-		VRAMFreeWeight:   vramFree,
-		GPUUtilWeight:    gpuUtil,
-		QueueDepthWeight: queueDepth,
-		LatencyWeight:    latency,
-		maxQueueDepth:    maxQueueDepth,
-		unavailableTTL:   unavailableTTL,
+		QuantMatchWeight:      quantMatch,
+		VRAMFreeWeight:        vramFree,
+		GPUUtilWeight:         gpuUtil,
+		QueueDepthWeight:      queueDepth,
+		LatencyWeight:         latency,
+		LoadedModelBonusWeight: loadedModelBonus,
+		ColdLoadPenaltyWeight: coldLoadPenalty,
+		maxQueueDepth:         maxQueueDepth,
+		unavailableTTL:        unavailableTTL,
 	}
 }
 
@@ -165,8 +179,12 @@ func (s *WeightedScorer) Score(ctx context.Context, request ModelRequest, worker
 		return 0, fmt.Errorf("%w: model %s not found", ErrNoMatchingWorkers, request.Model)
 	}
 
-	// Check if model is loaded
-	if !model.Loaded {
+	// Check if model is loaded. When LoadedModelBonusWeight > 0, unloaded
+	// workers are scored with a penalty instead of being rejected, so the
+	// router can prefer loaded workers over advertisers that would need to
+	// cold-load. When both weights are 0 (default), behavior is identical
+	// to before: unloaded → error.
+	if !model.Loaded && s.LoadedModelBonusWeight == 0 && s.ColdLoadPenaltyWeight == 0 {
 		return 0, fmt.Errorf("%w: model %s not loaded", ErrNoMatchingWorkers, request.Model)
 	}
 
@@ -279,13 +297,39 @@ func (s *WeightedScorer) Score(ctx context.Context, request ModelRequest, worker
 		latencyScore = 0.5
 	}
 
+	// 6. Loaded-model bonus / cold-load penalty. When LoadedModelBonusWeight > 0,
+	// the scorer accepts unloaded candidates and differentiates them:
+	//   - Loaded model: loadedBonusScore = 1.0, coldLoadScore = 0.0.
+	//     Net contribution = +LoadedModelBonusWeight.
+	//   - Unloaded model: loadedBonusScore = 0.0, coldLoadScore = 1.0 (base
+	//     penalty) compounded by in-flight ratio when the worker is busy.
+	//     Net contribution = -ColdLoadPenaltyWeight * coldLoadScore.
+	// The spread between a loaded and unloaded worker is
+	// LoadedModelBonusWeight + ColdLoadPenaltyWeight.
+	loadedBonusScore := 0.0
+	coldLoadScore := 0.0
+	if model.Loaded {
+		loadedBonusScore = 1.0
+	} else {
+		// Base cold-load penalty = 1.0. Compound with in-flight ratio so a
+		// busy worker that would need to cold-load is penalised more than an
+		// idle one: coldLoadScore = 0.5 + 0.5 * inFlightRatio.
+		coldLoadScore = 0.5
+		if worker.InFlight >= 0 && worker.MaxInFlight > 0 {
+			inFlightRatio := math.Min(float64(worker.InFlight)/float64(worker.MaxInFlight), 1.0)
+			coldLoadScore = 0.5 + 0.5*inFlightRatio
+		}
+	}
+
 	// Calculate weighted sum: all components are 0-1 where higher is better.
-	// Formula: score = w1*quantMatch + w2*vramFree + w3*gpuUtilScore + w4*queueDepthScore + w5*latencyScore
+	// Formula: score = w1*quantMatch + w2*vramFree + w3*gpuUtilScore + w4*queueDepthScore + w5*latencyScore + w6*loadedBonus - w7*coldLoad
 	score := s.QuantMatchWeight*quantMatchScore +
 		s.VRAMFreeWeight*vramFreeRatio +
 		s.GPUUtilWeight*gpuUtilScore +
 		s.QueueDepthWeight*queueDepthScore +
-		s.LatencyWeight*latencyScore
+		s.LatencyWeight*latencyScore +
+		s.LoadedModelBonusWeight*loadedBonusScore -
+		s.ColdLoadPenaltyWeight*coldLoadScore
 
 	// Ensure score is in reasonable range (0-1)
 	if score < 0 {

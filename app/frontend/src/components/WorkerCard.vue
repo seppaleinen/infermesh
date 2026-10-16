@@ -11,6 +11,8 @@ export interface WorkerCardProps {
   lastSeenRel: string
   lastSeenAbsolute: string
   isLocal?: boolean
+  inFlight?: number
+  maxInFlight?: number
 }
 
 const props = defineProps<WorkerCardProps>()
@@ -31,6 +33,15 @@ const statusLabel = computed(() => props.status || 'unknown')
 
 const models = computed(() => props.loadedModels ?? [])
 const hasModels = computed(() => models.value.length > 0)
+
+// Concurrency ratio ("3/5 calls"). Hidden when the router reports no cap
+// (maxInFlight <= 0) so idle workers don't show a meaningless "0/0".
+const busyRatio = computed(() => {
+  if (props.inFlight !== undefined && props.maxInFlight !== undefined && props.maxInFlight > 0) {
+    return `${props.inFlight}/${props.maxInFlight} calls`
+  }
+  return null
+})
 </script>
 
 <template>
@@ -61,6 +72,12 @@ const hasModels = computed(() => models.value.length > 0)
             <span v-for="m in models" :key="m" class="model-chip">{{ m }}</span>
           </template>
           <template v-else>—</template>
+        </span>
+      </div>
+      <div v-if="busyRatio" class="worker-row">
+        <span class="worker-k">concurrency</span>
+        <span class="worker-v">
+          <span class="worker-mono">{{ busyRatio }}</span>
         </span>
       </div>
       <div class="worker-row">

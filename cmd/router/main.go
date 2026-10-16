@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -33,6 +34,7 @@ type RouterFlags struct {
 	RelayURL       string
 	MaxInFlight    int
 	MaxConnections int
+	WorkerMaxInFlight string
 
 	// Retry/failover settings for non-streaming requests.
 	MaxAttempts int
@@ -45,12 +47,14 @@ type RouterFlags struct {
 	ModelLoadTimeout time.Duration
 
 	// Weighted scorer settings. Zero values keep the built-in defaults (no-op).
-	ScorerQuantMatch    float64
-	ScorerVRAMFree      float64
-	ScorerGPUUtil       float64
-	ScorerQueueDepth    float64
-	ScorerLatency       float64
-	ScorerMaxQueueDepth int
+	ScorerQuantMatch      float64
+	ScorerVRAMFree        float64
+	ScorerGPUUtil         float64
+	ScorerQueueDepth      float64
+	ScorerLatency         float64
+	ScorerMaxQueueDepth   int
+	ScorerLoadedBonus     float64
+	ScorerColdLoadPenalty float64
 
 	// Auto routing: model="auto" alias maps prompt complexity to tiered
 	// model names. Empty values disable the alias (backward compatible).
@@ -149,6 +153,11 @@ func splitCSV(s string) []string {
 	return out
 }
 
+// parseInt parses a string as an int, returning an error on failure.
+func parseInt(s string) (int, error) {
+	return strconv.Atoi(s)
+}
+
 // registerRouterFlags registers the router flags on fs, binding values to f.
 // Shared by parseRouterFlags and routerFlagUsage.
 func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
@@ -163,6 +172,7 @@ func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
 	fs.StringVar(&f.RelayURL, "relay-url", "", "relay URL for outbound-only WebSocket connectivity (dev mode only)")
 	fs.IntVar(&f.MaxInFlight, "max-in-flight", 0, "max concurrent in-flight calls per worker (0 = default of 4); rejects excess with HTTP 429")
 	fs.IntVar(&f.MaxConnections, "max-connections", 0, "max concurrent worker WebSocket connections (0 = default of 256); rejects excess with a protocol error frame")
+	fs.StringVar(&f.WorkerMaxInFlight, "worker-max-in-flight", "", "comma-separated worker max-in-flight overrides (id=cap,id=cap; empty = none)")
 	fs.IntVar(&f.MaxAttempts, "max-attempts", 3, "max dispatch attempts per non-streaming request (1 disables failover)")
 	fs.DurationVar(&f.RetryBudget, "retry-budget", 60*time.Second, "global deadline across all failover attempts for a non-streaming request")
 	// Idle timeout for streaming proxy: abort if no chunk arrives for this
@@ -176,6 +186,8 @@ func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
 	fs.Float64Var(&f.ScorerQueueDepth, "scorer-queue-depth", 0, "weight for queue depth in weighted scoring (0 = keep default of 0.10)")
 	fs.Float64Var(&f.ScorerLatency, "scorer-latency", 0, "weight for latency in weighted scoring (0 = keep default of 0.10)")
 	fs.IntVar(&f.ScorerMaxQueueDepth, "scorer-max-queue-depth", 0, "queue depth treated as fully loaded when normalizing queue depth score (0 = keep default of 10)")
+	fs.Float64Var(&f.ScorerLoadedBonus, "scorer-loaded-bonus", 0, "bonus weight for workers with model already loaded in VRAM (0 = keep default, unloaded models rejected)")
+	fs.Float64Var(&f.ScorerColdLoadPenalty, "scorer-cold-load-penalty", 0, "penalty weight for cold-loading models (unloaded workers), compounded by busy ratio (0 = no penalty)")
 
 	// Auto routing: model="auto" alias. Empty tier models disable the alias.
 	fs.StringVar(&f.AutoTierSimple, "auto-tier-simple", "", "model name to route simple prompts to when model=\"auto\" (empty = alias disabled)")
@@ -303,8 +315,29 @@ func runRouter(args []string) int {
 	if f.MaxConnections > 0 {
 		srv.SetMaxConnections(f.MaxConnections)
 	}
+	// Apply per-worker max-in-flight overrides if any.
+	if f.WorkerMaxInFlight != "" {
+		for _, pair := range strings.Split(f.WorkerMaxInFlight, ",") {
+			parts := strings.SplitN(pair, "=", 2)
+			if len(parts) != 2 {
+				log.Warn("invalid worker-max-in-flight pair", "pair", pair)
+				continue
+			}
+			id := strings.TrimSpace(parts[0])
+			capStr := strings.TrimSpace(parts[1])
+			if id == "" {
+				continue
+			}
+			capVal, err := parseInt(capStr)
+			if err != nil {
+				log.Warn("invalid worker max-in-flight cap", "id", id, "cap", capStr, "error", err)
+				continue
+			}
+			srv.SetWorkerMaxInFlight(id, capVal)
+		}
+	}
 	// Zero values are no-ops that keep the built-in scorer defaults.
-	srv.SetScorerWeights(f.ScorerQuantMatch, f.ScorerVRAMFree, f.ScorerGPUUtil, f.ScorerQueueDepth, f.ScorerLatency, f.ScorerMaxQueueDepth)
+	srv.SetScorerWeights(f.ScorerQuantMatch, f.ScorerVRAMFree, f.ScorerGPUUtil, f.ScorerQueueDepth, f.ScorerLatency, f.ScorerLoadedBonus, f.ScorerColdLoadPenalty, f.ScorerMaxQueueDepth)
 
 	// Configure retry/failover parameters.
 	srv.SetMaxAttempts(f.MaxAttempts)

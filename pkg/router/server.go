@@ -123,6 +123,12 @@ type WorkerInfo struct {
 	Version      string                `json:"version"`
 	LoadedModels []string              `json:"loaded_models"`
 	LastSeen     time.Time             `json:"last_seen"`
+	// InFlight and MaxInFlight are populated from the hub's live load snapshot
+	// so the UI can render a per-worker concurrency ratio (e.g. "3/5 calls")
+	// without a second call to /v1/queue/stats. Both are 0 when the hub has
+	// no load data for the worker (unknown cap), and the UI hides the row.
+	InFlight    int64 `json:"in_flight,omitempty"`
+	MaxInFlight int64 `json:"max_in_flight,omitempty"`
 }
 
 // WorkersResponse represents the response from the /v1/workers endpoint.
@@ -336,6 +342,11 @@ func (s *Server) SetMaxInFlight(n int) {
 	s.hub.SetMaxInFlight(n)
 }
 
+// SetWorkerMaxInFlight overrides the max-in-flight cap for a specific worker.
+func (s *Server) SetWorkerMaxInFlight(workerID string, cap int) {
+	s.hub.SetWorkerMaxInFlight(workerID, cap)
+}
+
 // SetMaxConnections overrides the total worker WebSocket connection cap. A
 // value <= 0 falls back to defaultMaxConnections.
 func (s *Server) SetMaxConnections(n int) {
@@ -492,19 +503,21 @@ func (s *Server) resolveAliasModel(model string) string {
 // schedulerWeights holds the configurable weighted-scorer settings exposed via
 // CLI flags. Zero values mean "keep current" when passed to SetScorerWeights.
 type schedulerWeights struct {
-	QuantMatch    float64
-	VRAMFree      float64
-	GPUUtil       float64
-	QueueDepth    float64
-	Latency       float64
-	MaxQueueDepth int
+	QuantMatch       float64
+	VRAMFree         float64
+	GPUUtil          float64
+	QueueDepth       float64
+	Latency          float64
+	LoadedModelBonus float64
+	ColdLoadPenalty  float64
+	MaxQueueDepth    int
 }
 
 // SetScorerWeights updates the weighted scorer used by selectWorker. A zero
 // value for any weight keeps that weight at its current value, so an all-zero
 // call is a no-op and the built-in defaults survive; maxQueueDepth <= 0 keeps
 // the current threshold (defaultMaxQueueDepth when unset).
-func (s *Server) SetScorerWeights(quantMatch, vramFree, gpuUtil, queueDepth, latency float64, maxQueueDepth int) {
+func (s *Server) SetScorerWeights(quantMatch, vramFree, gpuUtil, queueDepth, latency, loadedModelBonus, coldLoadPenalty float64, maxQueueDepth int) {
 	s.scorerWeightsMu.Lock()
 	defer s.scorerWeightsMu.Unlock()
 
@@ -530,6 +543,7 @@ func (s *Server) SetScorerWeights(quantMatch, vramFree, gpuUtil, queueDepth, lat
 	s.scorerWeights = w
 	s.scorer = scheduler.NewWeightedScorerWithConfig(
 		w.QuantMatch, w.VRAMFree, w.GPUUtil, w.QueueDepth, w.Latency,
+		w.LoadedModelBonus, w.ColdLoadPenalty,
 		scheduler.DefaultUnavailableTTL(), w.MaxQueueDepth,
 	)
 }
@@ -906,15 +920,18 @@ func (s *Server) handleWorkersList(w http.ResponseWriter, r *http.Request) {
 
 	workers := make([]WorkerInfo, 0, len(cached))
 	for _, w := range cached {
+		l := load[w.ID]
 		workers = append(workers, WorkerInfo{
 			ID:           w.ID,
 			Hostname:     w.Hostname,
 			IP:           w.IP,
 			Port:         w.Port,
-			Status:       busyStatus(w.Status, load[w.ID]),
+			Status:       busyStatus(w.Status, l),
 			Version:      w.Version,
 			LoadedModels: getLoadedModelNames(w.Capabilities.Models),
 			LastSeen:     w.LastSeen,
+			InFlight:     l.InFlight,
+			MaxInFlight:  l.MaxInFlight,
 		})
 	}
 

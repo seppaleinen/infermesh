@@ -38,6 +38,11 @@ type WorkerView struct {
 	LastSeenRel string `json:"last_seen_rel"`
 	// Address is "host:port" for the card title.
 	Address string `json:"address"`
+	// InFlight and MaxInFlight are the worker's live concurrency usage
+	// (e.g. "3/5 calls") surfaced by the UI card. Both are 0 when the
+	// router has no load data for the worker, and the card hides the row.
+	InFlight    int64 `json:"in_flight"`
+	MaxInFlight int64 `json:"max_in_flight"`
 }
 
 // RouterClient is a Wails service bound to the frontend. It talks to the
@@ -264,6 +269,8 @@ func toWorkerView(w router.WorkerInfo) WorkerView {
 		LoadedModels: loaded,
 		LastSeen:     w.LastSeen,
 		Address:      address,
+		InFlight:     w.InFlight,
+		MaxInFlight:  w.MaxInFlight,
 	}
 }
 

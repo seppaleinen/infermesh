@@ -2847,7 +2847,7 @@ func TestServerSetScorerWeightsZeroIsNoOp(t *testing.T) {
 	srv := tr.Server()
 
 	before := srv.ScorerWeights()
-	srv.SetScorerWeights(0, 0, 0, 0, 0, 0)
+	srv.SetScorerWeights(0, 0, 0, 0, 0, 0, 0, 0)
 	if after := srv.ScorerWeights(); after != before {
 		t.Errorf("all-zero SetScorerWeights changed weights: got %+v, want %+v", after, before)
 	}
@@ -2861,14 +2861,14 @@ func TestServerSetScorerWeightsPartialZero(t *testing.T) {
 	defer func() { _ = tr.reg.Stop() }()
 	srv := tr.Server()
 
-	srv.SetScorerWeights(0.5, 0.3, 0.1, 0.05, 0.05, 20)
+	srv.SetScorerWeights(0.5, 0.3, 0.1, 0.05, 0.05, 0, 0, 20)
 	w := srv.ScorerWeights()
-	wantCustom := schedulerWeights{QuantMatch: 0.5, VRAMFree: 0.3, GPUUtil: 0.1, QueueDepth: 0.05, Latency: 0.05, MaxQueueDepth: 20}
+	wantCustom := schedulerWeights{QuantMatch: 0.5, VRAMFree: 0.3, GPUUtil: 0.1, QueueDepth: 0.05, Latency: 0.05, LoadedModelBonus: 0.0, ColdLoadPenalty: 0.0, MaxQueueDepth: 20}
 	if w != wantCustom {
 		t.Fatalf("custom weights not applied: got %+v, want %+v", w, wantCustom)
 	}
 
-	srv.SetScorerWeights(0, 0.6, 0, 0.2, 0, 0)
+	srv.SetScorerWeights(0, 0.6, 0, 0.2, 0, 0, 0, 0)
 	w = srv.ScorerWeights()
 	want := schedulerWeights{QuantMatch: 0.5, VRAMFree: 0.6, GPUUtil: 0.1, QueueDepth: 0.2, Latency: 0.05, MaxQueueDepth: 20}
 	if w != want {

@@ -592,6 +592,8 @@ function prevModelPage() {
                     :last-seen-rel="relativeLastSeen(w.last_seen)"
                     :last-seen-absolute="formatAbsolute(w.last_seen)"
                     :is-local="isLocalWorker(w)"
+                    :in-flight="w.in_flight"
+                    :max-in-flight="w.max_in_flight"
                   />
                 </div>
               </li>
