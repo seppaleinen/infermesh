@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -487,6 +488,60 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(metrics))
 }
 
+// isBackendTimeout reports whether err is a context deadline exceeded or a
+// timeout error, indicating the backend took too long to respond. This covers
+// both absolute deadlines (http.Client.Timeout) and idle timeouts (reset on
+// activity) emitted by the streaming backends.
+func isBackendTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "idle timeout") ||
+		strings.Contains(msg, "TLS handshake timeout") ||
+		strings.Contains(msg, "i/o timeout")
+}
+
+// writeStreamBackendError handles a backend error that arrived during a
+// streaming request. If no chunk has been flushed yet (started == false) the
+// response is still unwritten, so we emit a proper JSON error body with the
+// appropriate HTTP status instead of opening an SSE stream with a malformed
+// frame. If a chunk has already been flushed (started == true) we terminate
+// the stream cleanly with data: [DONE] and do NOT emit the bogus error frame.
+func (s *Server) writeStreamBackendError(w http.ResponseWriter, err error, started bool) {
+	if !started {
+		status := http.StatusBadGateway
+		if isBackendTimeout(err) {
+			status = http.StatusGatewayTimeout
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	s.log.Error("backend error mid-stream", "error", err)
+	_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// ensureSSEHeaders sets the text/event-stream headers on the first write of a
+// streaming response. It is idempotent: calling it again after headers have
+// already been flushed is a no-op, so it is safe to call from both the
+// first-chunk path and the clean-close path.
+func ensureSSEHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+}
+
 // chatCompletions handles the /v1/chat/completions HTTP endpoint.
 func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Parse request
@@ -550,10 +605,9 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Streaming: forward ChatChunks as OpenAI-compatible SSE frames.
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
+	// Headers are set lazily on the first flushed chunk so that a backend
+	// error arriving before any chunk can still produce a proper JSON error
+	// response (see writeStreamBackendError).
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		s.log.Error("streaming unsupported")
@@ -562,23 +616,50 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	chatCh, errCh := s.backend.StreamChat(ctx, req.Model, req)
+	started := false
 	for {
+		// Prioritise an already-buffered backend error: on early failure the
+		// real backends close BOTH channels, so a plain select could randomly
+		// pick the closed chunk channel and mask the error.
+		var pendingErr error
 		select {
 		case err, ok := <-errCh:
 			if ok && err != nil {
-				s.log.Error("backend error", "error", err)
-				errorData := map[string]string{"error": err.Error()}
-				jsonErr, _ := json.Marshal(errorData)
-				_, _ = fmt.Fprintf(w, "data: %s\n\n", string(jsonErr))
-				flusher.Flush()
-				return
+				pendingErr = err
 			}
-			// errCh closed without error — keep waiting for chunks.
+			// ok == false: errCh closed without error — keep waiting for chunks.
+		default:
+		}
+		if pendingErr != nil {
+			s.writeStreamBackendError(w, pendingErr, started)
+			return
+		}
+
+		select {
 		case chunk, ok := <-chatCh:
 			if !ok {
+				// The chunk channel closed. The real backends close errCh
+				// before chatCh and buffer the error before either close, so
+				// check errCh one last time to catch an error that raced with
+				// the close.
+				select {
+				case err, ok := <-errCh:
+					if ok && err != nil {
+						s.writeStreamBackendError(w, err, started)
+						return
+					}
+				default:
+				}
+				if !started {
+					ensureSSEHeaders(w)
+				}
 				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
 				return
+			}
+			if !started {
+				ensureSSEHeaders(w)
+				started = true
 			}
 			jsonChunk, err := json.Marshal(chunk)
 			if err != nil {
@@ -655,10 +736,9 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Streaming: forward CompletionChunks as OpenAI-compatible SSE frames.
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
+	// Headers are set lazily on the first flushed chunk so that a backend
+	// error arriving before any chunk can still produce a proper JSON error
+	// response (see writeStreamBackendError).
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		s.log.Error("streaming unsupported")
@@ -667,23 +747,50 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	compCh, errCh := s.backend.StreamCompletions(ctx, req.Model, req)
+	started := false
 	for {
+		// Prioritise an already-buffered backend error: on early failure the
+		// real backends close BOTH channels, so a plain select could randomly
+		// pick the closed chunk channel and mask the error.
+		var pendingErr error
 		select {
 		case err, ok := <-errCh:
 			if ok && err != nil {
-				s.log.Error("backend error", "error", err)
-				errorData := map[string]string{"error": err.Error()}
-				jsonErr, _ := json.Marshal(errorData)
-				_, _ = fmt.Fprintf(w, "data: %s\n\n", string(jsonErr))
-				flusher.Flush()
-				return
+				pendingErr = err
 			}
-			// errCh closed without error — keep waiting for chunks.
+			// ok == false: errCh closed without error — keep waiting for chunks.
+		default:
+		}
+		if pendingErr != nil {
+			s.writeStreamBackendError(w, pendingErr, started)
+			return
+		}
+
+		select {
 		case chunk, ok := <-compCh:
 			if !ok {
+				// The chunk channel closed. The real backends close errCh
+				// before compCh and buffer the error before either close, so
+				// check errCh one last time to catch an error that raced with
+				// the close.
+				select {
+				case err, ok := <-errCh:
+					if ok && err != nil {
+						s.writeStreamBackendError(w, err, started)
+						return
+					}
+				default:
+				}
+				if !started {
+					ensureSSEHeaders(w)
+				}
 				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
 				return
+			}
+			if !started {
+				ensureSSEHeaders(w)
+				started = true
 			}
 			jsonChunk, err := json.Marshal(chunk)
 			if err != nil {

@@ -160,7 +160,7 @@ type Server struct {
 	busyLoadSnapshot func() map[string]WorkerQueueStats
 
 	// proxyTimeout bounds how long proxyStream waits for a worker response
-	// before emitting a 504. Defaults to 30s; tests override it to drive the
+	// before emitting a 504. Defaults to 120s; tests override it to drive the
 	// 504 path without sleeping. See SetProxyTimeout.
 	proxyTimeout time.Duration
 
@@ -173,6 +173,12 @@ type Server struct {
 	// for a single non-streaming client request. Defaults to 60s; overridden
 	// by SetRetryBudget / the --retry-budget CLI flag.
 	retryBudget time.Duration
+
+	// modelLoadTimeout bounds how long the router waits for a worker's
+	// /v1/models/load HTTP POST before considering the load attempt failed.
+	// Defaults to 120s; tests may override it to drive the 504 path without
+	// sleeping. See SetModelLoadTimeout.
+	modelLoadTimeout time.Duration
 
 	// clientFactory returns the WorkerClient used to talk to a worker. Defaults
 	// to clientFor; tests override it to inject deterministic errors into the
@@ -289,7 +295,7 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 		cfg:          cfg,
 		hub:          hub,
 		counter:      NewCallCounter(10 * time.Minute),
-		proxyTimeout: 30 * time.Second,
+		proxyTimeout: 120 * time.Second,
 		scorer:       scorer,
 		scorerWeights: schedulerWeights{
 			QuantMatch:    scorer.QuantMatchWeight,
@@ -305,6 +311,8 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 	// Default retry/failover configuration.
 	srv.maxAttempts = 3
 	srv.retryBudget = 60 * time.Second
+	srv.proxyTimeout = 120 * time.Second
+	srv.modelLoadTimeout = 120 * time.Second
 	srv.clientFactory = srv.clientFor
 	return srv
 }
@@ -327,11 +335,11 @@ func (s *Server) SetMaxConnections(n int) {
 }
 
 // SetProxyTimeout overrides the per-dispatch timeout applied by proxyStream.
-// A value <= 0 falls back to 30s. Used by tests to drive the 504 path
+// A value <= 0 falls back to 120s. Used by tests to drive the 504 path
 // without sleeping.
 func (s *Server) SetProxyTimeout(d time.Duration) {
 	if d <= 0 {
-		d = 30 * time.Second
+		d = 120 * time.Second
 	}
 	s.proxyTimeout = d
 }
@@ -355,6 +363,16 @@ func (s *Server) SetRetryBudget(d time.Duration) {
 		d = 60 * time.Second
 	}
 	s.retryBudget = d
+}
+
+// SetModelLoadTimeout overrides the HTTP client timeout used by loadModelOnWorker
+// when the router POSTs /v1/models/load to a worker. A value <= 0 falls back to
+// 120s. Used by tests to drive the timeout path without sleeping.
+func (s *Server) SetModelLoadTimeout(d time.Duration) {
+	if d <= 0 {
+		d = 120 * time.Second
+	}
+	s.modelLoadTimeout = d
 }
 
 // SetAutoRouting configures the model="auto" alias. When cfg is nil or
@@ -1759,24 +1777,38 @@ func (s *Server) scoreCandidates(model string, candidates []protocol.WorkerInfo,
 	return scheduler.SelectWorker(context.Background(), sc, scheduler.ModelRequest{Model: model}, workers, sc.GetUnavailableTTL())
 }
 
-// loadModelOnWorker attempts to load a model on a worker using HTTP proxy
+// loadModelOnWorker attempts to load a model on a worker using HTTP proxy.
+// The POST is bounded by s.modelLoadTimeout; on success or failure the
+// attempt is logged at debug level (worker ID, model name, elapsed, status,
+// error) so operators can see whether the router fell back to the
+// advertising-but-not-loaded path.
 func (s *Server) loadModelOnWorker(worker protocol.WorkerInfo, modelName string) bool {
 	url := fmt.Sprintf("http://%s:%d/v1/models/load", worker.IP, worker.Port)
 
 	loadReq := map[string]string{"model": modelName}
 	body, err := json.Marshal(loadReq)
 	if err != nil {
+		s.log.Debug("model load auto-attempt failed", "worker", worker.ID, "model", modelName, "err", err)
 		return false
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: s.modelLoadTimeout}
+	start := time.Now()
 	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	elapsed := time.Since(start)
 	if err != nil {
+		s.log.Debug("model load auto-attempt failed", "worker", worker.ID, "model", modelName, "elapsed", elapsed, "err", err)
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	return resp.StatusCode == http.StatusOK
+	if resp.StatusCode != http.StatusOK {
+		s.log.Debug("model load auto-attempt failed", "worker", worker.ID, "model", modelName, "elapsed", elapsed, "status", resp.StatusCode)
+		return false
+	}
+
+	s.log.Debug("model load auto-attempt succeeded", "worker", worker.ID, "model", modelName, "elapsed", elapsed, "status", resp.StatusCode)
+	return true
 }
 
 // clientFor returns a WorkerClient for the given worker, preferring the
@@ -1824,23 +1856,27 @@ func (s *Server) proxyCompletionStream(w http.ResponseWriter, r *http.Request, w
 // proxyStream relays an inference request to the worker via the transport
 // appropriate for it and streams the response back to the client as SSE.
 //
-// The dispatch is bounded by the per-request context plus proxyTimeout. Real
-// worker clients surface errTimeout on the errCh channel when the dispatch
-// context expires, so the 504 branch below handles the timeout and bumps the
-// per-worker 504 counter (issue #54). Matching on the sentinel rather than on
-// ctx.Err() is deliberate: a client may surface the timeout before the
-// server-side context has actually expired, in which case ctx.Err() would
-// still be nil and the 504 branch would be skipped. The ctx.Done() case is
-// intentionally absent for the same reason. Clients that never surface a
-// timeout error must close chunkCh themselves to terminate the stream.
+// The dispatch is bounded by an **idle timeout** (proxyTimeout): the timer
+// resets on every chunk received, so a slow-but-healthy stream that keeps
+// producing tokens is never killed; only prolonged silence (no chunk for
+// proxyTimeout) triggers the timeout. The first-byte wait is also bounded by
+// the same value: if the backend doesn't answer within that window, the idle
+// timer fires and the request is aborted.
 func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client WorkerClient, worker protocol.WorkerInfo, kind string, body []byte) {
-	// Apply context-based timeout (default 30s, overridable via SetProxyTimeout).
+	// Idle timeout for streaming proxy: abort if no chunk arrives for this
+	// long. The timer resets on every chunk received, so active streaming
+	// is not bounded by this value. First-byte wait is also bounded by it.
 	timeout := s.proxyTimeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+
+	// Start the idle timer before the dispatch so model loading (no bytes
+	// yet) still has a budget equal to the configured timeout.
+	idleTimer := time.NewTimer(timeout)
+	defer idleTimer.Stop()
 
 	chunks, errs := client.Stream(ctx, worker, kind, body)
 	flusher, _ := w.(http.Flusher)
@@ -1862,6 +1898,16 @@ func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client Work
 				}
 				return
 			}
+			// Reset the idle timer on every chunk received (including the
+			// Done sentinel handling — stop the timer before returning).
+			// The canonical Stop+drain+Reset pattern: if Stop returns false
+			// the timer already fired, so the value is in the channel and
+			// the blocking drain is guaranteed to make progress.
+			if !idleTimer.Stop() {
+				<-idleTimer.C
+			}
+			idleTimer.Reset(timeout)
+
 			if !started {
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.Header().Set("Cache-Control", "no-cache")
@@ -1904,7 +1950,11 @@ func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client Work
 				}
 			}
 			return
-		case <-ctx.Done():
+		case <-idleTimer.C:
+			// Idle timeout fired: no chunk arrived for `timeout`. Cancel the
+			// worker-side request so the underlying transport is aborted.
+			cancel()
+			s.log.Warn("stream idle timeout", "worker", worker.ID, "idle", timeout)
 			if !started {
 				writeErrorResponse(w, http.StatusGatewayTimeout, "request timeout", "server_error", "timeout_error")
 			} else if !sawDone {
@@ -1913,6 +1963,10 @@ func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client Work
 					flusher.Flush()
 				}
 			}
+			return
+		case <-r.Context().Done():
+			// Client hung up: just return. The derived ctx is already
+			// cancelled via cancel(), so the worker request is aborted.
 			return
 		}
 	}
