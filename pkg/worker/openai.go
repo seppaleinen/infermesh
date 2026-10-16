@@ -86,7 +86,7 @@ type OpenAICompatibleBackend struct {
 	client         *http.Client // used for non-streaming calls (CompleteChat, CompleteCompletions, LoadModel, health checks, ListModels)
 	streamClient   *http.Client // used ONLY for streaming calls (StreamChat, StreamCompletions); Timeout: 0 (idle timeout applied via context)
 	circuitBreaker *CircuitBreaker
-	maxTokens      int          // default max_tokens to send when request omits it; 0 = no default
+	maxTokens      int // default max_tokens to send when request omits it; 0 = no default
 }
 
 // defaultBackendTimeout is the HTTP client timeout used when a caller does
