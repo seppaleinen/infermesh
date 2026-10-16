@@ -22,6 +22,7 @@ type Settings struct {
 	WorkerPort               int               `json:"worker_port" yaml:"worker_port"`
 	WorkerBinaryPath         string            `json:"worker_binary_path" yaml:"worker_binary_path"`
 	WorkerEnableHealthChecks *bool             `json:"worker_enable_health_checks" yaml:"worker_enable_health_checks"`
+	WorkerMaxTokens          int               `json:"worker_max_tokens" yaml:"worker_max_tokens"`
 	RelayURL                 string            `json:"relay_url" yaml:"relay_url"`
 	ModelAliases             map[string]string `json:"model_aliases" yaml:"model_aliases"`
 	DevMode                  *bool             `json:"dev_mode" yaml:"dev_mode"`
@@ -41,6 +42,7 @@ func DefaultSettings() Settings {
 		WorkerBackend:            "llama-cpp",
 		WorkerPort:               8081,
 		WorkerEnableHealthChecks: boolPtr(true),
+		WorkerMaxTokens:          4096,
 		DevMode:                  boolPtr(true),
 		ClientCertCN:             "infermesh-desktop",
 		AutoStartOnLogin:         boolPtr(false), // opt-in: no login item by default

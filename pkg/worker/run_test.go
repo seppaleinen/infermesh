@@ -72,7 +72,7 @@ func TestNewBackendFromName(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			b, err := NewBackendFromName(tt.name, "", tt.backendURL, 0)
+			b, err := NewBackendFromName(tt.name, "", tt.backendURL, 0, 0)
 			if err != nil {
 				t.Fatalf("NewBackendFromName(%q) unexpected error: %v", tt.name, err)
 			}

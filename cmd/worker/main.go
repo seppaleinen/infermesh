@@ -43,6 +43,9 @@ type WorkerFlags struct {
 	// (default 30s). Inference calls that exceed this duration are
 	// aborted by the worker's HTTP client to the backend.
 	BackendTimeout time.Duration
+	// MaxTokens is the default max_tokens to send to the backend when the
+	// incoming request omits it. Default 4096.
+	MaxTokens int
 }
 
 // parseWorkerFlags parses args into WorkerFlags. It uses ContinueOnError so
@@ -81,6 +84,9 @@ func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	// not bounded by this value. First-byte wait is also bounded by it.
 	// Non-streaming calls still use this as an absolute deadline.
 	fs.DurationVar(&f.BackendTimeout, "backend-timeout", 120*time.Second, "idle timeout for backend streaming: abort if no SSE line arrives for this long (does not count against active streaming; first-byte wait also bounded by this value)")
+	// Default max_tokens to send to the backend when the incoming request
+	// omits it. 4096 is a sensible default for most models.
+	fs.IntVar(&f.MaxTokens, "max-tokens", 4096, "default max_tokens to send to the backend when the incoming request omits it")
 }
 
 // workerFlagUsage prints the worker flag help to w.
@@ -144,6 +150,7 @@ func runWorker(args []string) int {
 		ProdRouter:           f.ProdRouter,
 		RelayURL:             f.RelayURL,
 		EnableHealthChecks:   f.EnableHealthChecks,
+		MaxTokens:            f.MaxTokens,
 		AllowedModels:        f.AllowedModels,
 		ExcludedModels:       f.ExcludedModels,
 		ModelRefreshInterval: f.ModelRefreshInterval,

@@ -92,6 +92,9 @@ func (s *Supervisor) buildWorkerArgs(settings Settings) ([]string, error) {
 	if settings.WorkerPort > 0 {
 		args = append(args, "--port", strconv.Itoa(settings.WorkerPort))
 	}
+	if settings.WorkerMaxTokens > 0 {
+		args = append(args, "--max-tokens", strconv.Itoa(settings.WorkerMaxTokens))
+	}
 	if modeFromSettings(settings).IsDev() {
 		// dev-mode HTTP registration against the local router (skips mDNS).
 		args = append(args, "--router", routerURLForWorker(settings.RouterAddr))

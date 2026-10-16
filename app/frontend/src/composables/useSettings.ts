@@ -26,6 +26,7 @@ export function emptySettings(): Settings {
     worker_port: 0,
     worker_binary_path: '',
     worker_enable_health_checks: null,
+    worker_max_tokens: 4096,
     relay_url: '',
     model_aliases: {},
     dev_mode: null,

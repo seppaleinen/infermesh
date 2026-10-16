@@ -68,6 +68,7 @@ export interface Settings {
     "worker_port": number;
     "worker_binary_path": string;
     "worker_enable_health_checks": boolean | null;
+    "worker_max_tokens": number;
     "relay_url": string;
     "model_aliases": { [_ in string]?: string } | null;
     "dev_mode": boolean | null;

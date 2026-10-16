@@ -60,6 +60,9 @@ type RunConfig struct {
 	RelayURL string
 	// EnableHealthChecks toggles periodic backend health checks.
 	EnableHealthChecks bool
+	// MaxTokens is the default maximum number of tokens to generate when the
+	// incoming request doesn't specify max_tokens. Defaults to 4096.
+	MaxTokens int
 	// ModelRefreshInterval is the cadence for re-querying the backend's
 	// ListModels() so models that start after the worker (e.g. LM Studio,
 	// Ollama, vLLM) surface without a restart. 0 uses the default (10s).
@@ -179,7 +182,7 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 	srv := NewServer(log, addr, secCfg)
 
 	// Set up backend adapter based on --backend flag
-	backendImpl, err := NewBackendFromName(cfg.Backend, cfg.ModelPath, cfg.BackendURL, cfg.BackendTimeout)
+	backendImpl, err := NewBackendFromName(cfg.Backend, cfg.ModelPath, cfg.BackendURL, cfg.BackendTimeout, cfg.MaxTokens)
 	if err != nil {
 		log.Warn("failed to create backend", "backend", cfg.Backend, "error", err)
 	} else {
@@ -364,8 +367,10 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 // CLI behavior of the old createBackend helper). backendURL overrides the
 // adapter's base URL when non-empty (used for mocks and custom endpoints).
 // timeout is the HTTP client timeout for backend requests; a zero or
-// negative value falls back to the default 30s.
-func NewBackendFromName(backendName, modelPath, backendURL string, timeout time.Duration) (Backend, error) {
+// negative value falls back to the default 30s. maxTokens is the default
+// max_tokens to send to the backend when the incoming request omits it;
+// zero means "no default" (the backend falls back to its built-in default).
+func NewBackendFromName(backendName, modelPath, backendURL string, timeout time.Duration, maxTokens int) (Backend, error) {
 	// Resolve the default endpoint for each backend; --backend-url overrides
 	// it (the llama-cpp default http://localhost:8080 collides with the
 	// router port, so tests and custom setups pass an explicit URL).
@@ -389,17 +394,17 @@ func NewBackendFromName(backendName, modelPath, backendURL string, timeout time.
 	}
 	switch backendName {
 	case "llama-cpp":
-		return NewLlamaCppBackend(defaultURL, 2048, 4, 1, timeout), nil
+		return NewLlamaCppBackend(defaultURL, 2048, 4, 1, timeout, maxTokens), nil
 	case "ollama":
-		return NewOllamaBackend(defaultURL, modelPath, timeout), nil
+		return NewOllamaBackend(defaultURL, modelPath, timeout, maxTokens), nil
 	case "lmstudio":
-		return NewLMStudioBackend(defaultURL, modelPath, timeout), nil
+		return NewLMStudioBackend(defaultURL, modelPath, timeout, maxTokens), nil
 	case "vllm":
-		return NewVLLMBackend(defaultURL, modelPath, timeout), nil
+		return NewVLLMBackend(defaultURL, modelPath, timeout, maxTokens), nil
 	case "custom":
-		return NewCustomBackend(defaultURL, "", "custom", timeout), nil
+		return NewCustomBackend(defaultURL, "", "custom", timeout, maxTokens), nil
 	default:
-		return NewLlamaCppBackend(defaultURL, 2048, 4, 1, timeout), nil
+		return NewLlamaCppBackend(defaultURL, 2048, 4, 1, timeout, maxTokens), nil
 	}
 }
 
