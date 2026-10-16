@@ -235,6 +235,11 @@ test-static: build-static
 # Run all tests: unit + integration + e2e
 test: vet-app test-unit test-integration test-e2e
 
+# Run all tests including app module (separate Go module)
+test-all: test
+	cd app && go test ./...
+	golangci-lint run ./...
+
 # Platform-aware tests: run on current platform
 test-platform: test test-integration test-e2e
 
@@ -294,4 +299,4 @@ coverage:
 		sort
 	@echo "Coverage report: cover/coverage.out"
 
-.PHONY: build build-router build-worker build-static build-app package-app package-app-dmg package-app-linux package-app-windows relay test test-security test-integration test-e2e test-packaged test-static test-platform test-all-platforms lint validate-contracts install-hooks tidy clean app coverage test-app-smoke pkg-docker pkg-docker-push pkg-helm pkg-compose
+.PHONY: build build-router build-worker build-static build-app package-app package-app-dmg package-app-linux package-app-windows relay test test-all test-security test-integration test-e2e test-packaged test-static test-platform test-all-platforms lint validate-contracts install-hooks tidy clean app coverage test-app-smoke pkg-docker pkg-docker-push pkg-helm pkg-compose

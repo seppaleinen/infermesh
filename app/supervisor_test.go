@@ -812,7 +812,7 @@ func TestSupervisorStartWorkerDevMode(t *testing.T) {
 				s.WorkerModelPath = "/models/foo"
 			},
 			wantArgs: []string{"", "--dev-mode", "--backend", "lmstudio", "--model-path", "/models/foo",
-				"--port", "8081", "--router", "http://127.0.0.1:8080", "--enable-health-checks", "true"},
+				"--port", "8081", "--max-tokens", "4096", "--router", "http://127.0.0.1:8080", "--enable-health-checks", "true"},
 		},
 		{
 			name: "health checks disabled",
@@ -820,7 +820,7 @@ func TestSupervisorStartWorkerDevMode(t *testing.T) {
 				s.WorkerEnableHealthChecks = boolPtr(false)
 			},
 			wantArgs: []string{"", "--dev-mode", "--backend", "llama-cpp",
-				"--port", "8081", "--router", "http://127.0.0.1:8080", "--enable-health-checks", "false"},
+				"--port", "8081", "--max-tokens", "4096", "--router", "http://127.0.0.1:8080", "--enable-health-checks", "false"},
 		},
 		{
 			name: "relay url set",
@@ -828,7 +828,7 @@ func TestSupervisorStartWorkerDevMode(t *testing.T) {
 				s.RelayURL = "wss://relay.example.com"
 			},
 			wantArgs: []string{"", "--dev-mode", "--backend", "llama-cpp",
-				"--port", "8081", "--router", "http://127.0.0.1:8080", "--relay-url", "wss://relay.example.com",
+				"--port", "8081", "--max-tokens", "4096", "--router", "http://127.0.0.1:8080", "--relay-url", "wss://relay.example.com",
 				"--enable-health-checks", "true"},
 		},
 		{
@@ -837,7 +837,7 @@ func TestSupervisorStartWorkerDevMode(t *testing.T) {
 				s.RouterAddr = "127.0.0.1:9000"
 			},
 			wantArgs: []string{"", "--dev-mode", "--backend", "llama-cpp",
-				"--port", "8081", "--router", "http://127.0.0.1:9000", "--enable-health-checks", "true"},
+				"--port", "8081", "--max-tokens", "4096", "--router", "http://127.0.0.1:9000", "--enable-health-checks", "true"},
 		},
 	}
 	for _, tc := range cases {

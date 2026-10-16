@@ -157,6 +157,11 @@ worker count and call count over a rolling 10-minute window.
 - Call count: inferences dispatched in last 10 minutes
 - Counter implementation: `pkg/router/call_counter.go` (in-memory, stdlib only)
 
+## Post-mortem / Opencode notes
+
+- Opencode session export command path: `opencode session export <sessionID>`
+  (the command is nested under `session`, not top-level `opencode export <sessionID>`)
+
 ---
 
 *Last updated: 2026-09-21*
