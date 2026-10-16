@@ -44,9 +44,10 @@ RUN sed -i '/^replace/d' go.mod || true
 # Download all module dependencies (including app module)
 RUN go mod tidy
 
-# Build both binaries: CGO_ENABLED=0 for fully static, distroless-friendly binaries
+# Build all binaries: CGO_ENABLED=0 for fully static, distroless-friendly binaries
 RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /router ./cmd/router
 RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /worker ./cmd/worker
+RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /relay ./cmd/relay
 
 # ---------- Router runtime image ----------
 FROM gcr.io/distroless/static-debian12 AS router
@@ -81,3 +82,20 @@ ENV WORKER_ARGS="--dev-mode"
 # Run worker
 ENTRYPOINT ["/worker"]
 CMD ["/bin/sh", "-c", "/worker $WORKER_ARGS"]
+
+# ---------- Relay runtime image ----------
+FROM gcr.io/distroless/static-debian12 AS relay
+
+# Copy relay binary
+COPY --from=builder /relay /relay
+
+# Expose default relay port
+EXPOSE 8090
+
+# Default to dev-mode.
+# Override at runtime with: -e RELAY_ARGS="--prod-mode ..."
+ENV RELAY_ARGS="--dev-mode"
+
+# Run relay
+ENTRYPOINT ["/relay"]
+CMD ["/bin/sh", "-c", "/relay $RELAY_ARGS"]

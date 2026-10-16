@@ -8,9 +8,13 @@
 #   - worker:  ghcr.io/seppaleinen/infermesh/worker:latest  (--dev-mode
 #               --router http://router:8080 --backend lmstudio ...)
 #
-# Override flags at runtime via ROUTER_ARGS / WORKER_ARGS (the images' CMD
-# runs the binary with $ROUTER_ARGS / $WORKER_ARGS). See the commented
-# production example below for mTLS.
+# Override flags at runtime via ROUTER_ARGS / WORKER_ARGS / RELAY_ARGS (the
+# images' CMD runs the binary with $ROUTER_ARGS / $WORKER_ARGS / $RELAY_ARGS).
+# See the commented production example below for mTLS.
+#
+# GPU workers: add `--profile gpu` to start the worker with the NVIDIA runtime.
+# Relay:       add `--profile relay` to start the relay broker for outbound-only
+#               workers that can't accept inbound connections.
 
 version: "3.9"
 
@@ -48,6 +52,63 @@ services:
     restart: unless-stopped
     depends_on:
       - router
+
+  # ---------------------------------------------------------------------------
+  # GPU worker (opt-in via `--profile gpu`).
+  #
+  # Requires the NVIDIA container runtime on the host. The worker container
+  # gets access to all NVIDIA GPUs. The inference backend (llama-cpp / ollama
+  # / vLLM) must be reachable from inside the container — either run it inside
+  # the container (e.g. ollama in a sidecar) or point --backend-url at a
+  # host-side backend (e.g. http://host.docker.internal:11434).
+  #
+  # Usage: docker compose --profile gpu up -d
+  # ---------------------------------------------------------------------------
+  worker-gpu:
+    image: ghcr.io/seppaleinen/infermesh/worker:latest
+    container_name: infermesh-worker-gpu
+    ports:
+      - "8082:8081"
+    environment:
+      WORKER_ARGS: "--dev-mode --router http://router:8080 --backend ollama --model-path ${WORKER_MODEL_PATH:-} --max-tokens ${WORKER_MAX_TOKENS:-4096}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    depends_on:
+      - router
+    profiles:
+      - gpu
+
+  # ---------------------------------------------------------------------------
+  # Relay broker (opt-in via `--profile relay`).
+  #
+  # The relay is a WebSocket broker that bridges workers and routers for
+  # hosts that cannot accept inbound connections. Workers connect OUTBOUND
+  # to the relay (no inbound port needed on the worker host). The router
+  # also connects outbound to the relay. The relay routes messages between
+  # them using the worker_id field in the message envelope.
+  #
+  # Workers on outbound-only hosts use:
+  #   --relay-url ws://relay:8090/v1/connect
+  # instead of --router http://router:8080.
+  #
+  # Usage: docker compose --profile relay up -d
+  # ---------------------------------------------------------------------------
+  relay:
+    image: ghcr.io/seppaleinen/infermesh/relay:latest
+    container_name: infermesh-relay
+    ports:
+      - "8090:8090"
+    environment:
+      RELAY_ARGS: "--dev-mode --listen :8090"
+    restart: unless-stopped
+    profiles:
+      - relay
 
 # ---------------------------------------------------------------------------
 # Production example (mTLS). UNCOMMENT and switch both services to prod args.
