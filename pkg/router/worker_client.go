@@ -88,12 +88,16 @@ func truncate(s string, max int) string {
 // client certificate signed by the shared CA. prodClient is non-nil in prod
 // mode; when nil the client behaves exactly as before (plain HTTP, no TLS).
 type httpWorkerClient struct {
-	log        *slog.Logger
-	prodClient *http.Client // non-nil in prod mode
+	log          *slog.Logger
+	prodClient  *http.Client // non-nil in prod mode
+	streamClient *http.Client // used only for Stream; Timeout: 0 (router idle timeout governs)
 }
 
 func newHTTPWorkerClient(log *slog.Logger) *httpWorkerClient {
-	return &httpWorkerClient{log: log}
+	return &httpWorkerClient{
+		log:          log,
+		streamClient: &http.Client{Timeout: 0},
+	}
 }
 
 // newHTTPWorkerClientWithCerts builds a client that dials workers over mTLS
@@ -101,7 +105,10 @@ func newHTTPWorkerClient(log *slog.Logger) *httpWorkerClient {
 // args must be non-nil for prod-mode behavior; passing nil for either falls
 // back to plain HTTP (dev mode), matching newHTTPWorkerClient exactly.
 func newHTTPWorkerClientWithCerts(log *slog.Logger, routerCert *tls.Certificate, workerCAPool *x509.CertPool) *httpWorkerClient {
-	c := &httpWorkerClient{log: log}
+	c := &httpWorkerClient{
+		log:          log,
+		streamClient: &http.Client{Timeout: 0},
+	}
 	if routerCert != nil && workerCAPool != nil {
 		c.prodClient = &http.Client{
 			Transport: &http.Transport{
@@ -124,13 +131,30 @@ func newHTTPWorkerClientWithCerts(log *slog.Logger, routerCert *tls.Certificate,
 
 func (c *httpWorkerClient) Transport() string { return protocol.TransportHTTP }
 
-// client returns the HTTP client to use for this worker. In prod mode this
-// is the mTLS client; in dev mode it is a plain HTTP client.
+// client returns the HTTP client to use for non-streaming calls. In prod mode
+// this is the mTLS client; in dev mode it is a plain HTTP client.
 func (c *httpWorkerClient) client() *http.Client {
 	if c.prodClient != nil {
 		return c.prodClient
 	}
 	return &http.Client{Timeout: 30 * time.Second}
+}
+
+// streamHTTPClient returns the HTTP client used for streaming calls. It has
+// Timeout: 0 because the router's proxyStream applies its own idle timeout
+// via the request context; a hard client-side timeout would kill slow-but-
+// healthy streams that keep producing tokens.
+func (c *httpWorkerClient) streamHTTPClient() *http.Client {
+	if c.prodClient != nil {
+		// Prod-mode streaming also needs Timeout: 0; the idle timeout is
+		// applied via the request context in proxyStream. Return a client
+		// that shares the prod transport but has no deadline.
+		return &http.Client{
+			Transport: c.prodClient.Transport,
+			Timeout:   0,
+		}
+	}
+	return c.streamClient
 }
 
 // scheme returns the URL scheme for this worker: "https" in prod mode,
@@ -194,7 +218,7 @@ func (c *httpWorkerClient) Stream(ctx context.Context, worker protocol.WorkerInf
 	go func() {
 		defer close(chunkCh)
 
-		client := c.client()
+		client := c.streamHTTPClient()
 		resp, err := postWithRetry(ctx, client, c.endpoint(worker, kind), body)
 		if err != nil {
 			if ctx.Err() == context.DeadlineExceeded {
