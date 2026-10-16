@@ -295,6 +295,7 @@ The router binary accepts the following flags:
 | `--scorer-latency <weight>` | Weight for latency in weighted scoring (0 = keep default of 0.10)
 | `--scorer-max-queue-depth <N>` | Queue depth treated as fully loaded when normalizing queue depth score (0 = default of 10)
 | `--proxy-timeout <duration>` | Idle timeout for streaming proxy: abort if no chunk arrives for this long (default `120s`). The timer resets on every chunk received, so active streaming is not bounded by this value; first-byte wait is also bounded by it |
+| `--model-load-timeout <duration>` | Timeout for HTTP POST to worker /v1/models/load; controls how long router waits for model-load acknowledgment (does not bound the backend inference load itself) (default `120s`) |
 | `--auto-tier-simple <model>` | Model name to route simple prompts to when `model="auto"` (empty = alias disabled)
 | `--auto-tier-medium <model>` | Model name to route medium-complexity prompts to when `model="auto"`
 | `--auto-tier-complex <model>` | Model name to route complex prompts to when `model="auto"`

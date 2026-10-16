@@ -174,6 +174,12 @@ type Server struct {
 	// by SetRetryBudget / the --retry-budget CLI flag.
 	retryBudget time.Duration
 
+	// modelLoadTimeout bounds how long the router waits for a worker's
+	// /v1/models/load HTTP POST before considering the load attempt failed.
+	// Defaults to 120s; tests may override it to drive the 504 path without
+	// sleeping. See SetModelLoadTimeout.
+	modelLoadTimeout time.Duration
+
 	// clientFactory returns the WorkerClient used to talk to a worker. Defaults
 	// to clientFor; tests override it to inject deterministic errors into the
 	// failover loop without spinning up real worker servers.
@@ -305,6 +311,7 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 	// Default retry/failover configuration.
 	srv.maxAttempts = 3
 	srv.retryBudget = 60 * time.Second
+	srv.modelLoadTimeout = 120 * time.Second
 	srv.clientFactory = srv.clientFor
 	return srv
 }
@@ -355,6 +362,16 @@ func (s *Server) SetRetryBudget(d time.Duration) {
 		d = 60 * time.Second
 	}
 	s.retryBudget = d
+}
+
+// SetModelLoadTimeout overrides the HTTP client timeout used by loadModelOnWorker
+// when the router POSTs /v1/models/load to a worker. A value <= 0 falls back to
+// 120s. Used by tests to drive the timeout path without sleeping.
+func (s *Server) SetModelLoadTimeout(d time.Duration) {
+	if d <= 0 {
+		d = 120 * time.Second
+	}
+	s.modelLoadTimeout = d
 }
 
 // SetAutoRouting configures the model="auto" alias. When cfg is nil or
@@ -1751,24 +1768,38 @@ func (s *Server) scoreCandidates(model string, candidates []protocol.WorkerInfo,
 	return scheduler.SelectWorker(context.Background(), sc, scheduler.ModelRequest{Model: model}, workers, sc.GetUnavailableTTL())
 }
 
-// loadModelOnWorker attempts to load a model on a worker using HTTP proxy
+// loadModelOnWorker attempts to load a model on a worker using HTTP proxy.
+// The POST is bounded by s.modelLoadTimeout; on success or failure the
+// attempt is logged at debug level (worker ID, model name, elapsed, status,
+// error) so operators can see whether the router fell back to the
+// advertising-but-not-loaded path.
 func (s *Server) loadModelOnWorker(worker protocol.WorkerInfo, modelName string) bool {
 	url := fmt.Sprintf("http://%s:%d/v1/models/load", worker.IP, worker.Port)
 
 	loadReq := map[string]string{"model": modelName}
 	body, err := json.Marshal(loadReq)
 	if err != nil {
+		s.log.Debug("model load auto-attempt failed", "worker", worker.ID, "model", modelName, "err", err)
 		return false
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: s.modelLoadTimeout}
+	start := time.Now()
 	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
+	elapsed := time.Since(start)
 	if err != nil {
+		s.log.Debug("model load auto-attempt failed", "worker", worker.ID, "model", modelName, "elapsed", elapsed, "err", err)
 		return false
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	return resp.StatusCode == http.StatusOK
+	if resp.StatusCode != http.StatusOK {
+		s.log.Debug("model load auto-attempt failed", "worker", worker.ID, "model", modelName, "elapsed", elapsed, "status", resp.StatusCode)
+		return false
+	}
+
+	s.log.Debug("model load auto-attempt succeeded", "worker", worker.ID, "model", modelName, "elapsed", elapsed, "status", resp.StatusCode)
+	return true
 }
 
 // clientFor returns a WorkerClient for the given worker, preferring the

@@ -41,6 +41,9 @@ type RouterFlags struct {
 	// Streaming settings.
 	ProxyTimeout time.Duration
 
+	// Model load timeout: HTTP POST timeout for /v1/models/load auto-load.
+	ModelLoadTimeout time.Duration
+
 	// Weighted scorer settings. Zero values keep the built-in defaults (no-op).
 	ScorerQuantMatch    float64
 	ScorerVRAMFree      float64
@@ -151,6 +154,7 @@ func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
 	// long. The timer resets on every chunk received, so active streaming is
 	// not bounded by this value. First-byte wait is also bounded by it.
 	fs.DurationVar(&f.ProxyTimeout, "proxy-timeout", 120*time.Second, "idle timeout for streaming proxy: abort if no chunk arrives for this long (does not count against active streaming; first-byte wait also bounded by this value)")
+	fs.DurationVar(&f.ModelLoadTimeout, "model-load-timeout", 120*time.Second, "timeout for HTTP POST to worker /v1/models/load; controls how long router waits for model-load acknowledgment (does not bound the backend inference load itself)")
 	fs.Float64Var(&f.ScorerQuantMatch, "scorer-quant-match", 0, "weight for quantization match in weighted scoring (0 = keep default of 0.40)")
 	fs.Float64Var(&f.ScorerVRAMFree, "scorer-vram-free", 0, "weight for free VRAM ratio in weighted scoring (0 = keep default of 0.25)")
 	fs.Float64Var(&f.ScorerGPUUtil, "scorer-gpu-util", 0, "weight for GPU utilization in weighted scoring (0 = keep default of 0.15)")
@@ -290,6 +294,9 @@ func runRouter(args []string) int {
 
 	// Configure streaming proxy timeout.
 	srv.SetProxyTimeout(f.ProxyTimeout)
+
+	// Configure model-load HTTP POST timeout.
+	srv.SetModelLoadTimeout(f.ModelLoadTimeout)
 
 	// Configure the model="auto" alias (disabled by default).
 	if autoCfg := f.buildAutoRoutingConfig(); autoCfg != nil {

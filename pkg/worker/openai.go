@@ -235,10 +235,10 @@ type idleTimeout struct {
 func newIdleTimeout(parent context.Context, d time.Duration) *idleTimeout {
 	idleCtx, cancel := context.WithCancel(parent)
 	it := &idleTimeout{
-		ctx:    idleCtx,
-		cancel: cancel,
-		timer:  time.NewTimer(d),
-		done:   make(chan struct{}),
+		ctx:     idleCtx,
+		cancel:  cancel,
+		timer:   time.NewTimer(d),
+		done:    make(chan struct{}),
 		resetCh: make(chan time.Duration, 1),
 	}
 	go it.run()

@@ -2544,7 +2544,7 @@ func (c *activeStreamClient) LoadModel(ctx context.Context, _ protocol.WorkerInf
 func (c *activeStreamClient) Capabilities(ctx context.Context, _ protocol.WorkerInfo) (protocol.Capabilities, error) {
 	return protocol.Capabilities{}, ctx.Err()
 }
-func (c *activeStreamClient) Close() error               { return nil }
+func (c *activeStreamClient) Close() error                  { return nil }
 func (c *activeStreamClient) RecordTimeout(workerID string) {}
 
 // silentAfterClient implements WorkerClient: Stream emits one chunk then goes
@@ -2582,7 +2582,7 @@ func (c *silentAfterClient) LoadModel(ctx context.Context, _ protocol.WorkerInfo
 func (c *silentAfterClient) Capabilities(ctx context.Context, _ protocol.WorkerInfo) (protocol.Capabilities, error) {
 	return protocol.Capabilities{}, ctx.Err()
 }
-func (c *silentAfterClient) Close() error               { return nil }
+func (c *silentAfterClient) Close() error                  { return nil }
 func (c *silentAfterClient) RecordTimeout(workerID string) {}
 
 // TestProxyStreamIdleTimeoutSlowActive verifies the core regression: a
