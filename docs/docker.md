@@ -1,7 +1,7 @@
 # Docker & Compose Guide
 
-InferMesh ships with Docker images and Compose files for three deployment
-patterns: pre-built images, build-from-source, and GPU-accelerated workers.
+InferMesh ships with a single Docker Compose file that supports both
+pre-built images and build-from-source in one file.
 
 ## Pre-built images (default)
 
@@ -24,23 +24,14 @@ docker compose up -d \
   -e WORKER_ARGS="--dev-mode --router http://router:8080 --backend ollama --model-path /models/qwen3-35b"
 ```
 
-### Production (mTLS)
-
-Uncomment the production services block at the bottom of `docker-compose.yml`,
-mount your cert directory, and switch both services to prod args:
-
-```bash
-docker compose up -d
-```
-
 ## Build from source
 
 Build and run directly from a local clone — no GitHub access or pre-built
-image needed:
+image needed. The `build:` stanzas on each service mean `--build` pulls from
+the local source tree instead of the registry:
 
 ```bash
-docker compose -f docker-compose.build.yml build
-docker compose -f docker-compose.build.yml up -d
+docker compose --build up -d
 ```
 
 This uses `docker/Dockerfile` (multi-stage, distroless) to compile the
@@ -52,11 +43,7 @@ Add `--profile gpu` to start the worker with the NVIDIA container runtime.
 Requires the NVIDIA driver and container runtime on the host.
 
 ```bash
-# Pre-built images
 docker compose --profile gpu up -d
-
-# Build from source
-docker compose -f docker-compose.build.yml --profile gpu up -d
 ```
 
 ### Backend inside vs. outside the container
