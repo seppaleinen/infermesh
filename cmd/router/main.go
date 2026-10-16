@@ -54,12 +54,15 @@ type RouterFlags struct {
 	AutoTierSimple  string
 	AutoTierMedium  string
 	AutoTierComplex string
+	AutoTierHard    string
+	AutoTierHardest string
 
 	// Auto routing classification thresholds (tokens estimated via the
 	// ~4 chars/token heuristic). Zero values keep the documented defaults.
 	AutoSimpleMaxTokens   int
 	AutoMediumMaxTokens   int
 	AutoReasoningKeywords string
+	AutoUseFourTier       bool
 
 	// Model aliases: comma-separated "alias=canonical" pairs. Empty
 	// disables alias resolution (backward compatible). Canonical names are
@@ -81,15 +84,26 @@ func parseRouterFlags(args []string) (RouterFlags, error) {
 // flags. Returns nil when no tier model is configured, so the alias stays
 // disabled by default (backward compatible).
 func (f *RouterFlags) buildAutoRoutingConfig() *router.AutoRoutingConfig {
-	if f.AutoTierSimple == "" && f.AutoTierMedium == "" && f.AutoTierComplex == "" {
+	if f.AutoTierSimple == "" && f.AutoTierMedium == "" && f.AutoTierComplex == "" &&
+		f.AutoTierHard == "" && f.AutoTierHardest == "" {
 		return nil
 	}
 
 	cfg := router.DefaultAutoRoutingConfig()
 	cfg.Models = map[router.ComplexityTier]string{
-		router.TierSimple:  f.AutoTierSimple,
-		router.TierMedium:  f.AutoTierMedium,
+		router.TierSimple: f.AutoTierSimple,
+		router.TierMedium: f.AutoTierMedium,
+		// TierComplex and TierHardest are the same constant (alias for
+		// backward compatibility); --auto-tier-hardest wins when both are set.
 		router.TierComplex: f.AutoTierComplex,
+	}
+	if f.AutoTierHard != "" {
+		cfg.Models[router.TierHard] = f.AutoTierHard
+	}
+	if f.AutoTierHardest != "" {
+		// Overwrites the TierComplex entry (same constant) — the 4-tier
+		// top tier model takes precedence when both flags are set.
+		cfg.Models[router.TierHardest] = f.AutoTierHardest
 	}
 	if f.AutoSimpleMaxTokens > 0 {
 		cfg.SimpleMaxTokens = f.AutoSimpleMaxTokens
@@ -104,6 +118,7 @@ func (f *RouterFlags) buildAutoRoutingConfig() *router.AutoRoutingConfig {
 			}
 		}
 	}
+	cfg.UseFourTierMode = f.AutoUseFourTier
 	return &cfg
 }
 
@@ -158,10 +173,13 @@ func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
 	// Auto routing: model="auto" alias. Empty tier models disable the alias.
 	fs.StringVar(&f.AutoTierSimple, "auto-tier-simple", "", "model name to route simple prompts to when model=\"auto\" (empty = alias disabled)")
 	fs.StringVar(&f.AutoTierMedium, "auto-tier-medium", "", "model name to route medium-complexity prompts to when model=\"auto\"")
-	fs.StringVar(&f.AutoTierComplex, "auto-tier-complex", "", "model name to route complex prompts to when model=\"auto\"")
+	fs.StringVar(&f.AutoTierComplex, "auto-tier-complex", "", "model name to route complex prompts to when model=\"auto\" (3-tier mode top tier; alias for --auto-tier-hardest in 4-tier mode)")
+	fs.StringVar(&f.AutoTierHard, "auto-tier-hard", "", "model name to route hard reasoning prompts to when model=\"auto\" (4-tier mode only)")
+	fs.StringVar(&f.AutoTierHardest, "auto-tier-hardest", "", "model name to route hardest prompts to when model=\"auto\" (4-tier mode top tier)")
 	fs.IntVar(&f.AutoSimpleMaxTokens, "auto-simple-max-tokens", 0, "estimated-token threshold below which prompts are classified simple (0 = default 200)")
 	fs.IntVar(&f.AutoMediumMaxTokens, "auto-medium-max-tokens", 0, "estimated-token threshold below which prompts are classified medium (0 = default 600)")
 	fs.StringVar(&f.AutoReasoningKeywords, "auto-reasoning-keywords", "", "comma-separated substrings whose presence in a prompt bumps it one complexity tier (reasoning signal)")
+	fs.BoolVar(&f.AutoUseFourTier, "auto-use-four-tier", false, "enable 4-tier classification (simple/medium/hard/hardest); default is 3-tier (simple/medium/complex)")
 
 	// Model aliases: comma-separated "alias=canonical" pairs. An empty value
 	// disables alias resolution (backward compatible). Use this to expose
