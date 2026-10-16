@@ -158,21 +158,21 @@ func (c *wsConnection) releaseSlot() {
 // registry. reg may be nil (events are then dropped).
 func NewWSHub(reg registry.Registry, log *slog.Logger) *WSHub {
 	return &WSHub{
-		log:                log,
-		reg:                reg,
-		conns:              make(map[string]*wsConnection),
-		relaySendCh:        make(chan []byte, wsutil.SendQueueSize),
-		relayDone:          make(chan struct{}),
-		relayPending:       make(map[string]*pendingCall),
-		relayInFlight:      make(map[string]int64),
-		relayRejected429:   make(map[string]int64),
-		relayRejected504:   make(map[string]int64),
-		qm:                 newQueueMetrics(),
-		writeTimeout:       wsutil.WriteTimeout,
-		sendQueueSize:      wsutil.SendQueueSize,
-		maxInFlight:        defaultMaxInFlight,
-		maxConnections:     defaultMaxConnections,
-		workerMaxInFlight:  make(map[string]int),
+		log:               log,
+		reg:               reg,
+		conns:             make(map[string]*wsConnection),
+		relaySendCh:       make(chan []byte, wsutil.SendQueueSize),
+		relayDone:         make(chan struct{}),
+		relayPending:      make(map[string]*pendingCall),
+		relayInFlight:     make(map[string]int64),
+		relayRejected429:  make(map[string]int64),
+		relayRejected504:  make(map[string]int64),
+		qm:                newQueueMetrics(),
+		writeTimeout:      wsutil.WriteTimeout,
+		sendQueueSize:     wsutil.SendQueueSize,
+		maxInFlight:       defaultMaxInFlight,
+		maxConnections:    defaultMaxConnections,
+		workerMaxInFlight: make(map[string]int),
 	}
 }
 
