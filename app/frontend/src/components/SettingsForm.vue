@@ -83,6 +83,7 @@ const openSections = ref({
   worker: true,
   security: true,
   modelAliases: false,
+  autoRouting: false,
   app: true,
 })
 
@@ -107,6 +108,22 @@ async function loadSettings(): Promise<void> {
         }
       } catch {
         // keep persisted value
+      }
+      // Auto-routing: nil means disabled. Seed an empty object so the UI
+      // bindings (v-model) have something to attach to. Done BEFORE
+      // takeSnapshot so the seeded value counts as clean.
+      if (s.auto_routing === null) {
+        s.auto_routing = {
+          enabled: false,
+          use_four_tier: false,
+          tier_simple: '',
+          tier_medium: '',
+          tier_complex: '',
+          tier_hard: '',
+          tier_hardest: '',
+          simple_max_tokens: 0,
+          medium_max_tokens: 0,
+        }
       }
       takeSnapshot(s)
        // Populate the model-alias textarea from the persisted map
@@ -178,6 +195,7 @@ const dirty = computed(() => {
     'auto_start_on_login',
     'client_cert_cn',
     'model_aliases',
+    'auto_routing',
   ]
 
   for (const k of keys) {
@@ -248,6 +266,10 @@ async function handleSave(): Promise<void> {
   // not trigger a spurious SetAutoStart/delete-login-item call.
   const autostartChanged =
     settings.value.auto_start_on_login !== snapshot.value?.auto_start_on_login
+
+  // Check if auto routing has changed
+  const autoRoutingChanged =
+    settings.value.auto_routing !== snapshot.value?.auto_routing
 
   saving.value = true
   saveError.value = null
@@ -341,6 +363,30 @@ async function handleSave(): Promise<void> {
         autostartWarning.value = warning || null
       } catch {
         autostartWarning.value = 'Auto-start preference could not be applied.'
+      }
+    }
+
+    // Apply auto-routing configuration live if it changed
+    if (autoRoutingChanged && settings.value.auto_routing) {
+      try {
+        const models: Record<string, string> = {}
+        const ar = settings.value.auto_routing
+        if (ar.tier_simple) models['simple'] = ar.tier_simple
+        if (ar.tier_medium) models['medium'] = ar.tier_medium
+        if (ar.tier_complex) models['complex'] = ar.tier_complex
+        if (ar.tier_hard) models['hard'] = ar.tier_hard
+        if (ar.tier_hardest) models['hardest'] = ar.tier_hardest
+
+        await RouterClient.SetAutoRouting({
+          enabled: ar.enabled,
+          use_four_tier: ar.use_four_tier,
+          models,
+          simple_max_tokens: ar.simple_max_tokens,
+          medium_max_tokens: ar.medium_max_tokens,
+        })
+      } catch {
+        // Non-fatal: the value is persisted in YAML and takes effect on
+        // restart; the UI does not block the save for a live router push.
       }
     }
 
@@ -822,6 +868,136 @@ qwen-coder-7b=qwen2.5-coder-7b-instruct-mlx@4bit"
               >Requests for the alias name are routed to the canonical model.
               Quantization is pinned by including <code>@quant</code> in the
               canonical string.</span
+            >
+          </div>
+        </div>
+      </section>
+
+      <section class="form-section">
+        <h2>
+          <button
+            type="button"
+            class="section-toggle"
+            :aria-expanded="openSections.autoRouting"
+            @click="openSections.autoRouting = !openSections.autoRouting"
+          >
+            <span class="chevron" aria-hidden="true">{{ openSections.autoRouting ? '▾' : '▸' }}</span>
+            Auto Routing
+          </button>
+        </h2>
+        <div class="section-body" v-show="openSections.autoRouting">
+          <div class="field checkbox-field">
+            <label for="auto_routing_enabled">Enable auto routing</label>
+            <input
+              id="auto_routing_enabled"
+              type="checkbox"
+              v-model="settings.auto_routing.enabled"
+              :true-value="true"
+              :false-value="false"
+              :disabled="saving"
+            />
+            <span class="field-help"
+              >Automatically route prompts to models based on complexity.</span
+            >
+          </div>
+
+          <div v-if="settings.auto_routing?.enabled" class="field checkbox-field">
+            <label for="auto_routing_use_four_tier">Use 4-tier mode</label>
+            <input
+              id="auto_routing_use_four_tier"
+              type="checkbox"
+              v-model="settings.auto_routing.use_four_tier"
+              :true-value="true"
+              :false-value="false"
+              :disabled="saving"
+            />
+            <span class="field-help"
+              >Enable 4-tier classification (simple/medium/hard/hardest); default is 3-tier (simple/medium/complex).</span
+            >
+          </div>
+
+          <div v-if="settings.auto_routing?.enabled" class="field">
+            <label for="auto_routing_tier_simple">Simple tier model</label>
+            <input
+              id="auto_routing_tier_simple"
+              type="text"
+              v-model="settings.auto_routing.tier_simple"
+              :disabled="saving"
+              placeholder="Model name for simple prompts"
+            />
+          </div>
+
+          <div v-if="settings.auto_routing?.enabled" class="field">
+            <label for="auto_routing_tier_medium">Medium tier model</label>
+            <input
+              id="auto_routing_tier_medium"
+              type="text"
+              v-model="settings.auto_routing.tier_medium"
+              :disabled="saving"
+              placeholder="Model name for medium-complexity prompts"
+            />
+          </div>
+
+          <div v-if="settings.auto_routing?.enabled" class="field">
+            <label for="auto_routing_tier_complex">Complex tier model</label>
+            <input
+              id="auto_routing_tier_complex"
+              type="text"
+              v-model="settings.auto_routing.tier_complex"
+              :disabled="saving"
+              placeholder="Model name for complex prompts (3-tier top tier)"
+            />
+          </div>
+
+          <div v-if="settings.auto_routing?.enabled && settings.auto_routing.use_four_tier" class="field">
+            <label for="auto_routing_tier_hard">Hard tier model</label>
+            <input
+              id="auto_routing_tier_hard"
+              type="text"
+              v-model="settings.auto_routing.tier_hard"
+              :disabled="saving"
+              placeholder="Model name for hard reasoning prompts (4-tier only)"
+            />
+          </div>
+
+          <div v-if="settings.auto_routing?.enabled && settings.auto_routing.use_four_tier" class="field">
+            <label for="auto_routing_tier_hardest">Hardest tier model</label>
+            <input
+              id="auto_routing_tier_hardest"
+              type="text"
+              v-model="settings.auto_routing.tier_hardest"
+              :disabled="saving"
+              placeholder="Model name for hardest prompts (4-tier top tier)"
+            />
+          </div>
+
+          <div v-if="settings.auto_routing?.enabled" class="field">
+            <label for="auto_routing_simple_max_tokens">Simple max tokens</label>
+            <input
+              id="auto_routing_simple_max_tokens"
+              type="number"
+              min="1"
+              v-model.number="settings.auto_routing.simple_max_tokens"
+              :disabled="saving"
+              placeholder="200"
+            />
+            <span class="field-help"
+              >Prompts with estimated tokens below this are classified as simple (default: 200).</span
+            >
+          </div>
+
+          <div v-if="settings.auto_routing?.enabled" class="field">
+            <label for="auto_routing_medium_max_tokens">Medium max tokens</label>
+            <input
+              id="auto_routing_medium_max_tokens"
+              type="number"
+              min="1"
+              v-model.number="settings.auto_routing.medium_max_tokens"
+              :disabled="saving"
+              placeholder="600"
+            />
+            <span class="field-help"
+              >Prompts with estimated tokens below this are classified as medium (default: 600).</span
             >
           </div>
         </div>

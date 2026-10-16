@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -46,6 +47,13 @@ type SetAliasesRequest struct {
 
 // SetAliasesResponse is the body for a successful POST /meta/aliases.
 type SetAliasesResponse struct {
+	OK bool `json:"ok"`
+}
+
+// AutoRoutingResponse is the body for a successful POST /meta/auto-routing.
+// It is distinct from SetAliasesResponse so callers can decode each
+// endpoint's response without sharing a struct.
+type AutoRoutingResponse struct {
 	OK bool `json:"ok"`
 }
 
@@ -390,17 +398,10 @@ func (s *Server) SetAutoRouting(cfg *AutoRoutingConfig) {
 
 // autoRoutingActiveLocked is the caller-holds-RLock form of the auto-routing
 // check. It is used inside resolveAutoModel* where the caller already holds
-// autoRoutingMu to avoid a re-entrant lock.
+// autoRoutingMu to avoid a re-entrant lock. Delegates to the package-level
+// autoRoutingActive helper so the check has a single implementation.
 func (s *Server) autoRoutingActiveLocked() bool {
-	if s.autoRouting == nil || s.autoRouting.Models == nil {
-		return false
-	}
-	for _, m := range s.autoRouting.Models {
-		if m != "" {
-			return true
-		}
-	}
-	return false
+	return autoRoutingActive(s.autoRouting)
 }
 
 // resolveAutoModel rewrites a request's model field when it equals the
@@ -569,6 +570,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/dev/register", s.handleDevRegister)
 	mux.HandleFunc("/meta/models/popular", s.handlePopularModels)
 	mux.HandleFunc("/meta/aliases", s.handleSetAliases)
+	mux.HandleFunc("/meta/auto-routing", s.handleAutoRouting)
 	mux.HandleFunc("/meta/connections/count", s.handleConnectionCount)
 	mux.HandleFunc("/v1/queue/stats", s.handleQueueStats)
 
@@ -707,7 +709,7 @@ func (s *Server) wrapInferenceEndpoints(next http.Handler, apiKey string) http.H
 	apiKeyMW := security.NewAPIKeyMiddleware(apiKey, apiKey != "")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/chat/completions", "/v1/completions", "/meta/aliases":
+		case "/v1/chat/completions", "/v1/completions", "/meta/aliases", "/meta/auto-routing":
 			apiKeyMW(next).ServeHTTP(w, r)
 		default:
 			next.ServeHTTP(w, r)
@@ -1131,6 +1133,59 @@ func (s *Server) handleSetAliases(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(SetAliasesResponse{OK: true}); err != nil {
 		s.log.Error("failed to encode set-aliases response", "error", err)
+	}
+}
+
+// handleAutoRouting handles GET/POST /meta/auto-routing. GET returns the current
+// auto-routing configuration as a DTO with string tier names. POST replaces the
+// configuration atomically; the endpoint is replace-all, not a delta. An empty
+// body or {"enabled": false} clears the config (disables auto routing). Models
+// with no non-empty tier model are treated as disabled (nil config) for
+// backward compatibility. Auth is via API key middleware (same as /meta/aliases).
+func (s *Server) handleAutoRouting(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.autoRoutingMu.RLock()
+		cfg := s.autoRouting
+		s.autoRoutingMu.RUnlock()
+
+		dto := toAutoRoutingConfigDTO(cfg)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(dto); err != nil {
+			s.log.Error("failed to encode auto-routing response", "error", err)
+		}
+		return
+
+	case http.MethodPost:
+		var req AutoRoutingConfigRequest
+		// Decode body; empty body decodes to zero-value struct, which is fine —
+		// enabled will be false and buildAutoRoutingConfig will return nil.
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			// If body is empty, json.Decoder returns EOF, which we treat as a
+			// clear (enabled=false). Any other decode error is bad request.
+			if !errors.Is(err, io.EOF) {
+				s.log.Error("failed to parse auto-routing request", "error", err)
+				writeErrorResponse(w, http.StatusBadRequest, "invalid request", "invalid_request_error", "parse_error")
+				return
+			}
+			// Empty body → clear config
+			req = AutoRoutingConfigRequest{}
+		}
+
+		cfg := buildAutoRoutingConfig(&req)
+		s.SetAutoRouting(cfg)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(AutoRoutingResponse{OK: true}); err != nil {
+			s.log.Error("failed to encode auto-routing response", "error", err)
+		}
+		return
+
+	default:
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error", "method_not_allowed")
+		return
 	}
 }
 

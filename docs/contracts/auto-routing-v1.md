@@ -134,6 +134,98 @@ allocation-heavy parsing. Deterministic and side-effect free.
   "no model configured for complexity tier …" (503), same as v1. No silent
   misrouting, no fallback to a different tier's model.
 
+### Runtime Configuration
+
+Auto-routing is reconfigurable at runtime without a router restart via two
+HTTP endpoints on the router. These endpoints are protected by the same
+API-key middleware as `/meta/aliases` and `/meta/models/popular`.
+
+**Endpoints:**
+
+| Method | Path               | Description                                       |
+|---|---|---|
+| `GET`  | `/meta/auto-routing`  | Returns the current config as a DTO.             |
+| `POST` | `/meta/auto-routing`  | Atomically replaces the config; returns `{"ok": true}`. |
+
+`GET` returns `200` with the current DTO even when auto-routing is disabled
+(`enabled: false`). `POST` with an empty body or `enabled: false` clears the
+runtime config (the router falls back to CLI-flag defaults, if any). Invalid
+JSON returns `400`; unsupported methods return `405`.
+
+**DTO shape:**
+
+```json
+{
+  "enabled": true,
+  "use_four_tier": false,
+  "simple_max_tokens": 200,
+  "medium_max_tokens": 600,
+  "models": {
+    "simple": "small-model",
+    "medium": "medium-model",
+    "hardest": "large-model"
+  }
+}
+```
+
+- **String tier names** — the DTO uses `"simple"`, `"medium"`, `"hard"`,
+  `"hardest"` (and the backward-compatible alias `"complex"`, which maps to
+  `hardest`) instead of serializing `ComplexityTier` integers. This keeps the
+  wire format stable across tier-ladder changes.
+- **Fields:** `enabled` (bool), `use_four_tier` (bool),
+  `simple_max_tokens` (int, default 200), `medium_max_tokens` (int, default
+  600), `models` (map of tier name → model name).
+- Tier names that do not match a known tier are silently skipped on `POST`,
+  and entries with an empty model name are dropped — the router never stores a
+  blank mapping.
+
+**Backward compatibility with runtime config:**
+
+- **CLI flags remain the startup defaults.** The router builds its initial
+  `AutoRoutingConfig` from `--auto-tier-*` flags exactly as before
+  (`cmd/router/main.go`). The runtime endpoint does not read or merge the
+  flags; it replaces the in-memory config atomically.
+- **Runtime endpoint overrides CLI config.** A `POST` after startup takes
+  effect immediately for new requests. There is no merge: the caller must
+  send the full desired configuration.
+- **3-tier default unchanged.** When no flags are set and no `POST` has been
+  received, the router behaves exactly as the original v1 deployment
+  (`model="auto"` is a no-op / 503).
+- **Nil/empty config disables auto routing.** A `POST` with `enabled: false`
+  or an empty `models` map clears the runtime config. With no runtime config
+  and no CLI flags, `model="auto"` is treated as a literal unknown model name
+  (`no_workers` / 503), not as an alias.
+
+**Desktop app integration (`app/`):**
+
+- `AutoRoutingSettings` struct in `app/config.go` is persisted to YAML under
+  the `auto_routing` key. A `nil` pointer means auto routing is disabled.
+- `RouterClient.GetAutoRouting` / `RouterClient.SetAutoRouting` in
+  `app/router_client.go` call the endpoints above (GET and POST respectively),
+  applying the same auth and error-handling patterns as
+  `GetModelAliases` / `SetModelAliases`.
+- `buildRouterArgs` in `app/args.go` generates `--auto-tier-*` CLI flags from
+  `Settings.AutoRouting` so the router starts with the persisted config
+  already applied. Empty/whitespace-only tier values are skipped, mirroring
+  the router's own `buildAutoRoutingConfig` trimming behavior.
+- `SettingsForm.vue` includes a collapsible "Auto Routing" section that edits
+  `enabled`, `use_four_tier`, the five tier model inputs, and the two
+  max-tokens thresholds. On save, if the auto-routing block changed, the form
+  calls `RouterClient.SetAutoRouting` to push the new config live; a failure
+  is non-fatal (the persisted YAML takes effect on the next router restart).
+
+**Supervisor wiring:**
+
+- CLI flags set the config at router startup (`cmd/router/main.go` →
+  `buildAutoRoutingConfig` → `server.SetAutoRouting`).
+- After the router process starts, the desktop supervisor may call
+  `RouterClient.SetAutoRouting()` to confirm the live state matches the
+  persisted settings. This is idempotent: the endpoint atomically replaces
+  the config, so re-issuing the same payload is a no-op.
+- Both paths are idempotent. `SetAutoRouting` replaces atomically; there is no
+  compare-and-swap, so operators that want a "patch" semantics must read
+  (`GET`), modify, and `POST` the full object.
+
 ### Enforcement points
 
 `pkg/router/server.go` — in `handleChatCompletions` and `handleCompletions`,

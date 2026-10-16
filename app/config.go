@@ -9,26 +9,41 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// AutoRoutingSettings holds runtime-configurable auto-routing configuration.
+// Nil pointer means auto routing is disabled.
+type AutoRoutingSettings struct {
+	Enabled         bool   `json:"enabled"`
+	UseFourTier     bool   `json:"use_four_tier"`
+	TierSimple      string `json:"tier_simple"`
+	TierMedium      string `json:"tier_medium"`
+	TierComplex     string `json:"tier_complex"`
+	TierHard        string `json:"tier_hard"`
+	TierHardest     string `json:"tier_hardest"`
+	SimpleMaxTokens int    `json:"simple_max_tokens"`
+	MediumMaxTokens int    `json:"medium_max_tokens"`
+}
+
 // Settings holds non-secret configuration options plus secret references and
 // values. The "yaml\"-\" tag on Secrets is literal: never include the actual
 // secret value in the YAML file. The secret_refs field is used instead to
 // reference a secret managed by the Keyring.
 // nolint:tagalign
 type Settings struct {
-	RouterAddr               string            `json:"router_addr" yaml:"router_addr"`
-	RouterBinaryPath         string            `json:"router_binary_path" yaml:"router_binary_path"`
-	WorkerBackend            string            `json:"worker_backend" yaml:"worker_backend"`
-	WorkerModelPath          string            `json:"worker_model_path" yaml:"worker_model_path"`
-	WorkerPort               int               `json:"worker_port" yaml:"worker_port"`
-	WorkerBinaryPath         string            `json:"worker_binary_path" yaml:"worker_binary_path"`
-	WorkerEnableHealthChecks *bool             `json:"worker_enable_health_checks" yaml:"worker_enable_health_checks"`
-	RelayURL                 string            `json:"relay_url" yaml:"relay_url"`
-	ModelAliases             map[string]string `json:"model_aliases" yaml:"model_aliases"`
-	DevMode                  *bool             `json:"dev_mode" yaml:"dev_mode"`
-	ClientCertCN             string            `json:"client_cert_cn" yaml:"client_cert_cn"`
-	AutoStartOnLogin         *bool             `json:"auto_start_on_login" yaml:"auto_start_on_login"`
-	Secrets                  map[string]string `json:"secrets" yaml:"-"`
-	SecretRefs               map[string]string `json:"secret_refs" yaml:"secret_refs"`
+	RouterAddr               string               `json:"router_addr" yaml:"router_addr"`
+	RouterBinaryPath         string               `json:"router_binary_path" yaml:"router_binary_path"`
+	WorkerBackend            string               `json:"worker_backend" yaml:"worker_backend"`
+	WorkerModelPath          string               `json:"worker_model_path" yaml:"worker_model_path"`
+	WorkerPort               int                  `json:"worker_port" yaml:"worker_port"`
+	WorkerBinaryPath         string               `json:"worker_binary_path" yaml:"worker_binary_path"`
+	WorkerEnableHealthChecks *bool                `json:"worker_enable_health_checks" yaml:"worker_enable_health_checks"`
+	RelayURL                 string               `json:"relay_url" yaml:"relay_url"`
+	ModelAliases             map[string]string    `json:"model_aliases" yaml:"model_aliases"`
+	DevMode                  *bool                `json:"dev_mode" yaml:"dev_mode"`
+	ClientCertCN             string               `json:"client_cert_cn" yaml:"client_cert_cn"`
+	AutoStartOnLogin         *bool                `json:"auto_start_on_login" yaml:"auto_start_on_login"`
+	AutoRouting              *AutoRoutingSettings `json:"auto_routing" yaml:"auto_routing"`
+	Secrets                  map[string]string    `json:"secrets" yaml:"-"`
+	SecretRefs               map[string]string    `json:"secret_refs" yaml:"secret_refs"`
 }
 
 // DefaultSettings returns a Settings instance with sensible defaults per the
@@ -237,6 +252,8 @@ func mergeDefaults(s Settings) Settings {
 	if s.AutoStartOnLogin == nil {
 		s.AutoStartOnLogin = def.AutoStartOnLogin
 	}
+	// AutoRouting: nil means disabled. Keep nil as-is (disabled).
+	// Do not default to a non-nil empty struct.
 	// Ensure maps are initialised (LoadFrom already does this but we cannot
 	// rely on it after manual construction). This protects against nil map
 	// dereference on Save and other operations.

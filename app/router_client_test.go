@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -375,6 +376,240 @@ func TestRouterClientNoKeyWhenEmpty(t *testing.T) {
 	}
 	if gotAuth != "" {
 		t.Errorf("X-API-Key = %q with no key configured, want empty (dev mode)", gotAuth)
+	}
+}
+
+// TestGetAutoRouting verifies GetAutoRouting performs a GET against
+// {effectiveBaseURL}/meta/auto-routing and decodes the router's
+// AutoRoutingConfigRequest DTO, mirroring TestGetWorkers.
+func TestGetAutoRouting(t *testing.T) {
+	body := router.AutoRoutingConfigRequest{
+		Enabled:         true,
+		UseFourTier:     true,
+		Models:          map[string]string{"simple": "small-model", "hardest": "hardest-model"},
+		SimpleMaxTokens: 150,
+		MediumMaxTokens: 500,
+	}
+
+	var gotPath, gotMethod, gotAuth string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		gotAuth = r.Header.Get("X-API-Key")
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(body); err != nil {
+			t.Errorf("encode auto-routing body: %v", err)
+		}
+	}))
+	defer ts.Close()
+
+	c := NewRouterClient(ts.URL) // no supervisor: dev-mode path, plain http
+	got, err := c.GetAutoRouting(context.Background())
+	if err != nil {
+		t.Fatalf("GetAutoRouting: %v", err)
+	}
+
+	if gotMethod != http.MethodGet {
+		t.Errorf("used method %q, want GET", gotMethod)
+	}
+	if gotPath != "/meta/auto-routing" {
+		t.Errorf("used path %q, want /meta/auto-routing", gotPath)
+	}
+	if gotAuth != "" {
+		t.Errorf("unexpected X-API-Key header %q on a plain-http client", gotAuth)
+	}
+	if !got.Enabled {
+		t.Error("Enabled = false, want true")
+	}
+	if !got.UseFourTier {
+		t.Error("UseFourTier = false, want true")
+	}
+	if got.SimpleMaxTokens != 150 {
+		t.Errorf("SimpleMaxTokens = %d, want 150", got.SimpleMaxTokens)
+	}
+	if got.MediumMaxTokens != 500 {
+		t.Errorf("MediumMaxTokens = %d, want 500", got.MediumMaxTokens)
+	}
+	if len(got.Models) != len(body.Models) {
+		t.Fatalf("len(models) = %d, want %d", len(got.Models), len(body.Models))
+	}
+	for k, want := range body.Models {
+		if got.Models[k] != want {
+			t.Errorf("models[%q] = %q, want %q", k, got.Models[k], want)
+		}
+	}
+}
+
+// TestGetAutoRoutingNon200 verifies a non-200 response from /meta/auto-routing
+// is surfaced as an error mentioning the status code and the body, mirroring
+// TestGetWorkersNon200.
+func TestGetAutoRoutingNon200(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	c := NewRouterClient(ts.URL)
+	_, err := c.GetAutoRouting(context.Background())
+	if err == nil {
+		t.Fatal("GetAutoRouting: want error for 500, got nil")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error %q should mention status code 500", err)
+	}
+}
+
+// TestGetAutoRoutingUnreachable verifies a dial failure is surfaced with the
+// "router unreachable" phrasing the UI keys off, mirroring
+// TestGetWorkersUnreachable.
+func TestGetAutoRoutingUnreachable(t *testing.T) {
+	// Point at a port that is not listening.
+	c := NewRouterClient("http://127.0.0.1:1")
+	_, err := c.GetAutoRouting(context.Background())
+	if err == nil {
+		t.Fatal("GetAutoRouting: want error for unreachable router, got nil")
+	}
+	if !strings.Contains(err.Error(), "router unreachable") {
+		t.Errorf("error %q should mention router unreachable", err)
+	}
+}
+
+// TestGetAutoRoutingBadJSON verifies a 200 with a malformed body returns a
+// decode error rather than a partial config, mirroring TestGetWorkersBadJSON.
+func TestGetAutoRoutingBadJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{not-json"))
+	}))
+	defer ts.Close()
+
+	c := NewRouterClient(ts.URL)
+	_, err := c.GetAutoRouting(context.Background())
+	if err == nil {
+		t.Fatal("GetAutoRouting: want decode error for malformed body, got nil")
+	}
+	if !strings.Contains(err.Error(), "decode auto-routing response") {
+		t.Errorf("error %q should mention decode failure", err)
+	}
+}
+
+// TestSetAutoRouting verifies SetAutoRouting performs a POST against
+// {effectiveBaseURL}/meta/auto-routing with the full config as JSON body and
+// only returns nil when the router answers {"ok": true}, mirroring the
+// SetModelAliases contract.
+func TestSetAutoRouting(t *testing.T) {
+	want := AutoRoutingConfigRequest{
+		Enabled:         true,
+		UseFourTier:     true,
+		Models:          map[string]string{"simple": "small", "hardest": "hardest"},
+		SimpleMaxTokens: 150,
+		MediumMaxTokens: 500,
+	}
+
+	var gotPath, gotMethod, gotCT string
+	var gotBody AutoRoutingConfigRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		gotCT = r.Header.Get("Content-Type")
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer ts.Close()
+
+	c := NewRouterClient(ts.URL)
+	if err := c.SetAutoRouting(context.Background(), want); err != nil {
+		t.Fatalf("SetAutoRouting: %v", err)
+	}
+
+	if gotMethod != http.MethodPost {
+		t.Errorf("used method %q, want POST", gotMethod)
+	}
+	if gotPath != "/meta/auto-routing" {
+		t.Errorf("used path %q, want /meta/auto-routing", gotPath)
+	}
+	if gotCT != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", gotCT)
+	}
+	if gotBody.Enabled != want.Enabled ||
+		gotBody.UseFourTier != want.UseFourTier ||
+		gotBody.SimpleMaxTokens != want.SimpleMaxTokens ||
+		gotBody.MediumMaxTokens != want.MediumMaxTokens ||
+		!reflect.DeepEqual(gotBody.Models, want.Models) {
+		t.Errorf("body = %+v, want %+v", gotBody, want)
+	}
+}
+
+// TestSetAutoRoutingNon200 verifies a non-200 response from /meta/auto-routing
+// is surfaced as an error mentioning the status code, mirroring the
+// SetModelAliases error contract.
+func TestSetAutoRoutingNon200(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusBadGateway)
+	}))
+	defer ts.Close()
+
+	c := NewRouterClient(ts.URL)
+	err := c.SetAutoRouting(context.Background(), AutoRoutingConfigRequest{Enabled: true})
+	if err == nil {
+		t.Fatal("SetAutoRouting: want error for 502, got nil")
+	}
+	if !strings.Contains(err.Error(), "502") {
+		t.Errorf("error %q should mention status code 502", err)
+	}
+}
+
+// TestSetAutoRoutingUnreachable verifies a dial failure is surfaced with the
+// "router unreachable" phrasing.
+func TestSetAutoRoutingUnreachable(t *testing.T) {
+	c := NewRouterClient("http://127.0.0.1:1")
+	err := c.SetAutoRouting(context.Background(), AutoRoutingConfigRequest{Enabled: true})
+	if err == nil {
+		t.Fatal("SetAutoRouting: want error for unreachable router, got nil")
+	}
+	if !strings.Contains(err.Error(), "router unreachable") {
+		t.Errorf("error %q should mention router unreachable", err)
+	}
+}
+
+// TestSetAutoRoutingBadJSON verifies a 200 with a malformed response body
+// returns a decode error rather than silently succeeding.
+func TestSetAutoRoutingBadJSON(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{not-json"))
+	}))
+	defer ts.Close()
+
+	c := NewRouterClient(ts.URL)
+	err := c.SetAutoRouting(context.Background(), AutoRoutingConfigRequest{Enabled: true})
+	if err == nil {
+		t.Fatal("SetAutoRouting: want decode error for malformed body, got nil")
+	}
+	if !strings.Contains(err.Error(), "decode auto-routing response") {
+		t.Errorf("error %q should mention decode failure", err)
+	}
+}
+
+// TestSetAutoRoutingNotOK verifies a 200 response with {"ok": false} is
+// surfaced as an error rather than a success.
+func TestSetAutoRoutingNotOK(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":false}`))
+	}))
+	defer ts.Close()
+
+	c := NewRouterClient(ts.URL)
+	err := c.SetAutoRouting(context.Background(), AutoRoutingConfigRequest{Enabled: true})
+	if err == nil {
+		t.Fatal("SetAutoRouting: want error for ok=false, got nil")
+	}
+	if !strings.Contains(err.Error(), "ok=false") {
+		t.Errorf("error %q should mention ok=false", err)
 	}
 }
 

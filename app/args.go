@@ -7,6 +7,42 @@ import (
 	"strings"
 )
 
+// buildAutoRoutingArgs converts Settings.AutoRouting to CLI flags for the router.
+// Returns nil when auto routing is disabled (AutoRouting is nil or Enabled is false).
+// Tier values are trimmed so whitespace-only entries are skipped, mirroring the
+// router's buildAutoRoutingConfig which also trims.
+func buildAutoRoutingArgs(s Settings) []string {
+	if s.AutoRouting == nil || !s.AutoRouting.Enabled {
+		return nil
+	}
+	var args []string
+	if v := strings.TrimSpace(s.AutoRouting.TierSimple); v != "" {
+		args = append(args, "--auto-tier-simple", v)
+	}
+	if v := strings.TrimSpace(s.AutoRouting.TierMedium); v != "" {
+		args = append(args, "--auto-tier-medium", v)
+	}
+	if v := strings.TrimSpace(s.AutoRouting.TierComplex); v != "" {
+		args = append(args, "--auto-tier-complex", v)
+	}
+	if v := strings.TrimSpace(s.AutoRouting.TierHard); v != "" {
+		args = append(args, "--auto-tier-hard", v)
+	}
+	if v := strings.TrimSpace(s.AutoRouting.TierHardest); v != "" {
+		args = append(args, "--auto-tier-hardest", v)
+	}
+	if s.AutoRouting.UseFourTier {
+		args = append(args, "--auto-use-four-tier")
+	}
+	if s.AutoRouting.SimpleMaxTokens > 0 {
+		args = append(args, "--auto-simple-max-tokens", strconv.Itoa(s.AutoRouting.SimpleMaxTokens))
+	}
+	if s.AutoRouting.MediumMaxTokens > 0 {
+		args = append(args, "--auto-medium-max-tokens", strconv.Itoa(s.AutoRouting.MediumMaxTokens))
+	}
+	return args
+}
+
 // buildRouterArgs constructs the CLI flags for the router binary from the
 // saved Settings. No secrets are logged here.
 func (s *Supervisor) buildRouterArgs(settings Settings) ([]string, error) {
@@ -36,6 +72,10 @@ func (s *Supervisor) buildRouterArgs(settings Settings) ([]string, error) {
 		if len(parts) > 0 {
 			args = append(args, "--model-alias", strings.Join(parts, ","))
 		}
+	}
+	// Auto-routing: add flags if enabled.
+	if autoArgs := buildAutoRoutingArgs(settings); len(autoArgs) > 0 {
+		args = append(args, autoArgs...)
 	}
 	if !modeFromSettings(settings).IsDev() {
 		apiKey, err := s.resolveSecret(secretRefRouterAPIKey)

@@ -45,6 +45,17 @@ func TestConfigSaveLoadRoundTrip(t *testing.T) {
 	s.DevMode = &prod
 	s.ClientCertCN = "desktop-client"
 	s.AutoStartOnLogin = boolPtr(true)
+	s.AutoRouting = &AutoRoutingSettings{
+		Enabled:         true,
+		UseFourTier:     true,
+		TierSimple:      "small-model",
+		TierMedium:      "medium-model",
+		TierComplex:     "large-model",
+		TierHard:        "hard-model",
+		TierHardest:     "hardest-model",
+		SimpleMaxTokens: 150,
+		MediumMaxTokens: 500,
+	}
 	s.Secrets = map[string]string{"router/apikey": "must-not-leak"}
 	s.SecretRefs = map[string]string{"router/apikey": "router/apikey"}
 
@@ -95,6 +106,36 @@ func TestConfigSaveLoadRoundTrip(t *testing.T) {
 	}
 	if loaded.AutoStartOnLogin == nil || !*loaded.AutoStartOnLogin {
 		t.Errorf("AutoStartOnLogin: got %v want explicit true", loaded.AutoStartOnLogin)
+	}
+	if loaded.AutoRouting == nil {
+		t.Fatal("AutoRouting: got nil, want non-nil")
+	}
+	if !loaded.AutoRouting.Enabled {
+		t.Errorf("AutoRouting.Enabled = %v, want true", loaded.AutoRouting.Enabled)
+	}
+	if !loaded.AutoRouting.UseFourTier {
+		t.Errorf("AutoRouting.UseFourTier = %v, want true", loaded.AutoRouting.UseFourTier)
+	}
+	if loaded.AutoRouting.TierSimple != s.AutoRouting.TierSimple {
+		t.Errorf("AutoRouting.TierSimple = %q, want %q", loaded.AutoRouting.TierSimple, s.AutoRouting.TierSimple)
+	}
+	if loaded.AutoRouting.TierMedium != s.AutoRouting.TierMedium {
+		t.Errorf("AutoRouting.TierMedium = %q, want %q", loaded.AutoRouting.TierMedium, s.AutoRouting.TierMedium)
+	}
+	if loaded.AutoRouting.TierComplex != s.AutoRouting.TierComplex {
+		t.Errorf("AutoRouting.TierComplex = %q, want %q", loaded.AutoRouting.TierComplex, s.AutoRouting.TierComplex)
+	}
+	if loaded.AutoRouting.TierHard != s.AutoRouting.TierHard {
+		t.Errorf("AutoRouting.TierHard = %q, want %q", loaded.AutoRouting.TierHard, s.AutoRouting.TierHard)
+	}
+	if loaded.AutoRouting.TierHardest != s.AutoRouting.TierHardest {
+		t.Errorf("AutoRouting.TierHardest = %q, want %q", loaded.AutoRouting.TierHardest, s.AutoRouting.TierHardest)
+	}
+	if loaded.AutoRouting.SimpleMaxTokens != s.AutoRouting.SimpleMaxTokens {
+		t.Errorf("AutoRouting.SimpleMaxTokens = %d, want %d", loaded.AutoRouting.SimpleMaxTokens, s.AutoRouting.SimpleMaxTokens)
+	}
+	if loaded.AutoRouting.MediumMaxTokens != s.AutoRouting.MediumMaxTokens {
+		t.Errorf("AutoRouting.MediumMaxTokens = %d, want %d", loaded.AutoRouting.MediumMaxTokens, s.AutoRouting.MediumMaxTokens)
 	}
 	if len(loaded.Secrets) != 0 {
 		t.Errorf("Secrets should be empty after load (yaml:\"-\"), got %v", loaded.Secrets)

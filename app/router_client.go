@@ -480,3 +480,95 @@ func parseConnectionCountResponse(body []byte) (int, error) {
 	}
 	return resp.Connections, nil
 }
+
+// AutoRoutingConfigRequest is the JSON DTO for GET/POST /meta/auto-routing.
+// Mirrors the router's AutoRoutingConfigRequest type.
+type AutoRoutingConfigRequest struct {
+	Enabled         bool              `json:"enabled"`
+	UseFourTier     bool              `json:"use_four_tier"`
+	Models          map[string]string `json:"models"`
+	SimpleMaxTokens int               `json:"simple_max_tokens"`
+	MediumMaxTokens int               `json:"medium_max_tokens"`
+}
+
+// autoRoutingPath builds the full /meta/auto-routing URL for the configured base.
+func (c *RouterClient) autoRoutingPath() string {
+	return c.baseURL + "/meta/auto-routing"
+}
+
+// GetAutoRouting fetches the current auto-routing configuration from the router.
+// Returns a zero-value AutoRoutingConfigRequest when the router is unreachable or
+// returns a bad body.
+func (c *RouterClient) GetAutoRouting(ctx context.Context) (AutoRoutingConfigRequest, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.autoRoutingPath(), nil)
+	if err != nil {
+		return AutoRoutingConfigRequest{}, fmt.Errorf("build request: %w", err)
+	}
+	c.applyAuth(req)
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return AutoRoutingConfigRequest{}, fmt.Errorf("router unreachable at %s: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return AutoRoutingConfigRequest{}, fmt.Errorf("router /meta/auto-routing returned %d: %s", resp.StatusCode, truncateBody(body))
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return AutoRoutingConfigRequest{}, fmt.Errorf("read router body: %w", err)
+	}
+
+	var cfg AutoRoutingConfigRequest
+	if err := json.Unmarshal(body, &cfg); err != nil {
+		return AutoRoutingConfigRequest{}, fmt.Errorf("decode auto-routing response: %w (body snippet: %q)", err, truncateBody(body))
+	}
+	return cfg, nil
+}
+
+// SetAutoRouting POSTs the auto-routing configuration to the router's /meta/auto-routing
+// endpoint, applying configuration live without a router restart. The router expects
+// the full configuration; the caller must merge changes before calling.
+// Mirrors SetModelAliases: marshal body, POST, check {"ok": true} response.
+func (c *RouterClient) SetAutoRouting(ctx context.Context, cfg AutoRoutingConfigRequest) error {
+	body, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal auto-routing config: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.autoRoutingPath(), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	c.applyAuth(req)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("router unreachable at %s: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return fmt.Errorf("router /meta/auto-routing returned %d: %s", resp.StatusCode, truncateBody(raw))
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read auto-routing response: %w", err)
+	}
+	var respBody struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal(raw, &respBody); err != nil {
+		return fmt.Errorf("decode auto-routing response: %w (body: %q)", err, truncateBody(raw))
+	}
+	if !respBody.OK {
+		return fmt.Errorf("router /meta/auto-routing returned ok=false")
+	}
+	return nil
+}
