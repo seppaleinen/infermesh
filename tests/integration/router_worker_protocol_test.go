@@ -105,12 +105,16 @@ func (e *protocolEnv) stop() {
 			continue
 		}
 		_ = cmd.Process.Signal(syscall.SIGTERM)
-		done := make(chan error, 1)
-		go func(c *exec.Cmd) { done <- c.Wait() }(cmd)
+		done := make(chan struct{})
+		go func(c *exec.Cmd) {
+			_ = c.Wait()
+			close(done)
+		}(cmd)
 		select {
 		case <-done:
 		case <-time.After(10 * time.Second):
 			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
 		}
 	}
 }

@@ -1650,7 +1650,9 @@ func TestServer_ProdModeEnforcesMTLS(t *testing.T) {
 	})
 
 	cancel()
-	<-errChan
+	if err := <-errChan; err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, http.ErrServerClosed) {
+		t.Errorf("server Start returned error: %v", err)
+	}
 }
 
 // TestRefreshModels_DiscoveryAfterStart verifies that refreshModels surfaces
