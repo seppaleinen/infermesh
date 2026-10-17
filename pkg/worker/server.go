@@ -219,8 +219,15 @@ func NewServer(log *slog.Logger, addr string, cfg security.Config) *Server {
 func (s *Server) SetBackend(backend Backend, model string) {
 	s.backend = NewBackendAdapter(backend, model)
 
-	// Initialize concurrency estimator
-	if e := NewConcurrencyEstimator("/tmp/infermesh-concurrency-cache.json"); e != nil {
+	// Initialize concurrency estimator, seeded with the backend's thread
+	// count when available (llama-cpp). Backends without a thread concept
+	// leave threads = 0, so the estimator falls back to defaultInitCap = 4
+	// (backward compatible, issue #139).
+	initCap := defaultInitCap
+	if metrics, err := backend.GetMetrics(); err == nil && metrics.Threads > 0 {
+		initCap = metrics.Threads
+	}
+	if e := NewConcurrencyEstimatorWithInit("/tmp/infermesh-concurrency-cache.json", initCap); e != nil {
 		s.concurrencyEstimator = e
 	}
 
@@ -467,6 +474,11 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	if s.concurrencyEstimator != nil {
 		worker.Capabilities.ConcurrencyCap = s.concurrencyEstimator.Cap()
 	}
+	if s.backend != nil {
+		if metrics, err := s.backend.GetMetrics(); err == nil && metrics.Threads > 0 {
+			worker.Capabilities.Threads = metrics.Threads
+		}
+	}
 
 	if err := json.NewEncoder(w).Encode(worker); err != nil {
 		s.log.Error("failed to encode capabilities", "error", err)
@@ -552,8 +564,12 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store in history for debugging
+	// Store in history for debugging (capped at maxChatHistory to prevent unbounded growth)
+	const maxChatHistory = 1000
 	s.chatHistory = append(s.chatHistory, req)
+	if len(s.chatHistory) > maxChatHistory {
+		s.chatHistory = s.chatHistory[len(s.chatHistory)-maxChatHistory:]
+	}
 
 	// Check if backend is configured
 	if s.backend == nil {

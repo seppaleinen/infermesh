@@ -29,6 +29,8 @@ type memoryRegistry struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
+	// subFailures tracks consecutive failed probe sends for pruning dead subscribers
+	subFailures map[chan Event]int
 }
 
 // New creates a new in-memory Registry.
@@ -40,6 +42,7 @@ func New(cfg Config, log *slog.Logger) (Registry, error) {
 		cfg:     cfg,
 		log:     log,
 		workers: make(map[string]*workerState),
+		subFailures: make(map[chan Event]int),
 	}, nil
 }
 
@@ -51,7 +54,7 @@ func (r *memoryRegistry) Start(ctx context.Context) error {
 	return nil
 }
 
-// sweepLoop periodically checks for stale workers.
+// sweepLoop periodically checks for stale workers and prunes dead subscribers.
 func (r *memoryRegistry) sweepLoop() {
 	defer r.wg.Done()
 	ticker := time.NewTicker(r.cfg.CheckInterval)
@@ -63,8 +66,40 @@ func (r *memoryRegistry) sweepLoop() {
 			return
 		case <-ticker.C:
 			r.checkStale()
+			r.pruneSubs()
 		}
 	}
+}
+
+// pruneSubs removes dead subscriber channels by probing with a non-blocking send.
+// A channel is considered dead if it fails to receive a probe for maxSubFailures consecutive attempts.
+func (r *memoryRegistry) pruneSubs() {
+	const maxSubFailures = 12 // ~1 minute at 5s interval
+	probeEvent := Event{} // zero-value event is safe; consumers ignore unknown types
+
+	r.subMu.Lock()
+	defer r.subMu.Unlock()
+	kept := r.subs[:0]
+	for _, ch := range r.subs {
+		select {
+		case ch <- probeEvent:
+			// channel accepted probe - reset failure counter
+			r.subFailures[ch] = 0
+			kept = append(kept, ch)
+		default:
+			// channel blocked/full - increment failure counter
+			if failures := r.subFailures[ch]; failures < maxSubFailures {
+				r.subFailures[ch] = failures + 1
+				kept = append(kept, ch)
+			} else {
+				// too many consecutive failures - consider channel dead and drop it
+				delete(r.subFailures, ch)
+				// Note: we intentionally do not close the channel here as
+				// ownership remains with the subscriber per the Subscribe() contract
+			}
+		}
+	}
+	r.subs = kept
 }
 
 // checkStale marks unavailable/removes workers that have stopped reporting.

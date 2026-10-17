@@ -32,6 +32,7 @@ type mockBackend struct {
 	mu          sync.Mutex
 	models      []protocol.ModelInfo
 	healthCheck error
+	threads     int // effective thread count reported by GetMetrics (issue #139)
 
 	// streamError, when non-nil, is sent on the streaming error channel.
 	// streamErrorBeforeChunks controls whether the error is emitted before
@@ -83,7 +84,19 @@ func (m *mockBackend) ListModels() ([]protocol.ModelInfo, error) {
 	copy(out, m.models)
 	return out, nil
 }
-func (m *mockBackend) GetMetrics() (Metrics, error) { return Metrics{}, nil }
+func (m *mockBackend) GetMetrics() (Metrics, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return Metrics{Threads: m.threads}, nil
+}
+
+// SetThreads configures the effective thread count the mock reports via
+// GetMetrics (issue #139).
+func (m *mockBackend) SetThreads(threads int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.threads = threads
+}
 func (m *mockBackend) CompleteChat(ctx context.Context, model string, req ChatRequest) (ChatResponse, error) {
 	return ChatResponse{
 		ID:      "chatcmpl-test",
@@ -330,6 +343,91 @@ func TestCapabilitiesHandler_IncludesModelFilters(t *testing.T) {
 	}
 	if worker.Capabilities.ExcludedModels[0] != "gpt-4" {
 		t.Errorf("excluded models = %v", worker.Capabilities.ExcludedModels)
+	}
+}
+
+// TestSetBackend_SeesConcurrencyEstimatorWithThreads verifies that SetBackend
+// seeds the ConcurrencyEstimator with the backend's thread count (issue #139).
+// A backend without a thread concept (threads = 0) falls back to
+// defaultInitCap = 4, preserving backward compatibility.
+func TestSetBackend_SeesConcurrencyEstimatorWithThreads(t *testing.T) {
+	// The estimator persists to /tmp/infermesh-concurrency-cache.json, so
+	// isolate each subtest by clearing the persisted cap first. A persisted
+	// cap from a previous run overrides the seed (the dynamic part of #139);
+	// with no persisted value the seed wins.
+	persistPath := "/tmp/infermesh-concurrency-cache.json"
+	defer func() { _ = os.Remove(persistPath) }()
+	_ = os.Remove(persistPath)
+
+	tests := []struct {
+		name     string
+		threads  int
+		wantCap  int
+	}{
+		{"llama-cpp with 8 threads", 8, 8},
+		{"llama-cpp with 1 thread", 1, 1},
+		{"backend without thread concept", 0, defaultInitCap},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_ = os.Remove(persistPath) // isolate from previous subtest
+			server := NewServer(testLogger(), "", security.Config{DevMode: true})
+			backend := newMockBackend()
+			backend.SetThreads(tt.threads)
+			server.SetBackend(backend, "test-model")
+
+			if server.concurrencyEstimator == nil {
+				t.Fatal("expected concurrency estimator to be initialized")
+			}
+			if got := server.concurrencyEstimator.Cap(); got != tt.wantCap {
+				t.Errorf("estimator cap = %d, want %d", got, tt.wantCap)
+			}
+		})
+	}
+}
+
+// TestCapabilitiesHandler_ReportsThreads verifies that /capabilities surfaces
+// the backend's effective thread count in Capabilities.Threads (issue #139).
+func TestCapabilitiesHandler_ReportsThreads(t *testing.T) {
+	server := NewServer(testLogger(), "", security.Config{DevMode: true})
+	backend := newMockBackend()
+	backend.SetThreads(8)
+	server.SetBackend(backend, "test-model")
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/capabilities", nil)
+	server.handleCapabilities(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	var worker protocol.WorkerInfo
+	if err := json.NewDecoder(w.Body).Decode(&worker); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if worker.Capabilities.Threads != 8 {
+		t.Errorf("expected Threads=8, got %d", worker.Capabilities.Threads)
+	}
+}
+
+// TestCapabilitiesHandler_NoThreadsWhenUnset verifies that a backend without a
+// thread concept reports Threads=0 (omitted from JSON), keeping the payload
+// backward compatible with routers that predate the field.
+func TestCapabilitiesHandler_NoThreadsWhenUnset(t *testing.T) {
+	server := NewServer(testLogger(), "", security.Config{DevMode: true})
+	server.SetBackend(newMockBackend(), "test-model")
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/capabilities", nil)
+	server.handleCapabilities(w, r)
+
+	var worker protocol.WorkerInfo
+	if err := json.NewDecoder(w.Body).Decode(&worker); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if worker.Capabilities.Threads != 0 {
+		t.Errorf("expected Threads=0 when unset, got %d", worker.Capabilities.Threads)
 	}
 }
 

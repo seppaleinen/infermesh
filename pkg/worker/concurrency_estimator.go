@@ -30,8 +30,19 @@ type ConcurrencyEstimator struct {
 }
 
 func NewConcurrencyEstimator(persistPath string) *ConcurrencyEstimator {
+	return NewConcurrencyEstimatorWithInit(persistPath, defaultInitCap)
+}
+
+// NewConcurrencyEstimatorWithInit creates a ConcurrencyEstimator seeded with
+// initCap (bounded to ≥ minCap). A persisted cap from a previous run overrides
+// the seed, so the estimator keeps its learned value across restarts while
+// still benefiting from the backend's thread count on first boot (issue #139).
+func NewConcurrencyEstimatorWithInit(persistPath string, initCap int) *ConcurrencyEstimator {
+	if initCap < minCap {
+		initCap = minCap
+	}
 	e := &ConcurrencyEstimator{
-		cap:         defaultInitCap,
+		cap:         initCap,
 		window429:   make([]time.Time, 0),
 		latencies:   make([]time.Duration, 0),
 		changedCh:   make(chan struct{}, 1),

@@ -46,6 +46,9 @@ type WorkerFlags struct {
 	// MaxTokens is the default max_tokens to send to the backend when the
 	// incoming request omits it. Default 4096.
 	MaxTokens int
+	// Threads is the llama-cpp thread count (default 4). Other backends
+	// ignore it (issue #139).
+ Threads int
 }
 
 // parseWorkerFlags parses args into WorkerFlags. It uses ContinueOnError so
@@ -87,6 +90,7 @@ func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	// Default max_tokens to send to the backend when the incoming request
 	// omits it. 4096 is a sensible default for most models.
 	fs.IntVar(&f.MaxTokens, "max-tokens", 4096, "default max_tokens to send to the backend when the incoming request omits it")
+	fs.IntVar(&f.Threads, "threads", 4, "number of threads for the llama-cpp backend (default 4); ignored by other backends")
 }
 
 // workerFlagUsage prints the worker flag help to w.
@@ -156,6 +160,7 @@ func runWorker(args []string) int {
 		ModelRefreshInterval: f.ModelRefreshInterval,
 		APIKey:               f.APIKey,
 		BackendTimeout:       f.BackendTimeout,
+		Threads:              f.Threads,
 	})
 	if err != nil {
 		if errors.Is(err, worker.ErrMissingModelPath) {

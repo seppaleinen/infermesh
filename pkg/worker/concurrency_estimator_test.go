@@ -51,6 +51,44 @@ func TestConcurrencyEstimator_PersistAndLoad(t *testing.T) {
 	}
 }
 
+// TestConcurrencyEstimator_InitCapFromThreads verifies that the estimator
+// can be seeded with the backend's thread count (issue #139). The seed is
+// bounded to ≥ minCap and a persisted cap from a previous run overrides it.
+func TestConcurrencyEstimator_InitCapFromThreads(t *testing.T) {
+	t.Run("seed with thread count", func(t *testing.T) {
+		path := "/tmp/infermesh-test-concurrency-init.json"
+		defer func() { _ = os.Remove(path) }()
+		e := NewConcurrencyEstimatorWithInit(path, 8)
+		if got := e.Cap(); got != 8 {
+			t.Errorf("expected initial cap 8, got %d", got)
+		}
+	})
+
+	t.Run("seed bounded to minCap", func(t *testing.T) {
+		path := "/tmp/infermesh-test-concurrency-init-zero.json"
+		defer func() { _ = os.Remove(path) }()
+		e := NewConcurrencyEstimatorWithInit(path, 0)
+		if got := e.Cap(); got != minCap {
+			t.Errorf("expected initial cap %d, got %d", minCap, got)
+		}
+	})
+
+	t.Run("persisted cap overrides seed", func(t *testing.T) {
+		path := "/tmp/infermesh-test-concurrency-init-persist.json"
+		defer func() { _ = os.Remove(path) }()
+		e1 := NewConcurrencyEstimatorWithInit(path, 8)
+		e1.mu.Lock()
+		e1.cap = 3
+		e1.persist()
+		e1.mu.Unlock()
+
+		e2 := NewConcurrencyEstimatorWithInit(path, 8)
+		if got := e2.Cap(); got != 3 {
+			t.Errorf("expected persisted cap 3, got %d", got)
+		}
+	})
+}
+
 func TestConcurrencyEstimator_CircuitOpen(t *testing.T) {
 	e := NewConcurrencyEstimator("/tmp/infermesh-test-concurrency-circuit.json")
 	defer func() { _ = os.Remove("/tmp/infermesh-test-concurrency-circuit.json") }()

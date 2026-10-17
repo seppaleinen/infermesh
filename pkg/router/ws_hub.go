@@ -470,6 +470,9 @@ func (h *WSHub) decrementRelayInFlight(workerID string) {
 		return
 	}
 	h.relayInFlight[workerID]--
+	if h.relayInFlight[workerID] == 0 {
+		delete(h.relayInFlight, workerID)
+	}
 }
 
 // recordRejection bumps the per-worker 429 counter for a direct-connection
@@ -950,6 +953,18 @@ func (h *WSHub) bridge(event protocol.DiscoveryEvent) {
 	if err := h.reg.HandleEvent(event); err != nil {
 		h.log.Warn("registry event failed", "type", event.Type, "worker", event.Worker.ID, "error", err)
 	}
+	// Also forward RegistryRemoved/Unavailable events to clean up workerMaxInFlight
+	if event.Type == protocol.EventRemoved || event.Type == protocol.EventExpired {
+		h.HandleRegistryEvent(event)
+	}
+}
+
+// HandleRegistryEvent processes registry-level events to clean up worker state.
+// Currently used to prune workerMaxInFlight entries when workers leave the registry.
+func (h *WSHub) HandleRegistryEvent(event protocol.DiscoveryEvent) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.workerMaxInFlight, event.Worker.ID)
 }
 
 // sendErrorRaw writes an error message on a not-yet-registered connection.
@@ -1836,6 +1851,8 @@ func (h *WSHub) relayReaderLoop(ctx context.Context, done chan struct{}) {
 		for _, pc := range pend {
 			pc.fail(errRelayDisconnected)
 		}
+		// Clean up relay metric maps to prevent accumulation of stale worker IDs
+		h.cleanupRelayMetrics()
 		close(done)
 		h.log.Info("relay reader loop exited")
 	}()
@@ -1895,6 +1912,30 @@ func (h *WSHub) relayReaderLoop(ctx context.Context, done chan struct{}) {
 			for _, c := range conns {
 				c.hub.dispatch(c, msg)
 			}
+		}
+	}
+}
+
+// cleanupRelayMetrics removes zero-value entries from relay metric maps
+// to prevent accumulation of stale worker IDs when the relay connection drops.
+func (h *WSHub) cleanupRelayMetrics() {
+	h.relayPendingMu.Lock()
+	defer h.relayPendingMu.Unlock()
+	// relayInFlight: delete zero entries (though decrementRelayInFlight should already handle this)
+	for workerID, count := range h.relayInFlight {
+		if count == 0 {
+			delete(h.relayInFlight, workerID)
+		}
+	}
+	// relayRejected429 and relayRejected504: delete zero entries (though these are cumulative)
+	for workerID, count := range h.relayRejected429 {
+		if count == 0 {
+			delete(h.relayRejected429, workerID)
+		}
+	}
+	for workerID, count := range h.relayRejected504 {
+		if count == 0 {
+			delete(h.relayRejected504, workerID)
 		}
 	}
 }

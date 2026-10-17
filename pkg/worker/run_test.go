@@ -72,7 +72,7 @@ func TestNewBackendFromName(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			b, err := NewBackendFromName(tt.name, "", tt.backendURL, 0, 0)
+			b, err := NewBackendFromName(tt.name, "", tt.backendURL, 0, 0, 0)
 			if err != nil {
 				t.Fatalf("NewBackendFromName(%q) unexpected error: %v", tt.name, err)
 			}
@@ -80,6 +80,57 @@ func TestNewBackendFromName(t *testing.T) {
 				t.Fatalf("NewBackendFromName(%q).Name() = %q, want %q", tt.name, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestNewBackendFromName_PropagatesThreads verifies that the --threads flag
+// reaches the llama-cpp backend (issue #139). Non-llama-cpp backends ignore
+// the flag (their GetMetrics reports Threads=0).
+func TestNewBackendFromName_PropagatesThreads(t *testing.T) {
+	tests := []struct {
+		name        string
+		backend     string
+		threads     int
+		wantThreads int
+	}{
+		{"llama-cpp with 8 threads", "llama-cpp", 8, 8},
+		{"llama-cpp with 1 thread", "llama-cpp", 1, 1},
+		{"ollama ignores threads", "ollama", 8, 0},
+		{"lmstudio ignores threads", "lmstudio", 8, 0},
+		{"vllm ignores threads", "vllm", 8, 0},
+		{"custom ignores threads", "custom", 8, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := NewBackendFromName(tt.backend, "", "", 0, 0, tt.threads)
+			if err != nil {
+				t.Fatalf("NewBackendFromName(%q) unexpected error: %v", tt.backend, err)
+			}
+			m, err := b.GetMetrics()
+			if err != nil {
+				t.Fatalf("GetMetrics() returned error: %v", err)
+			}
+			if m.Threads != tt.wantThreads {
+				t.Errorf("GetMetrics().Threads = %d, want %d", m.Threads, tt.wantThreads)
+			}
+		})
+	}
+}
+
+// TestNewBackendFromName_ThreadsDefault verifies that a non-positive threads
+// value falls back to 4 (the historical hardcoded value), keeping existing
+// setups byte-for-byte unchanged (issue #139).
+func TestNewBackendFromName_ThreadsDefault(t *testing.T) {
+	b, err := NewBackendFromName("llama-cpp", "", "", 0, 0, 0)
+	if err != nil {
+		t.Fatalf("NewBackendFromName unexpected error: %v", err)
+	}
+	m, err := b.GetMetrics()
+	if err != nil {
+		t.Fatalf("GetMetrics() returned error: %v", err)
+	}
+	if m.Threads != 4 {
+		t.Errorf("expected default threads 4, got %d", m.Threads)
 	}
 }
 

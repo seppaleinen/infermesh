@@ -46,6 +46,9 @@ type Metrics struct {
 	ModelUnloads  int   `json:"model_unloads_total"`
 	MemoryUsageMB int   `json:"memory_usage_mb"`
 	GPUUsagePct   int   `json:"gpu_usage_pct"`
+	// Threads is the backend's effective thread count (llama-cpp only).
+	// Zero means the backend does not expose a thread count.
+Threads int `json:"threads,omitempty"`
 }
 
 // ChatResponse represents a chat completion response from a backend.

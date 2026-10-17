@@ -723,6 +723,12 @@ func (b *LlamaCppBackend) Name() string {
 	return "llama-cpp"
 }
 
+// GetMetrics returns the backend's effective thread count so the worker can
+// seed its ConcurrencyEstimator and report it to the router (issue #139).
+func (b *LlamaCppBackend) GetMetrics() (Metrics, error) {
+	return Metrics{Threads: b.threads}, nil
+}
+
 // OllamaBackend implements Backend for Ollama.
 type OllamaBackend struct {
 	OpenAICompatibleBackend

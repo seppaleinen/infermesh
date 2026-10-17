@@ -83,6 +83,9 @@ type RunConfig struct {
 	// (default 30s). Inference calls that exceed this duration are
 	// aborted by the worker's HTTP client to the backend.
 	BackendTimeout time.Duration
+	// Threads is the llama-cpp thread count (default 4). Other backends
+	// ignore it (issue #139).
+ Threads int
 }
 
 // Handle represents a running worker: HTTP server, registration loop (or
@@ -182,7 +185,7 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 	srv := NewServer(log, addr, secCfg)
 
 	// Set up backend adapter based on --backend flag
-	backendImpl, err := NewBackendFromName(cfg.Backend, cfg.ModelPath, cfg.BackendURL, cfg.BackendTimeout, cfg.MaxTokens)
+	backendImpl, err := NewBackendFromName(cfg.Backend, cfg.ModelPath, cfg.BackendURL, cfg.BackendTimeout, cfg.MaxTokens, cfg.Threads)
 	if err != nil {
 		log.Warn("failed to create backend", "backend", cfg.Backend, "error", err)
 	} else {
@@ -370,7 +373,9 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 // negative value falls back to the default 30s. maxTokens is the default
 // max_tokens to send to the backend when the incoming request omits it;
 // zero means "no default" (the backend falls back to its built-in default).
-func NewBackendFromName(backendName, modelPath, backendURL string, timeout time.Duration, maxTokens int) (Backend, error) {
+// threads is the llama-cpp thread count (default 4); only consulted for
+// the llama-cpp backend (issue #139).
+func NewBackendFromName(backendName, modelPath, backendURL string, timeout time.Duration, maxTokens, threads int) (Backend, error) {
 	// Resolve the default endpoint for each backend; --backend-url overrides
 	// it (the llama-cpp default http://localhost:8080 collides with the
 	// router port, so tests and custom setups pass an explicit URL).
@@ -392,9 +397,14 @@ func NewBackendFromName(backendName, modelPath, backendURL string, timeout time.
 	if backendURL != "" {
 		defaultURL = backendURL
 	}
+	// threads defaults to 4 (the historical hardcoded value) when not
+	// specified or set to a non-positive value.
+	if threads < 1 {
+		threads = 4
+	}
 	switch backendName {
 	case "llama-cpp":
-		return NewLlamaCppBackend(defaultURL, 2048, 4, 1, timeout, maxTokens), nil
+		return NewLlamaCppBackend(defaultURL, 2048, threads, 1, timeout, maxTokens), nil
 	case "ollama":
 		return NewOllamaBackend(defaultURL, modelPath, timeout, maxTokens), nil
 	case "lmstudio":
@@ -404,7 +414,7 @@ func NewBackendFromName(backendName, modelPath, backendURL string, timeout time.
 	case "custom":
 		return NewCustomBackend(defaultURL, "", "custom", timeout, maxTokens), nil
 	default:
-		return NewLlamaCppBackend(defaultURL, 2048, 4, 1, timeout, maxTokens), nil
+		return NewLlamaCppBackend(defaultURL, 2048, threads, 1, timeout, maxTokens), nil
 	}
 }
 

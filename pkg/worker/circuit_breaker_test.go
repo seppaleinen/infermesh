@@ -150,9 +150,10 @@ func TestCanExecute(t *testing.T) {
 	})
 }
 
-// TestGetMetrics documents that GetMetrics is a stub returning an empty
-// Metrics value (issue #103). It is not wired to any real collection path;
-// callers must not interpret the returned zero value as "no metrics".
+// TestGetMetrics documents that the generic OpenAICompatibleBackend's
+// GetMetrics is a stub returning an empty Metrics value (issue #103). It is
+// not wired to any real collection path; callers must not interpret the
+// returned zero value as "no metrics".
 func TestGetMetrics(t *testing.T) {
 	b := NewOpenAICompatibleBackend("http://127.0.0.1:1234", "", 0, 0)
 	m, err := b.GetMetrics()
@@ -161,6 +162,32 @@ func TestGetMetrics(t *testing.T) {
 	}
 	if m != (Metrics{}) {
 		t.Errorf("GetMetrics() = %+v, want zero Metrics{}", m)
+	}
+}
+
+// TestLlamaCppBackend_GetMetrics_Threads verifies that the llama-cpp backend
+// reports its effective thread count via GetMetrics (issue #139).
+func TestLlamaCppBackend_GetMetrics_Threads(t *testing.T) {
+	tests := []struct {
+		name    string
+		threads int
+		want    int
+	}{
+		{"default threads", 4, 4},
+		{"custom threads", 8, 8},
+		{"single thread", 1, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := NewLlamaCppBackend("http://127.0.0.1:8080", 2048, tt.threads, 1, 0, 0)
+			m, err := b.GetMetrics()
+			if err != nil {
+				t.Fatalf("GetMetrics() returned error: %v", err)
+			}
+			if m.Threads != tt.want {
+				t.Errorf("GetMetrics().Threads = %d, want %d", m.Threads, tt.want)
+			}
+		})
 	}
 }
 

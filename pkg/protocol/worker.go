@@ -79,6 +79,9 @@ type Capabilities struct {
 	// backend behavior (429s, latency spikes). 0 means unknown (fallback
 	// to router default of 4).
 	ConcurrencyCap int `json:"concurrency_cap,omitempty"`
+	// Threads is the backend's effective thread count (llama-cpp only).
+	// Zero means the backend does not expose a thread count (issue #139).
+	Threads int `json:"threads,omitempty"`
 }
 
 // WorkerInfo is the canonical payload carried in mDNS TXT records.
