@@ -71,3 +71,7 @@ tests/e2e/imesh-mock*/
 
 # opencode config
 opencode.json
+
+# Python cache
+__pycache__/
+*.py[cod]
