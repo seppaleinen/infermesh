@@ -13,6 +13,7 @@ export interface WorkerCardProps {
   isLocal?: boolean
   inFlight?: number
   maxInFlight?: number
+  tokensPerSecond?: number
 }
 
 const props = defineProps<WorkerCardProps>()
@@ -41,6 +42,17 @@ const busyRatio = computed(() => {
     return `${props.inFlight}/${props.maxInFlight} calls`
   }
   return null
+})
+
+// Throughput badge: hidden when the router reports no throughput data
+// (tokensPerSecond <= 0 or undefined), so idle workers don't show a
+// meaningless "0.00 tok/s".
+const throughput = computed(() => {
+  const tps = props.tokensPerSecond
+  if (tps === undefined || tps === null || tps <= 0) return null
+  if (tps >= 100) return `${tps.toFixed(0)} tok/s`
+  if (tps >= 10) return `${tps.toFixed(1)} tok/s`
+  return `${tps.toFixed(2)} tok/s`
 })
 </script>
 
@@ -78,6 +90,12 @@ const busyRatio = computed(() => {
         <span class="worker-k">concurrency</span>
         <span class="worker-v">
           <span class="worker-mono">{{ busyRatio }}</span>
+        </span>
+      </div>
+      <div v-if="throughput" class="worker-row">
+        <span class="worker-k">throughput</span>
+        <span class="worker-v">
+          <span class="worker-mono throughput-badge">{{ throughput }}</span>
         </span>
       </div>
       <div class="worker-row">
@@ -227,6 +245,15 @@ const busyRatio = computed(() => {
 .worker-mono {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+}
+
+.throughput-badge {
+  color: var(--accent-strong);
+  border: 1px solid rgba(93, 252, 190, 0.28);
+  border-radius: 999px;
+  background: var(--accent-dim);
+  padding: 1px 8px;
+  font-size: 10.5px;
 }
 
 .worker-faint {

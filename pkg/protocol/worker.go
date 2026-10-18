@@ -82,6 +82,24 @@ type Capabilities struct {
 	// Threads is the backend's effective thread count (llama-cpp only).
 	// Zero means the backend does not expose a thread count (issue #139).
 	Threads int `json:"threads,omitempty"`
+
+	// InferenceStats is the worker's per-model inference throughput
+	// snapshot (tokens/sec, avg TTFT) over a rolling window. It is
+	// populated by the worker's InferenceTracker and consumed by the
+	// router's capability cache to inform scheduler ranking (issue #134).
+	// Empty/nil when the worker has not recorded any inference yet.
+	InferenceStats []InferenceStatsSnapshot `json:"inference_stats,omitempty"`
+}
+
+// InferenceStatsSnapshot is a single per-model throughput snapshot
+// advertised by a worker in its Capabilities payload.
+type InferenceStatsSnapshot struct {
+	Model             string  `json:"model"`
+	TokensPerSecond   float64 `json:"tokens_per_second"`
+	AvgTTFTMs         float64 `json:"avg_ttft_ms"`
+	AvgPromptTokens   float64 `json:"avg_prompt_tokens"`
+	AvgCompletionTokens float64 `json:"avg_completion_tokens"`
+	Samples           int     `json:"samples"`
 }
 
 // WorkerInfo is the canonical payload carried in mDNS TXT records.

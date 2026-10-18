@@ -14,6 +14,20 @@ export interface PopularModelView {
 }
 
 /**
+ * InferenceStatsView is the UI projection of router.WorkerInferenceStats.
+ * Field names mirror the router JSON tags exactly so the generated Wails
+ * binding is a straight pass-through (issue #134).
+ */
+export interface InferenceStatsView {
+    "worker_id": string;
+    "model": string;
+    "tokens_per_second": number;
+    "avg_ttft_ms": number;
+    "request_count": number;
+    "last_updated": string;
+}
+
+/**
  * ProcessState is the lifecycle state of a supervised child process.
  */
 export enum ProcessState {
@@ -74,6 +88,7 @@ export interface Settings {
     "dev_mode": boolean | null;
     "client_cert_cn": string;
     "auto_start_on_login": boolean | null;
+    "scorer_throughput_weight": number;
     "secrets": { [_ in string]?: string } | null;
     "secret_refs": { [_ in string]?: string } | null;
 }
@@ -111,4 +126,12 @@ export interface WorkerView {
      * Address is "host:port" for the card title.
      */
     "address": string;
+
+    /**
+     * TokensPerSecond is the worker's advertised throughput for its first
+     * loaded model (issue #134). It is the router-side projection of the
+     * worker's per-model inference-stats payload. 0 when the worker has not
+     * reported any throughput data, and the UI card hides the row.
+     */
+    "tokens_per_second": number;
 }

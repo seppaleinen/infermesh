@@ -129,6 +129,17 @@ type WorkerInfo struct {
 	// no load data for the worker (unknown cap), and the UI hides the row.
 	InFlight    int64 `json:"in_flight,omitempty"`
 	MaxInFlight int64 `json:"max_in_flight,omitempty"`
+	// TokensPerSecond is the worker's advertised throughput for the first
+	// loaded model in its capabilities snapshot (issue #134). It is the
+	// router-side projection of the worker's per-model inference-stats
+	// payload. -1 (serialized as omitted) when the worker has not reported
+	// any throughput data.
+	TokensPerSecond float64 `json:"tokens_per_second,omitempty"`
+}
+
+// InferenceStatsResponse is the response from GET /v1/inference-stats.
+type InferenceStatsResponse struct {
+	Workers []WorkerInferenceStats `json:"workers"`
 }
 
 // WorkersResponse represents the response from the /v1/workers endpoint.
@@ -312,12 +323,16 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 		proxyTimeout: 120 * time.Second,
 		scorer:       scorer,
 		scorerWeights: schedulerWeights{
-			QuantMatch:    scorer.QuantMatchWeight,
-			VRAMFree:      scorer.VRAMFreeWeight,
-			GPUUtil:       scorer.GPUUtilWeight,
-			QueueDepth:    scorer.QueueDepthWeight,
-			Latency:       scorer.LatencyWeight,
-			MaxQueueDepth: scorer.MaxQueueDepth(),
+			QuantMatch:       scorer.QuantMatchWeight,
+			VRAMFree:         scorer.VRAMFreeWeight,
+			GPUUtil:          scorer.GPUUtilWeight,
+			QueueDepth:       scorer.QueueDepthWeight,
+			Latency:          scorer.LatencyWeight,
+			LoadedModelBonus: scorer.LoadedModelBonusWeight,
+			ColdLoadPenalty:  scorer.ColdLoadPenaltyWeight,
+			MaxQueueDepth:    scorer.MaxQueueDepth(),
+			// ThroughputWeight defaults to 0.0 (disabled) so the built-in
+			// scorer is byte-for-byte identical to before this feature.
 		},
 	}
 	srv.loadSnapshot = srv.hubLoadSnapshot
@@ -511,6 +526,11 @@ type schedulerWeights struct {
 	LoadedModelBonus float64
 	ColdLoadPenalty  float64
 	MaxQueueDepth    int
+	// ThroughputWeight is the weight for the worker's advertised tokens/sec
+	// in the weighted scoring formula (issue #134). Zero (default) keeps the
+	// throughput component out of the weighted sum, so the default scorer
+	// is byte-for-byte identical to before this feature.
+	ThroughputWeight float64
 }
 
 // SetScorerWeights updates the weighted scorer used by selectWorker. A zero
@@ -543,7 +563,7 @@ func (s *Server) SetScorerWeights(quantMatch, vramFree, gpuUtil, queueDepth, lat
 	s.scorerWeights = w
 	s.scorer = scheduler.NewWeightedScorerWithConfig(
 		w.QuantMatch, w.VRAMFree, w.GPUUtil, w.QueueDepth, w.Latency,
-		w.LoadedModelBonus, w.ColdLoadPenalty,
+		w.LoadedModelBonus, w.ColdLoadPenalty, w.ThroughputWeight,
 		scheduler.DefaultUnavailableTTL(), w.MaxQueueDepth,
 	)
 }
@@ -553,6 +573,27 @@ func (s *Server) ScorerWeights() schedulerWeights {
 	s.scorerWeightsMu.RLock()
 	defer s.scorerWeightsMu.RUnlock()
 	return s.scorerWeights
+}
+
+// SetScorerThroughputWeight sets the weight for the worker's advertised
+// tokens/sec in the weighted scoring formula (issue #134). A value <= 0
+// keeps the current value, which defaults to 0.0 (throughput disabled,
+// backward compatible). It is exposed separately from SetScorerWeights so
+// the CLI can set it without re-specifying the other weights.
+func (s *Server) SetScorerThroughputWeight(weight float64) {
+	s.scorerWeightsMu.Lock()
+	defer s.scorerWeightsMu.Unlock()
+
+	w := s.scorerWeights
+	if weight > 0 {
+		w.ThroughputWeight = weight
+	}
+	s.scorerWeights = w
+	s.scorer = scheduler.NewWeightedScorerWithConfig(
+		w.QuantMatch, w.VRAMFree, w.GPUUtil, w.QueueDepth, w.Latency,
+		w.LoadedModelBonus, w.ColdLoadPenalty, w.ThroughputWeight,
+		scheduler.DefaultUnavailableTTL(), w.MaxQueueDepth,
+	)
 }
 
 // currentScorer returns the scoring algorithm in use, read under
@@ -581,6 +622,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/v1/completions", s.handleCompletions)
 	mux.HandleFunc("/v1/models", s.handleModelsList)
 	mux.HandleFunc("/v1/workers", s.handleWorkersList)
+	mux.HandleFunc("/v1/inference-stats", s.handleInferenceStats)
 	mux.HandleFunc("/v1/dev/register", s.handleDevRegister)
 	mux.HandleFunc("/meta/models/popular", s.handlePopularModels)
 	mux.HandleFunc("/meta/aliases", s.handleSetAliases)
@@ -921,6 +963,19 @@ func (s *Server) handleWorkersList(w http.ResponseWriter, r *http.Request) {
 	workers := make([]WorkerInfo, 0, len(cached))
 	for _, w := range cached {
 		l := load[w.ID]
+		// Pass the worker's first loaded model to toSchedulerWorker so the
+		// router-side throughput snapshot for that model is projected into
+		// the UI WorkerInfo (issue #134). "" when the worker has no loaded
+		// model, which leaves TokensPerSecond at the scheduler's -1
+		// sentinel (serialized as omitted).
+		firstLoaded := ""
+		for _, m := range w.Capabilities.Models {
+			if m.Loaded {
+				firstLoaded = m.Name
+				break
+			}
+		}
+		sw := s.toSchedulerWorker(w, l, true, firstLoaded)
 		workers = append(workers, WorkerInfo{
 			ID:           w.ID,
 			Hostname:     w.Hostname,
@@ -932,6 +987,7 @@ func (s *Server) handleWorkersList(w http.ResponseWriter, r *http.Request) {
 			LastSeen:     w.LastSeen,
 			InFlight:     l.InFlight,
 			MaxInFlight:  l.MaxInFlight,
+			TokensPerSecond: sw.TokensPerSecond,
 		})
 	}
 
@@ -1247,6 +1303,29 @@ func (s *Server) handleConnectionCount(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleInferenceStats handles the GET /v1/inference-stats HTTP endpoint. It
+// returns the router-side projection of every worker's per-model inference
+// throughput snapshot (tokens/sec, avg TTFT) advertised in the workers'
+// /capabilities payloads (issue #134). The response is sorted by worker ID
+// then model name for deterministic payloads.
+func (s *Server) handleInferenceStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error", "method_not_allowed")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	if s.cache == nil {
+		_ = json.NewEncoder(w).Encode(InferenceStatsResponse{Workers: []WorkerInferenceStats{}})
+		return
+	}
+
+	resp := InferenceStatsResponse{Workers: s.cache.ListInferenceStats()}
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		s.log.Error("failed to encode inference stats", "error", err)
+	}
+}
+
 // handleQueueStats handles the /v1/queue/stats HTTP endpoint.
 func (s *Server) handleQueueStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -1446,7 +1525,7 @@ func (s *Server) selectWorkerExcluding(model string, excluded map[string]struct{
 		// Build scheduler view for FilterByAllowedModels
 		schedCands := make([]scheduler.WorkerInfo, 0, len(candidates))
 		for _, w := range candidates {
-			schedCands = append(schedCands, s.toSchedulerWorker(w, WorkerQueueStats{}, false))
+			schedCands = append(schedCands, s.toSchedulerWorker(w, WorkerQueueStats{}, false, model))
 		}
 		s.cache.mu.RUnlock()
 
@@ -1511,7 +1590,7 @@ func (s *Server) selectWorkerExcluding(model string, excluded map[string]struct{
 				continue
 			}
 			allProto = append(allProto, worker)
-			allSched = append(allSched, s.toSchedulerWorker(worker, WorkerQueueStats{}, false))
+			allSched = append(allSched, s.toSchedulerWorker(worker, WorkerQueueStats{}, false, model))
 		}
 
 		// 1. Any worker advertising the model (loaded or not) that is willing
@@ -1794,7 +1873,13 @@ func busyStatus(cached protocol.WorkerStatus, load WorkerQueueStats) protocol.Wo
 // view, attaching queue depth and wait latency from the hub snapshot when
 // available. Unknown signals are left negative so the scorer treats them as
 // neutral (workers do not push live GPU utilization today).
-func (s *Server) toSchedulerWorker(w protocol.WorkerInfo, load WorkerQueueStats, haveLoad bool) scheduler.WorkerInfo {
+//
+// model is the model name being scheduled for; it is used to look up the
+// worker's per-model advertised tokens/sec from the capability cache so the
+// scheduler can rank workers by throughput (issue #134). Pass "" when no
+// model is in scope (e.g. the UI projection path), in which case the
+// throughput is left at the scheduler's -1 "unknown" sentinel.
+func (s *Server) toSchedulerWorker(w protocol.WorkerInfo, load WorkerQueueStats, haveLoad bool, model string) scheduler.WorkerInfo {
 	sw := scheduler.WorkerInfo{
 		ID:            w.ID,
 		Addr:          fmt.Sprintf("%s:%d", w.IP, w.Port),
@@ -1830,6 +1915,14 @@ func (s *Server) toSchedulerWorker(w protocol.WorkerInfo, load WorkerQueueStats,
 	if haveLoad && load.MaxInFlight > 0 {
 		sw.MaxInFlight = int(load.MaxInFlight)
 	}
+	// Attach the worker's advertised tokens/sec for the model being
+	// scheduled (issue #134). Unknown (-1) is the scheduler's neutral
+	// sentinel; the scorer treats it as 0.5 when ThroughputWeight > 0.
+	if model != "" && s.cache != nil {
+		if stats, ok := s.cache.GetInferenceStats(w.ID, model); ok {
+			sw.TokensPerSecond = stats.TokensPerSecond
+		}
+	}
 	return sw
 }
 
@@ -1840,7 +1933,7 @@ func (s *Server) scoreCandidates(model string, candidates []protocol.WorkerInfo,
 	workers := make([]scheduler.WorkerInfo, 0, len(candidates))
 	for _, w := range candidates {
 		l, ok := load[w.ID]
-		workers = append(workers, s.toSchedulerWorker(w, l, ok))
+		workers = append(workers, s.toSchedulerWorker(w, l, ok, model))
 	}
 	// Snapshot the scorer under the read lock so the algorithm and its
 	// unavailable-TTL come from the same instance (SetScorerWeights replaces

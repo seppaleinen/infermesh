@@ -55,6 +55,7 @@ type RouterFlags struct {
 	ScorerMaxQueueDepth   int
 	ScorerLoadedBonus     float64
 	ScorerColdLoadPenalty float64
+	ScorerThroughputWeight float64
 
 	// Auto routing: model="auto" alias maps prompt complexity to tiered
 	// model names. Empty values disable the alias (backward compatible).
@@ -188,6 +189,7 @@ func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
 	fs.IntVar(&f.ScorerMaxQueueDepth, "scorer-max-queue-depth", 0, "queue depth treated as fully loaded when normalizing queue depth score (0 = keep default of 10)")
 	fs.Float64Var(&f.ScorerLoadedBonus, "scorer-loaded-bonus", 0, "bonus weight for workers with model already loaded in VRAM (0 = keep default, unloaded models rejected)")
 	fs.Float64Var(&f.ScorerColdLoadPenalty, "scorer-cold-load-penalty", 0, "penalty weight for cold-loading models (unloaded workers), compounded by busy ratio (0 = no penalty)")
+	fs.Float64Var(&f.ScorerThroughputWeight, "scorer-throughput-weight", 0, "weight for the worker's advertised tokens/sec in weighted scoring (0 = disabled, throughput not used in ranking)")
 
 	// Auto routing: model="auto" alias. Empty tier models disable the alias.
 	fs.StringVar(&f.AutoTierSimple, "auto-tier-simple", "", "model name to route simple prompts to when model=\"auto\" (empty = alias disabled)")
@@ -338,6 +340,8 @@ func runRouter(args []string) int {
 	}
 	// Zero values are no-ops that keep the built-in scorer defaults.
 	srv.SetScorerWeights(f.ScorerQuantMatch, f.ScorerVRAMFree, f.ScorerGPUUtil, f.ScorerQueueDepth, f.ScorerLatency, f.ScorerLoadedBonus, f.ScorerColdLoadPenalty, f.ScorerMaxQueueDepth)
+	// Throughput weight (issue #134): 0 = disabled (backward compatible).
+	srv.SetScorerThroughputWeight(f.ScorerThroughputWeight)
 
 	// Configure retry/failover parameters.
 	srv.SetMaxAttempts(f.MaxAttempts)

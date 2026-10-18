@@ -43,6 +43,11 @@ type WorkerView struct {
 	// router has no load data for the worker, and the card hides the row.
 	InFlight    int64 `json:"in_flight"`
 	MaxInFlight int64 `json:"max_in_flight"`
+	// TokensPerSecond is the worker's advertised throughput for its first
+	// loaded model (issue #134). It is the router-side projection of the
+	// worker's per-model inference-stats payload. 0 when the worker has not
+	// reported any throughput data, and the UI card hides the row.
+	TokensPerSecond float64 `json:"tokens_per_second,omitempty"`
 }
 
 // RouterClient is a Wails service bound to the frontend. It talks to the
@@ -260,17 +265,18 @@ func toWorkerView(w router.WorkerInfo) WorkerView {
 	}
 
 	return WorkerView{
-		ID:           w.ID,
-		Hostname:     w.Hostname,
-		IP:           w.IP,
-		Port:         w.Port,
-		Status:       status,
-		Version:      w.Version,
-		LoadedModels: loaded,
-		LastSeen:     w.LastSeen,
-		Address:      address,
-		InFlight:     w.InFlight,
-		MaxInFlight:  w.MaxInFlight,
+		ID:             w.ID,
+		Hostname:       w.Hostname,
+		IP:             w.IP,
+		Port:           w.Port,
+		Status:         status,
+		Version:        w.Version,
+		LoadedModels:   loaded,
+		LastSeen:       w.LastSeen,
+		Address:        address,
+		InFlight:       w.InFlight,
+		MaxInFlight:    w.MaxInFlight,
+		TokensPerSecond: w.TokensPerSecond,
 	}
 }
 
@@ -375,6 +381,82 @@ func parsePopularModelsResponse(body []byte) ([]PopularModelView, error) {
 			WorkerCount:       m.WorkerCount,
 			LoadedWorkerCount: m.LoadedWorkerCount,
 			CallCount:         m.CallCount,
+		})
+	}
+	return out, nil
+}
+
+// InferenceStatsView is the UI projection of router.WorkerInferenceStats.
+// Field names mirror the router JSON tags exactly so the generated Wails
+// binding is a straight pass-through (issue #134).
+type InferenceStatsView struct {
+	WorkerID        string  `json:"worker_id"`
+	Model           string  `json:"model"`
+	TokensPerSecond float64 `json:"tokens_per_second"`
+	AvgTTFTMs       float64 `json:"avg_ttft_ms"`
+	RequestCount    int64   `json:"request_count"`
+	LastUpdated     string  `json:"last_updated"`
+}
+
+// inferenceStatsPath builds the full /v1/inference-stats URL for the
+// configured base.
+func (c *RouterClient) inferenceStatsPath() string {
+	return c.baseURL + "/v1/inference-stats"
+}
+
+// GetInferenceStats fetches the per-worker per-model inference throughput
+// snapshot from the router. It returns an empty (non-nil) slice when the
+// router is reachable but idle, and a typed error when the router is
+// unreachable or returns a bad body. Mirrors GetWorkers / GetPopularModels.
+func (c *RouterClient) GetInferenceStats(ctx context.Context) ([]InferenceStatsView, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.inferenceStatsPath(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	c.applyAuth(req)
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("router unreachable at %s: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, fmt.Errorf("router /v1/inference-stats returned %d: %s", resp.StatusCode, truncateBody(body))
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read router body: %w", err)
+	}
+
+	return parseInferenceStatsResponse(body)
+}
+
+// parseInferenceStatsResponse decodes an InferenceStatsResponse envelope and
+// maps each router.WorkerInferenceStats into an InferenceStatsView. It is
+// exported (and pure) so the unit tests can feed canned JSON without a live
+// router.
+func parseInferenceStatsResponse(body []byte) ([]InferenceStatsView, error) {
+	var resp router.InferenceStatsResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode inference stats response: %w (body snippet: %q)", err, truncateBody(body))
+	}
+	if resp.Workers == nil {
+		// JSON `null` is legal but useless; normalise to an empty slice so
+		// the UI can distinguish "reachable, idle" from "unreachable".
+		resp.Workers = []router.WorkerInferenceStats{}
+	}
+	out := make([]InferenceStatsView, 0, len(resp.Workers))
+	for _, w := range resp.Workers {
+		out = append(out, InferenceStatsView{
+			WorkerID:        w.WorkerID,
+			Model:           w.Model,
+			TokensPerSecond: w.TokensPerSecond,
+			AvgTTFTMs:       w.AvgTTFTMs,
+			RequestCount:    int64(w.Samples),
+			LastUpdated:     "",
 		})
 	}
 	return out, nil

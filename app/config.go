@@ -43,6 +43,7 @@ type Settings struct {
 	ClientCertCN             string               `json:"client_cert_cn" yaml:"client_cert_cn"`
 	AutoStartOnLogin         *bool                `json:"auto_start_on_login" yaml:"auto_start_on_login"`
 	AutoRouting              *AutoRoutingSettings `json:"auto_routing" yaml:"auto_routing"`
+	ScorerThroughputWeight   float64              `json:"scorer_throughput_weight" yaml:"scorer_throughput_weight"`
 	Secrets                  map[string]string    `json:"secrets" yaml:"-"`
 	SecretRefs               map[string]string    `json:"secret_refs" yaml:"secret_refs"`
 }

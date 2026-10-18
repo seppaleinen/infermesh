@@ -38,6 +38,13 @@ type Server struct {
 	// Nil when no backend is configured.
 	concurrencyEstimator *ConcurrencyEstimator
 
+	// inferenceStats records completed inference calls per model over a
+	// rolling window and feeds the /capabilities payload so the router's
+	// scheduler can rank workers by throughput (issue #134). Nil when no
+	// backend is configured; handleCapabilities and the inference handlers
+	// guard against nil.
+	inferenceStats *InferenceTracker
+
 	// modelsMu protects concurrent access to the models field. The refresh
 	// goroutine (SetModels/GetModels) and HTTP handlers (handleCapabilities,
 	// metrics, modelsList, loadModelByName, loadModelHandler) may run
@@ -98,6 +105,10 @@ type CompletionChunk struct {
 	Created int64    `json:"created"`
 	Model   string   `json:"model,omitempty"`
 	Choices []Choice `json:"choices"`
+	// Usage is the final-frame token usage, present only on the last
+	// streaming chunk when the backend reports it (issue #134). It is
+	// populated by the OpenAI-compatible backend's final SSE frame.
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 // ChatChunk represents a streaming chunk of a chat completion response.
@@ -107,6 +118,10 @@ type ChatChunk struct {
 	Created int64    `json:"created"`
 	Model   string   `json:"model,omitempty"`
 	Choices []Choice `json:"choices"`
+	// Usage is the final-frame token usage, present only on the last
+	// streaming chunk when the backend reports it (issue #134). It is
+	// populated by the OpenAI-compatible backend's final SSE frame.
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 // ModelsResponse represents the response from the models endpoint.
@@ -212,6 +227,7 @@ func NewServer(log *slog.Logger, addr string, cfg security.Config) *Server {
 		config:        cfg,
 		backend:       nil,
 		healthTracker: tracker,
+		inferenceStats: NewInferenceTracker(0),
 	}
 }
 
@@ -295,6 +311,34 @@ func (s *Server) SetModelFilters(allowed, excluded []string) {
 func (s *Server) ApplyModelFilters(caps *protocol.Capabilities) {
 	caps.AllowedModels = s.allowedModels
 	caps.ExcludedModels = s.excludedModels
+}
+
+// recordInference records a completed inference call for the given
+// model into the inference tracker. It is a no-op when no backend is
+// configured (inferenceStats is nil), so callers can invoke it
+// unconditionally after a successful response.
+func (s *Server) recordInference(model string, usage *Usage, ttft, total time.Duration) {
+	if s.inferenceStats == nil || usage == nil {
+		return
+	}
+	s.inferenceStats.Record(model, usage.PromptTokens, usage.CompletionTokens, ttft, total)
+}
+
+// recordStreamingInference records a completed streaming inference.
+// When the backend's final frame carried a Usage, use its token counts;
+// otherwise fall back to chunk count as a completion-token proxy (one
+// content chunk ≈ one token) with zero prompt tokens, so the tracker
+// still records a throughput sample for backends that omit usage.
+func (s *Server) recordStreamingInference(model string, usage *Usage, chunkCount int, firstChunkAt time.Time) {
+	if s.inferenceStats == nil {
+		return
+	}
+	ttft := time.Since(firstChunkAt)
+	if usage != nil {
+		s.inferenceStats.Record(model, usage.PromptTokens, usage.CompletionTokens, ttft, ttft)
+		return
+	}
+	s.inferenceStats.Record(model, 0, chunkCount, ttft, ttft)
 }
 
 // Start runs the HTTP server.
@@ -480,6 +524,14 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Surface the worker's per-model inference throughput snapshot so the
+	// router's capability cache can rank workers by tokens/sec (issue #134).
+	// Empty when no inference has been recorded yet; the JSON encoder omits
+	// the field when nil/empty, keeping the payload backward compatible.
+	if s.inferenceStats != nil {
+		worker.Capabilities.InferenceStats = s.inferenceStats.Snapshots()
+	}
+
 	if err := json.NewEncoder(w).Encode(worker); err != nil {
 		s.log.Error("failed to encode capabilities", "error", err)
 		http.Error(w, "failed to encode capabilities", http.StatusInternalServerError)
@@ -595,6 +647,7 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		start := time.Now()
 		chatResp, err := s.backend.CompleteChat(ctx, req.Model, req)
+		elapsed := time.Since(start)
 		if s.concurrencyEstimator != nil {
 			if err != nil {
 				var bhErr *BackendHTTPError
@@ -612,6 +665,10 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Record inference throughput for scheduler ranking (issue #134).
+		// For non-streaming responses the whole generation is one shot, so
+		// TTFT == total elapsed.
+		s.recordInference(req.Model, chatResp.Usage, elapsed, elapsed)
 		if err := json.NewEncoder(w).Encode(chatResp); err != nil {
 			s.log.Error("failed to encode response", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -633,6 +690,9 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	chatCh, errCh := s.backend.StreamChat(ctx, req.Model, req)
 	started := false
+	var firstChunkAt time.Time
+	var chunkCount int
+	var finalUsage *Usage
 	for {
 		// Prioritise an already-buffered backend error: on early failure the
 		// real backends close BOTH channels, so a plain select could randomly
@@ -669,6 +729,15 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				if !started {
 					ensureSSEHeaders(w)
 				}
+				// Clean close: record inference throughput for scheduler
+				// ranking (issue #134). TTFT is the time from request start
+				// to the first flushed chunk; total is the wall-clock
+				// generation time. When the backend's final frame carried a
+				// Usage, use it; otherwise fall back to chunk count as a
+				// token estimate (one completion token per content chunk).
+				if started {
+					s.recordStreamingInference(req.Model, finalUsage, chunkCount, firstChunkAt)
+				}
 				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
 				return
@@ -676,7 +745,15 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			if !started {
 				ensureSSEHeaders(w)
 				started = true
+				firstChunkAt = time.Now()
 			}
+			// Capture the final-frame usage (OpenAI sends usage only on the
+			// last streaming chunk), so the clean-close path can record
+			// accurate token counts.
+			if chunk.Usage != nil {
+				finalUsage = chunk.Usage
+			}
+			chunkCount++
 			jsonChunk, err := json.Marshal(chunk)
 			if err != nil {
 				s.log.Error("failed to marshal chunk", "error", err)
@@ -726,6 +803,7 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		start := time.Now()
 		compResp, err := s.backend.CompleteCompletions(ctx, req.Model, req)
+		elapsed := time.Since(start)
 		if s.concurrencyEstimator != nil {
 			if err != nil {
 				var bhErr *BackendHTTPError
@@ -743,6 +821,10 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Record inference throughput for scheduler ranking (issue #134).
+		// For non-streaming responses the whole generation is one shot, so
+		// TTFT == total elapsed.
+		s.recordInference(req.Model, compResp.Usage, elapsed, elapsed)
 		if err := json.NewEncoder(w).Encode(compResp); err != nil {
 			s.log.Error("failed to encode response", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -764,6 +846,9 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 
 	compCh, errCh := s.backend.StreamCompletions(ctx, req.Model, req)
 	started := false
+	var firstChunkAt time.Time
+	var chunkCount int
+	var finalUsage *Usage
 	for {
 		// Prioritise an already-buffered backend error: on early failure the
 		// real backends close BOTH channels, so a plain select could randomly
@@ -800,6 +885,15 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 				if !started {
 					ensureSSEHeaders(w)
 				}
+				// Clean close: record inference throughput for scheduler
+				// ranking (issue #134). TTFT is the time from request start
+				// to the first flushed chunk; total is the wall-clock
+				// generation time. When the backend's final frame carried a
+				// Usage, use it; otherwise fall back to chunk count as a
+				// token estimate (one completion token per content chunk).
+				if started {
+					s.recordStreamingInference(req.Model, finalUsage, chunkCount, firstChunkAt)
+				}
 				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
 				flusher.Flush()
 				return
@@ -807,7 +901,15 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 			if !started {
 				ensureSSEHeaders(w)
 				started = true
+				firstChunkAt = time.Now()
 			}
+			// Capture the final-frame usage (OpenAI sends usage only on the
+			// last streaming chunk), so the clean-close path can record
+			// accurate token counts.
+			if chunk.Usage != nil {
+				finalUsage = chunk.Usage
+			}
+			chunkCount++
 			jsonChunk, err := json.Marshal(chunk)
 			if err != nil {
 				s.log.Error("failed to marshal chunk", "error", err)

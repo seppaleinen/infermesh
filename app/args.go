@@ -77,6 +77,9 @@ func (s *Supervisor) buildRouterArgs(settings Settings) ([]string, error) {
 	if autoArgs := buildAutoRoutingArgs(settings); len(autoArgs) > 0 {
 		args = append(args, autoArgs...)
 	}
+	if settings.ScorerThroughputWeight > 0 {
+		args = append(args, "--scorer-throughput-weight", strconv.FormatFloat(settings.ScorerThroughputWeight, 'f', -1, 64))
+	}
 	if !modeFromSettings(settings).IsDev() {
 		apiKey, err := s.resolveSecret(secretRefRouterAPIKey)
 		if err != nil {

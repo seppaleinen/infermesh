@@ -61,6 +61,16 @@ export function GetPopularModels(): $CancellablePromise<$models.PopularModelView
 }
 
 /**
+ * GetInferenceStats fetches the per-worker per-model inference throughput
+ * snapshot from the router. It returns an empty (non-nil) slice when the
+ * router is reachable but idle, and a typed error when the router is
+ * unreachable or returns a bad body. Mirrors GetWorkers / GetPopularModels.
+ */
+export function GetInferenceStats(): $CancellablePromise<$models.InferenceStatsView[] | null> {
+    return $Call.ByID(3827190446);
+}
+
+/**
  * GetRouterURL returns the configured base URL (used by the UI to show the
  * unreachable-router error card).
  */

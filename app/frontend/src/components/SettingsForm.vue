@@ -197,6 +197,7 @@ const dirty = computed(() => {
     'client_cert_cn',
     'model_aliases',
     'auto_routing',
+    'scorer_throughput_weight',
   ]
 
   for (const k of keys) {
@@ -1045,6 +1046,25 @@ qwen-coder-7b=qwen2.5-coder-7b-instruct-mlx@4bit"
               computer.</span
             >
           </div>
+
+          <div class="field">
+            <label for="scorer_throughput_weight">Throughput scoring weight</label>
+            <input
+              id="scorer_throughput_weight"
+              type="range"
+              min="0"
+              max="0.5"
+              step="0.05"
+              v-model.number="settings.scorer_throughput_weight"
+              :disabled="saving"
+            />
+            <span class="field-help">
+              Weight given to measured tokens-per-second when the router ranks
+              workers. 0 disables it (backward compatible); 0.10 recommended
+              (pair with Quantization 0.35 and Free VRAM 0.20).
+            </span>
+            <span class="field-value mono">{{ settings.scorer_throughput_weight.toFixed(2) }}</span>
+          </div>
         </div>
       </section>
 
@@ -1163,17 +1183,42 @@ qwen-coder-7b=qwen2.5-coder-7b-instruct-mlx@4bit"
   color: var(--text-muted);
 }
 
-.field input[type='text'],
-.field input[type='number'],
-.field select {
-  padding: 9px 12px;
-  font-size: 13.5px;
-  color: var(--text);
+.field input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
   background: var(--surface-2);
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
   outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: background 0.15s ease;
+}
+
+.field input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  cursor: pointer;
+  border: 2px solid var(--surface);
+  box-shadow: 0 0 0 1px var(--accent-strong);
+}
+
+.field input[type='range']::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent-strong);
+  cursor: pointer;
+  border: 2px solid var(--surface);
+}
+
+.field-value {
+  align-self: flex-end;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .field input:focus,

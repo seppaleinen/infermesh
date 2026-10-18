@@ -44,6 +44,12 @@ type WorkerInfo struct {
 	AvgLatencyMS  float64 // Moving average
 	LastHeartbeat time.Time
 
+	// TokensPerSecond is the worker's advertised throughput for the model
+	// being scheduled (issue #134). -1 means unknown: the scorer treats it
+	// as a neutral 0.5 when ThroughputWeight > 0, and ignores it entirely
+	// when ThroughputWeight == 0 (backward compatible).
+	TokensPerSecond float64
+
 	// AllowedModels is a whitelist of models this worker is WILLING to serve.
 	// When non-empty, the worker only serves models in this list; it takes
 	// precedence over ExcludedModels (which is then ignored).
@@ -95,6 +101,11 @@ type WeightedScorer struct {
 	// worker gets -ColdLoadPenaltyWeight (with extra penalty when busy).
 	// When 0 (default), no cold-load penalty is applied.
 	ColdLoadPenaltyWeight float64
+	// ThroughputWeight is the weight for the worker's advertised
+	// tokens-per-second in the weighted scoring formula (issue #134). Zero
+	// (default) keeps the throughput component out of the weighted sum, so
+	// the default scorer is byte-for-byte identical to before this feature.
+	ThroughputWeight float64
 	// maxQueueDepth is the queue depth treated as fully loaded when normalizing
 	// queue depth into the 0-1 score range.
 	maxQueueDepth int
@@ -116,6 +127,7 @@ func NewWeightedScorer() *WeightedScorer {
 		LatencyWeight:    0.10,
 		maxQueueDepth:    defaultMaxQueueDepth,
 		unavailableTTL:   defaultUnavailableTTL,
+		// ThroughputWeight defaults to 0.0 (throughput disabled).
 	}
 }
 
@@ -123,20 +135,23 @@ func NewWeightedScorer() *WeightedScorer {
 // Weights should sum to 1.0 for predictable scoring, but this is not enforced.
 // maxQueueDepth <= 0 falls back to defaultMaxQueueDepth.
 // loadedModelBonus and coldLoadPenalty default to 0 (backward compatible).
-func NewWeightedScorerWithConfig(quantMatch, vramFree, gpuUtil, queueDepth, latency, loadedModelBonus, coldLoadPenalty float64, unavailableTTL time.Duration, maxQueueDepth int) *WeightedScorer {
+// throughput is the weight for the worker's advertised tokens/sec (issue
+// #134); 0 (default) keeps the throughput component out of the weighted sum.
+func NewWeightedScorerWithConfig(quantMatch, vramFree, gpuUtil, queueDepth, latency, loadedModelBonus, coldLoadPenalty, throughput float64, unavailableTTL time.Duration, maxQueueDepth int) *WeightedScorer {
 	if maxQueueDepth <= 0 {
 		maxQueueDepth = defaultMaxQueueDepth
 	}
 	return &WeightedScorer{
-		QuantMatchWeight:      quantMatch,
-		VRAMFreeWeight:        vramFree,
-		GPUUtilWeight:         gpuUtil,
-		QueueDepthWeight:      queueDepth,
-		LatencyWeight:         latency,
+		QuantMatchWeight:       quantMatch,
+		VRAMFreeWeight:         vramFree,
+		GPUUtilWeight:          gpuUtil,
+		QueueDepthWeight:       queueDepth,
+		LatencyWeight:          latency,
 		LoadedModelBonusWeight: loadedModelBonus,
-		ColdLoadPenaltyWeight: coldLoadPenalty,
-		maxQueueDepth:         maxQueueDepth,
-		unavailableTTL:        unavailableTTL,
+		ColdLoadPenaltyWeight:  coldLoadPenalty,
+		ThroughputWeight:       throughput,
+		maxQueueDepth:          maxQueueDepth,
+		unavailableTTL:         unavailableTTL,
 	}
 }
 
@@ -321,15 +336,35 @@ func (s *WeightedScorer) Score(ctx context.Context, request ModelRequest, worker
 		}
 	}
 
+	// 7. Throughput score (tokens/sec, issue #134). When ThroughputWeight is
+	// 0 (default) this component is skipped entirely and the weighted sum is
+	// byte-for-byte identical to before this feature. When ThroughputWeight
+	// > 0, a worker's advertised tokens-per-second is normalised into a 0-1
+	// score: 0 tok/s → 0.0, >= 100 tok/s → 1.0 (clamped). Unknown throughput
+	// (-1, the scheduler's sentinel) is treated as a neutral 0.5 so a worker
+	// that has never reported throughput is not penalised for it.
+	throughputScore := 0.0
+	if s.ThroughputWeight > 0 {
+		if worker.TokensPerSecond < 0 {
+			throughputScore = 0.5 // unknown: neutral
+		} else {
+			throughputScore = math.Min(worker.TokensPerSecond/100.0, 1.0)
+			if throughputScore < 0 {
+				throughputScore = 0
+			}
+		}
+	}
+
 	// Calculate weighted sum: all components are 0-1 where higher is better.
-	// Formula: score = w1*quantMatch + w2*vramFree + w3*gpuUtilScore + w4*queueDepthScore + w5*latencyScore + w6*loadedBonus - w7*coldLoad
+	// Formula: score = w1*quantMatch + w2*vramFree + w3*gpuUtilScore + w4*queueDepthScore + w5*latencyScore + w6*loadedBonus - w7*coldLoad + w8*throughput
 	score := s.QuantMatchWeight*quantMatchScore +
 		s.VRAMFreeWeight*vramFreeRatio +
 		s.GPUUtilWeight*gpuUtilScore +
 		s.QueueDepthWeight*queueDepthScore +
 		s.LatencyWeight*latencyScore +
 		s.LoadedModelBonusWeight*loadedBonusScore -
-		s.ColdLoadPenaltyWeight*coldLoadScore
+		s.ColdLoadPenaltyWeight*coldLoadScore +
+		s.ThroughputWeight*throughputScore
 
 	// Ensure score is in reasonable range (0-1)
 	if score < 0 {

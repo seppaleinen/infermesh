@@ -594,6 +594,7 @@ function prevModelPage() {
                     :is-local="isLocalWorker(w)"
                     :in-flight="w.in_flight"
                     :max-in-flight="w.max_in_flight"
+                    :tokens-per-second="w.tokens_per_second"
                   />
                 </div>
               </li>
