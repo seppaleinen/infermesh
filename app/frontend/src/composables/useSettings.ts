@@ -32,7 +32,8 @@ export function emptySettings(): Settings {
     dev_mode: null,
     client_cert_cn: 'infermesh-desktop',
     auto_start_on_login: null,
-    auto_routing: {},
+    auto_routing: null,
+    scorer_throughput_weight: 0.1,
     secrets: {},
     secret_refs: {},
   }

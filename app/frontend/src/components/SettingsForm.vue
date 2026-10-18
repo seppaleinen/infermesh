@@ -77,6 +77,26 @@ const aliasMapText = computed({
 // settingsGroups.ts). dev_mode === null counts as dev-mode ON → hidden.
 const showMTLS = computed(() => isMTLSVisible(settings.value?.dev_mode ?? null))
 
+// Auto-routing with defaults — ensures v-model bindings always have a
+// valid object even when autoRouting is null (disabled).
+const autoRouting = computed(() => {
+  const ar = settings.value?.auto_routing
+  if (!ar) {
+    return {
+      enabled: false,
+      use_four_tier: false,
+      tier_simple: '',
+      tier_medium: '',
+      tier_complex: '',
+      tier_hard: '',
+      tier_hardest: '',
+      simple_max_tokens: 0,
+      medium_max_tokens: 0,
+    }
+  }
+  return ar
+})
+
 // Collapsible section open state — session-local, resets on remount.
 const openSections = ref({
   connection: true,
@@ -906,7 +926,7 @@ qwen-coder-7b=qwen2.5-coder-7b-instruct-mlx@4bit"
             <input
               id="auto_routing_enabled"
               type="checkbox"
-              v-model="settings.auto_routing.enabled"
+              v-model="autoRouting.enabled"
               :true-value="true"
               :false-value="false"
               :disabled="saving"
@@ -916,12 +936,12 @@ qwen-coder-7b=qwen2.5-coder-7b-instruct-mlx@4bit"
             >
           </div>
 
-          <div v-if="settings.auto_routing?.enabled" class="field checkbox-field">
+          <div v-if="autoRouting?.enabled" class="field checkbox-field">
             <label for="auto_routing_use_four_tier">Use 4-tier mode</label>
             <input
               id="auto_routing_use_four_tier"
               type="checkbox"
-              v-model="settings.auto_routing.use_four_tier"
+              v-model="autoRouting.use_four_tier"
               :true-value="true"
               :false-value="false"
               :disabled="saving"
@@ -931,68 +951,68 @@ qwen-coder-7b=qwen2.5-coder-7b-instruct-mlx@4bit"
             >
           </div>
 
-          <div v-if="settings.auto_routing?.enabled" class="field">
+          <div v-if="autoRouting?.enabled" class="field">
             <label for="auto_routing_tier_simple">Simple tier model</label>
             <input
               id="auto_routing_tier_simple"
               type="text"
-              v-model="settings.auto_routing.tier_simple"
+              v-model="autoRouting.tier_simple"
               :disabled="saving"
               placeholder="Model name for simple prompts"
             />
           </div>
 
-          <div v-if="settings.auto_routing?.enabled" class="field">
+          <div v-if="autoRouting?.enabled" class="field">
             <label for="auto_routing_tier_medium">Medium tier model</label>
             <input
               id="auto_routing_tier_medium"
               type="text"
-              v-model="settings.auto_routing.tier_medium"
+              v-model="autoRouting.tier_medium"
               :disabled="saving"
               placeholder="Model name for medium-complexity prompts"
             />
           </div>
 
-          <div v-if="settings.auto_routing?.enabled" class="field">
+          <div v-if="autoRouting?.enabled" class="field">
             <label for="auto_routing_tier_complex">Complex tier model</label>
             <input
               id="auto_routing_tier_complex"
               type="text"
-              v-model="settings.auto_routing.tier_complex"
+              v-model="autoRouting.tier_complex"
               :disabled="saving"
               placeholder="Model name for complex prompts (3-tier top tier)"
             />
           </div>
 
-          <div v-if="settings.auto_routing?.enabled && settings.auto_routing.use_four_tier" class="field">
+          <div v-if="autoRouting?.enabled && autoRouting.use_four_tier" class="field">
             <label for="auto_routing_tier_hard">Hard tier model</label>
             <input
               id="auto_routing_tier_hard"
               type="text"
-              v-model="settings.auto_routing.tier_hard"
+              v-model="autoRouting.tier_hard"
               :disabled="saving"
               placeholder="Model name for hard reasoning prompts (4-tier only)"
             />
           </div>
 
-          <div v-if="settings.auto_routing?.enabled && settings.auto_routing.use_four_tier" class="field">
+          <div v-if="autoRouting?.enabled && autoRouting.use_four_tier" class="field">
             <label for="auto_routing_tier_hardest">Hardest tier model</label>
             <input
               id="auto_routing_tier_hardest"
               type="text"
-              v-model="settings.auto_routing.tier_hardest"
+              v-model="autoRouting.tier_hardest"
               :disabled="saving"
               placeholder="Model name for hardest prompts (4-tier top tier)"
             />
           </div>
 
-          <div v-if="settings.auto_routing?.enabled" class="field">
+          <div v-if="autoRouting?.enabled" class="field">
             <label for="auto_routing_simple_max_tokens">Simple max tokens</label>
             <input
               id="auto_routing_simple_max_tokens"
               type="number"
               min="1"
-              v-model.number="settings.auto_routing.simple_max_tokens"
+              v-model.number="autoRouting.simple_max_tokens"
               :disabled="saving"
               placeholder="200"
             />
@@ -1001,13 +1021,13 @@ qwen-coder-7b=qwen2.5-coder-7b-instruct-mlx@4bit"
             >
           </div>
 
-          <div v-if="settings.auto_routing?.enabled" class="field">
+          <div v-if="autoRouting?.enabled" class="field">
             <label for="auto_routing_medium_max_tokens">Medium max tokens</label>
             <input
               id="auto_routing_medium_max_tokens"
               type="number"
               min="1"
-              v-model.number="settings.auto_routing.medium_max_tokens"
+              v-model.number="autoRouting.medium_max_tokens"
               :disabled="saving"
               placeholder="600"
             />
