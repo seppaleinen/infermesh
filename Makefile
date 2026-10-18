@@ -239,9 +239,13 @@ test-static: build-static
 # Run all tests: unit + integration + e2e
 test: vet-app test-unit test-integration test-e2e
 
-# Run all tests including app module (separate Go module)
-test-all: test
+# Run all app verification (TypeScript, Go tests, build)
+test-app: vet-app
 	cd app && go test ./...
+	cd app && wails3 task build OUTPUT=/dev/null 2>&1 || (echo "App build failed" && exit 1)
+
+# Run all tests including app module and app build verification
+test-all: test test-app
 	golangci-lint run ./...
 
 # Platform-aware tests: run on current platform
@@ -303,4 +307,4 @@ coverage:
 		sort
 	@echo "Coverage report: cover/coverage.out"
 
-.PHONY: build build-router build-worker build-static build-app package-app package-app-dmg package-app-linux package-app-windows relay test test-all test-security test-integration test-e2e test-packaged test-static test-platform test-all-platforms lint validate-contracts install-hooks tidy clean app coverage test-app-smoke pkg-docker pkg-docker-push pkg-helm pkg-compose
+.PHONY: build build-router build-worker build-static build-app package-app package-app-dmg package-app-linux package-app-windows relay test test-app test-all test-security test-integration test-e2e test-packaged test-static test-platform test-all-platforms lint validate-contracts install-hooks tidy clean app coverage test-app-smoke pkg-docker pkg-docker-push pkg-helm pkg-compose

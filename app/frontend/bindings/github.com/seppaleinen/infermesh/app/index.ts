@@ -17,6 +17,8 @@ export {
 } from "./models.js";
 
 export type {
+    AutoRoutingConfigRequest,
+    AutoRoutingSettings,
     InferenceStatsView,
     PopularModelView,
     ProcessStatus,

@@ -31,6 +31,15 @@ export function GetAPIKey(): $CancellablePromise<string> {
 }
 
 /**
+ * GetAutoRouting fetches the current auto-routing configuration from the router.
+ * Returns a zero-value AutoRoutingConfigRequest when the router is unreachable or
+ * returns a bad body.
+ */
+export function GetAutoRouting(): $CancellablePromise<$models.AutoRoutingConfigRequest> {
+    return $Call.ByID(743821097);
+}
+
+/**
  * GetConnectionCount fetches the number of currently active HTTP connections
  * to the router from /meta/connections/count. It returns 0 when the router is
  * reachable but idle, and a typed error when the router is unreachable or
@@ -51,6 +60,16 @@ export function GetHostname(): $CancellablePromise<string> {
 }
 
 /**
+ * GetInferenceStats fetches the per-worker per-model inference throughput
+ * snapshot from the router. It returns an empty (non-nil) slice when the
+ * router is reachable but idle, and a typed error when the router is
+ * unreachable or returns a bad body. Mirrors GetWorkers / GetPopularModels.
+ */
+export function GetInferenceStats(): $CancellablePromise<$models.InferenceStatsView[] | null> {
+    return $Call.ByID(1167904872);
+}
+
+/**
  * GetPopularModels fetches the sorted popular-models list from the router.
  * It returns an empty (non-nil) slice when the router is reachable but idle,
  * and a typed error when the router is unreachable or returns a bad body.
@@ -58,16 +77,6 @@ export function GetHostname(): $CancellablePromise<string> {
  */
 export function GetPopularModels(): $CancellablePromise<$models.PopularModelView[] | null> {
     return $Call.ByID(601255233);
-}
-
-/**
- * GetInferenceStats fetches the per-worker per-model inference throughput
- * snapshot from the router. It returns an empty (non-nil) slice when the
- * router is reachable but idle, and a typed error when the router is
- * unreachable or returns a bad body. Mirrors GetWorkers / GetPopularModels.
- */
-export function GetInferenceStats(): $CancellablePromise<$models.InferenceStatsView[] | null> {
-    return $Call.ByID(3827190446);
 }
 
 /**
@@ -107,6 +116,16 @@ export function IsLocalWorker(workerPort: number, hostname: string, port: number
  */
 export function SetAPIKey(key: string): $CancellablePromise<void> {
     return $Call.ByID(3608046617, key);
+}
+
+/**
+ * SetAutoRouting POSTs the auto-routing configuration to the router's /meta/auto-routing
+ * endpoint, applying configuration live without a router restart. The router expects
+ * the full configuration; the caller must merge changes before calling.
+ * Mirrors SetModelAliases: marshal body, POST, check {"ok": true} response.
+ */
+export function SetAutoRouting(cfg: $models.AutoRoutingConfigRequest): $CancellablePromise<void> {
+    return $Call.ByID(3693313133, cfg);
 }
 
 /**
