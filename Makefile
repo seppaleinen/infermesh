@@ -175,15 +175,19 @@ pkg-helm:
 	helm package charts/infermesh --destination .
 	@echo "Packaged: infermesh-$$(grep '^version:' charts/infermesh/Chart.yaml | awk '{print $$2}').tgz"
 
-# Validate the docker-compose file (validate only — does NOT start containers).
+# Validate the docker-compose files (validate only — does NOT start containers).
 # Requires the docker compose plugin (or docker-compose). If neither is
 # available, the YAML is structurally validated by a Python parser instead.
+# Validates both docker-compose.yml (pre-built images) and
+# docker-compose.build.yml (build-from-source).
 pkg-compose:
-	@echo "Validating docker-compose.yml ..."
+	@echo "Validating docker-compose.yml and docker-compose.build.yml ..."
 	@if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then \
-		docker compose -f docker-compose.yml config -q && echo "compose config OK"; \
+		docker compose -f docker-compose.yml config -q && echo "docker-compose.yml OK"; \
+		docker compose -f docker-compose.build.yml config -q && echo "docker-compose.build.yml OK"; \
 	elif command -v docker-compose >/dev/null 2>&1; then \
-		docker-compose -f docker-compose.yml config -q && echo "compose config OK"; \
+		docker-compose -f docker-compose.yml config -q && echo "docker-compose.yml OK"; \
+		docker-compose -f docker-compose.build.yml config -q && echo "docker-compose.build.yml OK"; \
 	else \
 		echo "NOTE: neither 'docker compose' nor 'docker-compose' is installed; structurally validating YAML instead."; \
 		python3 hack/compose_validate.py; \

@@ -1,0 +1,57 @@
+# InferMesh Relay — minimal standalone Dockerfile.
+#
+# Builds ONLY the relay broker (cmd/relay) from the local source tree. Use
+# this when you want a relay image without also building the router/worker
+# (e.g. a dedicated relay host, or a CI image that only needs the broker).
+#
+# For the full multi-service image (router + worker + relay in one builder),
+# see docker/Dockerfile (target: relay).
+#
+# Usage:
+#   docker build -t infermesh-relay -f docker/Dockerfile.relay .
+#
+# The relay is a WebSocket broker that bridges workers and routers for hosts
+# that cannot accept inbound connections. It is dev-mode only (no auth,
+# loopback-only) and is intended to be profile-gated in compose so it does
+# not start by default.
+
+# ---------- Builder stage ----------
+FROM golang:1.27-alpine AS builder
+
+# Install build dependencies (git for module resolution)
+RUN apk add --no-cache git
+
+WORKDIR /src
+
+# Copy only go.mod/go.sum first for dependency caching
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Remove local replace directive (app/go.mod has it for local dev)
+RUN sed -i '/^replace/d' go.mod || true
+
+# Download all module dependencies (including app module)
+RUN go mod tidy
+
+# Build the relay binary: CGO_ENABLED=0 for a fully static, distroless image
+RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /relay ./cmd/relay
+
+# ---------- Relay runtime image ----------
+FROM gcr.io/distroless/static-debian12
+
+# Copy relay binary
+COPY --from=builder /relay /relay
+
+# Expose default relay port (WebSocket /v1/connect)
+EXPOSE 8090
+
+# Default to dev-mode (no auth, loopback only).
+# Override at runtime with: -e RELAY_ARGS="--prod-mode ..."
+ENV RELAY_ARGS="--dev-mode --listen :8090"
+
+# Run relay
+ENTRYPOINT ["/relay"]
+CMD ["/bin/sh", "-c", "/relay $RELAY_ARGS"]

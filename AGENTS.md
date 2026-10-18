@@ -165,3 +165,11 @@ worker count and call count over a rolling 10-minute window.
 ---
 
 *Last updated: 2026-09-21*
+
+## Registry event-drop risk under high churn (Issue #152)
+
+The registry's event broadcast channel (buffer size 32 in pkg/registry/memory.go) drops events when subscribers are slow. Under extremely high worker churn (many joins/leaves per second), a RegistryRemoved event could be dropped, leaving a stale entry in the capability cache until the next registry sweep (max 120s).
+
+Impact is bounded by the 120s sweep: at worst, a worker appears available for up to two minutes after it has actually left. This is acceptable for most LAN scenarios; the alternative (increasing buffer size or adding periodic reconciliation) adds complexity for negligible gain.
+
+No code change required; operators should monitor churn rates if sub-minute worker turnover is expected.

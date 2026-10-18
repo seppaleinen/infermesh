@@ -1,0 +1,114 @@
+# InferMesh — build-from-source Docker Compose flow.
+#
+# Builds every service from the local source tree instead of pulling
+# pre-built images from ghcr.io. No GitHub access, no registry token, no
+# pre-built image needed:
+#
+#   docker compose -f docker-compose.build.yml build
+#   docker compose -f docker-compose.build.yml up -d
+#
+# GPU workers and the relay broker are opt-in via profiles (same profiles as
+# docker-compose.yml). The relay is dev-mode only and profile-gated so it does
+# NOT start by default.
+#
+# Override flags at runtime via ROUTER_ARGS / WORKER_ARGS / RELAY_ARGS (each
+# image's CMD runs the binary with the corresponding env var).
+
+version: "3.9"
+
+services:
+  router:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: router
+    container_name: infermesh-router
+    ports:
+      - "8080:8080"
+    environment:
+      ROUTER_ARGS: "--dev-mode"
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: worker
+    container_name: infermesh-worker
+    ports:
+      - "8081:8081"
+    environment:
+      # WORKER_MODEL_PATH is the path to your model file on the HOST. The
+      # worker image needs a local inference backend reachable from inside its
+      # container. For llama-cpp the default backend endpoint is
+      # localhost:8080 INSIDE the container, so run the backend inside the
+      # worker container (or point --backend-url at a reachable host:port).
+      # For ollama/lmstudio/vllm, point --backend-url at the host-side backend
+      # (e.g. --backend-url http://host.docker.internal:11434) since those
+      # run on the host, not inside the container.
+      WORKER_ARGS: "--dev-mode --router http://router:8080 --backend lmstudio --model-path ${WORKER_MODEL_PATH:-}"
+    restart: unless-stopped
+    depends_on:
+      - router
+
+  # ---------------------------------------------------------------------------
+  # GPU worker (opt-in via `--profile gpu`).
+  #
+  # Requires the NVIDIA container runtime on the host. The worker container
+  # gets access to all NVIDIA GPUs. The inference backend (llama-cpp / ollama
+  # / vLLM) must be reachable from inside the container — either run it inside
+  # the container (e.g. ollama in a sidecar) or point --backend-url at a
+  # host-side backend (e.g. http://host.docker.internal:11434).
+  #
+  # Usage: docker compose -f docker-compose.build.yml --profile gpu up -d
+  # ---------------------------------------------------------------------------
+  worker-gpu:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: worker
+    container_name: infermesh-worker-gpu
+    ports:
+      - "8082:8081"
+    environment:
+      WORKER_ARGS: "--dev-mode --router http://router:8080 --backend ollama --model-path ${WORKER_MODEL_PATH:-} --max-tokens ${WORKER_MAX_TOKENS:-4096}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    depends_on:
+      - router
+    profiles:
+      - gpu
+
+  # ---------------------------------------------------------------------------
+  # Relay broker (opt-in via `--profile relay`).
+  #
+  # The relay is a WebSocket broker that bridges workers and routers for
+  # hosts that cannot accept inbound connections. Workers connect OUTBOUND
+  # to the relay (no inbound port needed on the worker host). The router
+  # also connects outbound to the relay. The relay routes messages between
+  # them using the worker_id field in the message envelope.
+  #
+  # Workers on outbound-only hosts use:
+  #   --relay-url ws://relay:8090/v1/connect
+  # instead of --router http://router:8080.
+  #
+  # Usage: docker compose -f docker-compose.build.yml --profile relay up -d
+  # ---------------------------------------------------------------------------
+  relay:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.relay
+    container_name: infermesh-relay
+    ports:
+      - "8090:8090"
+    environment:
+      RELAY_ARGS: "--dev-mode --listen :8090"
+    restart: unless-stopped
+    profiles:
+      - relay

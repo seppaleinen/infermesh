@@ -113,8 +113,7 @@ services:
     image: ghcr.io/seppaleinen/infermesh/relay:latest
     build:
       context: .
-      dockerfile: docker/Dockerfile
-      target: relay
+      dockerfile: docker/Dockerfile.relay
     container_name: infermesh-relay
     ports:
       - "8090:8090"
