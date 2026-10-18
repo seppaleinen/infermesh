@@ -18,5 +18,5 @@ description: |-
   cluster. Dev mode is the default (no auth, loopback-only); production mode
   enables mTLS with an existing Secret or an openssl cert-generation Job.
 type: application
-version: 0.1.0
-appVersion: "0.1.20"
+version: 0.1.46
+appVersion: "0.1.46"

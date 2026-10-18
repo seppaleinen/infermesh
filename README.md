@@ -158,6 +158,29 @@ worker:
 Override flags at runtime via `ROUTER_ARGS` / `WORKER_ARGS` (the images' CMD
 runs the binary with `$ROUTER_ARGS` / `$WORKER_ARGS`).
 
+**Build from source:**
+
+```bash
+# Build and start from local source (no registry images)
+docker compose -f docker-compose.build.yml up --build -d
+```
+
+This uses `docker-compose.build.yml` which builds `router`, `worker`, and `relay`
+from the local source tree via `docker/Dockerfile` and `docker/Dockerfile.relay`.
+
+**GPU worker + relay profiles:**
+
+```bash
+# With NVIDIA GPU support (requires nvidia-container-toolkit)
+docker compose --profile gpu up -d
+
+# With relay service for outbound-only workers
+docker compose --profile relay up -d
+
+# Both together
+docker compose --profile gpu --profile relay up -d
+```
+
 **Production mode (mTLS):** mount a cert dir (`./certs` on the host, or
 `${CERT_DIR}`) into both containers read-only and switch to prod args:
 
@@ -175,9 +198,8 @@ WORKER_ARGS="--prod-mode --prod-router=https://router:8080 --mtls-cert=/certs/tl
 > reachable host:port).
 
 See also the **Docker Images** section above for the published multi-arch
-images and runtime override examples.
-
-## Firewall / Outbound-Only Relay
+images and runtime override examples. Full Docker + Compose guide at
+`docs/docker.md`.
 
 If your worker machine sits behind a firewall that blocks inbound connections (common on macOS Sequoia+, corporate LANs, or restricted VMs), use the **outbound-only relay** architecture. Both the router and every worker dial OUTBOUND to a relay broker on a permissive host — no machine with an unsigned binary ever accepts an inbound connection.
 
