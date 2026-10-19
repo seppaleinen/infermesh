@@ -132,8 +132,17 @@ func runWorker(args []string) int {
 	// HTTP instead of silently falling back to mDNS. This matches the
 	// router's default --addr :8080 and avoids the silent registration
 	// failure when the router runs on a non-default port.
+	//
+	// INFERMESH_ROUTER_URL overrides the default without a flag, so container
+	// orchestrators (Docker Compose, Kubernetes) can point the worker at the
+	// router's service name + port while keeping the loopback default for
+	// bare-metal dev. The flag still wins when set.
 	if mode.IsDev() && f.Router == "" {
-		f.Router = "http://127.0.0.1:8080"
+		if env := os.Getenv("INFERMESH_ROUTER_URL"); env != "" {
+			f.Router = env
+		} else {
+			f.Router = "http://127.0.0.1:8080"
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

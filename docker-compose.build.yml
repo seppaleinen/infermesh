@@ -14,8 +14,6 @@
 # Override flags at runtime via ROUTER_ARGS / WORKER_ARGS / RELAY_ARGS (each
 # image's CMD runs the binary with the corresponding env var).
 
-version: "3.9"
-
 services:
   router:
     build:
@@ -25,8 +23,16 @@ services:
     container_name: infermesh-router
     ports:
       - "8080:8080"
+    command:
+      - "--dev-mode"
     environment:
-      ROUTER_ARGS: "--dev-mode"
+      # The worker resolves its router URL from INFERMESH_ROUTER_URL when
+      # --router is not passed, so it always matches this service's addr.
+      INFERMESH_ROUTER_URL: "http://router:8080"
+      # Outbound relay URL (relay profile only). The router dials this in a
+      # retrying goroutine, so an unresolvable hostname just backlogs until the
+      # relay comes online — harmless when the relay profile is not active.
+      INFERMESH_RELAY_URL: "ws://relay:8090/v1/connect"
     restart: unless-stopped
 
   worker:
@@ -37,7 +43,11 @@ services:
     container_name: infermesh-worker
     ports:
       - "8081:8081"
-    environment:
+    command:
+      # --dev-mode is REQUIRED: the worker binary has no dev-mode default, so
+      # without it the worker starts in prod mode and exits with
+      # "--model-path is required in production mode".
+      #
       # WORKER_MODEL_PATH is the path to your model file on the HOST. The
       # worker image needs a local inference backend reachable from inside its
       # container. For llama-cpp the default backend endpoint is
@@ -46,7 +56,13 @@ services:
       # For ollama/lmstudio/vllm, point --backend-url at the host-side backend
       # (e.g. --backend-url http://host.docker.internal:11434) since those
       # run on the host, not inside the container.
-      WORKER_ARGS: "--dev-mode --router http://router:8080 --backend lmstudio --model-path ${WORKER_MODEL_PATH:-}"
+      - "--dev-mode"
+      - "--backend"
+      - "lmstudio"
+      - "--model-path"
+      - "${WORKER_MODEL_PATH:-}"
+    environment:
+      INFERMESH_ROUTER_URL: "http://router:8080"
     restart: unless-stopped
     depends_on:
       - router
@@ -69,9 +85,17 @@ services:
       target: worker
     container_name: infermesh-worker-gpu
     ports:
-      - "8082:8081"
+      - "8081:8081"
+    command:
+      - "--dev-mode"
+      - "--backend"
+      - "ollama"
+      - "--model-path"
+      - "${WORKER_MODEL_PATH:-}"
+      - "--max-tokens"
+      - "${WORKER_MAX_TOKENS:-4096}"
     environment:
-      WORKER_ARGS: "--dev-mode --router http://router:8080 --backend ollama --model-path ${WORKER_MODEL_PATH:-} --max-tokens ${WORKER_MAX_TOKENS:-4096}"
+      INFERMESH_ROUTER_URL: "http://router:8080"
     deploy:
       resources:
         reservations:
@@ -88,11 +112,11 @@ services:
   # ---------------------------------------------------------------------------
   # Relay broker (opt-in via `--profile relay`).
   #
-  # The relay is a WebSocket broker that bridges workers and routers for
-  # hosts that cannot accept inbound connections. Workers connect OUTBOUND
-  # to the relay (no inbound port needed on the worker host). The router
-  # also connects outbound to the relay. The relay routes messages between
-  # them using the worker_id field in the message envelope.
+  # The relay is a WebSocket broker that bridges workers and routers for hosts
+  # that cannot accept inbound connections. Workers connect OUTBOUND to the
+  # relay (no inbound port needed on the worker host). The router also
+  # connects outbound to the relay. The relay routes messages between them
+  # using the worker_id field in the message envelope.
   #
   # Workers on outbound-only hosts use:
   #   --relay-url ws://relay:8090/v1/connect
@@ -107,8 +131,10 @@ services:
     container_name: infermesh-relay
     ports:
       - "8090:8090"
-    environment:
-      RELAY_ARGS: "--dev-mode --listen :8090"
+    command:
+      - "--dev-mode"
+      - "--listen"
+      - ":8090"
     restart: unless-stopped
     profiles:
       - relay

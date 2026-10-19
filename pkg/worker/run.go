@@ -202,9 +202,11 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 			log.Warn("failed to auto-discover models from backend, using model-path", "error", err)
 			// For backends that auto-discover models from the runtime (ollama,
 			// lmstudio, vllm), starting the worker without a model-path is OK —
-			// the next capability refresh cycle will retry discovery. Only llama-cpp
-			// requires a declared .gguf path.
-			requireModelPath := cfg.Backend == "llama-cpp"
+			// the next capability refresh cycle will retry discovery. Only
+			// llama-cpp requires a declared .gguf path, and only in prod mode:
+			// in dev mode a missing backend is normal (start it later or pass
+			// --model-path) and must not abort the worker.
+			requireModelPath := !cfg.DevMode && cfg.Backend == "llama-cpp"
 			if requireModelPath && cfg.ModelPath == "" {
 				return fail(ErrMissingModelPath)
 			}

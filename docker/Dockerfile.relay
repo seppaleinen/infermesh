@@ -52,6 +52,9 @@ EXPOSE 8090
 # Override at runtime with: -e RELAY_ARGS="--prod-mode ..."
 ENV RELAY_ARGS="--dev-mode --listen :8090"
 
-# Run relay
+# Run relay. ENTRYPOINT-ONLY (no CMD): Docker concatenates ENTRYPOINT + CMD,
+# so a shell CMD would yield "/relay /bin/sh -c /relay $RELAY_ARGS" and the
+# binary would choke on "/bin/sh" as an unknown flag. With no CMD, runtime
+# args (docker run ..., docker compose command:, or the Compose default) are
+# passed straight to the binary.
 ENTRYPOINT ["/relay"]
-CMD ["/bin/sh", "-c", "/relay $RELAY_ARGS"]

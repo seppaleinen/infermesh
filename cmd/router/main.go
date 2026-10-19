@@ -363,13 +363,21 @@ func runRouter(args []string) int {
 		srv.SetModelAliases(aliasCfg)
 	}
 
-	if f.RelayURL != "" {
-		srv.SetRelayURL(f.RelayURL)
+	// --relay-url wins; INFERMESH_RELAY_URL is the env-var fallback so the
+	// relay profile can inject the broker URL without editing ROUTER_ARGS.
+	relayURL := f.RelayURL
+	if relayURL == "" {
+		if env := os.Getenv("INFERMESH_RELAY_URL"); env != "" {
+			relayURL = env
+		}
+	}
+	if relayURL != "" {
+		srv.SetRelayURL(relayURL)
 		// Establish the relay connection in the background with retry. The
 		// HTTP server starts serving immediately; only the relay link
 		// retries (exponential backoff) if the initial dial fails or the
 		// connection later drops.
-		go srv.RunRelay(ctx, f.RelayURL)
+		go srv.RunRelay(ctx, relayURL)
 	}
 	go func() {
 		if err := srv.Start(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -378,15 +386,21 @@ func runRouter(args []string) int {
 	}()
 
 	// Log mode
-	if f.RelayURL != "" {
+	if relayURL != "" {
 		log.Info("router listening",
 			"addr", f.Addr,
 			"mode", "relay-only",
 			"note", "/v1/connect not mounted (workers connect via relay)",
-			"relay_url", f.RelayURL,
+			"relay_url", relayURL,
 			"dev_mode", mode.IsDev())
 	} else {
 		log.Info("router listening", "addr", f.Addr, "dev_mode", mode.IsDev())
+	}
+
+	// Surface the resolved relay URL so a baked-in default (e.g. from a
+	// broken Dockerfile ENV) is visible instead of silently ignored.
+	if relayURL != "" {
+		log.Info("relay url resolved", "url", relayURL)
 	}
 
 	// Wait for shutdown signal

@@ -59,12 +59,19 @@ COPY --from=builder /router /router
 EXPOSE 8080
 
 # Default to dev-mode (no auth, loopback only).
+# ENV with a LITERAL value (not ${VAR:-default}): any shell expansion form
+# bakes the default into the image layer at build time, and Docker merges
+# runtime -e over image ENV by value — so a baked "--dev-mode" wins over a
+# runtime -e ROUTER_ARGS="--prod-mode ...". A literal ENV is overridable.
 # Override at runtime with: -e ROUTER_ARGS="--prod-mode ..."
 ENV ROUTER_ARGS="--dev-mode"
 
-# Run router
+# Run router. ENTRYPOINT-ONLY (no CMD): Docker concatenates ENTRYPOINT + CMD,
+# so a shell CMD would yield "/router /bin/sh -c /router $ROUTER_ARGS" and the
+# binary would choke on "/bin/sh" as an unknown flag. With no CMD, runtime
+# args (docker run ..., docker compose command:, or the Compose default) are
+# passed straight to the binary.
 ENTRYPOINT ["/router"]
-CMD ["/bin/sh", "-c", "/router $ROUTER_ARGS"]
 
 # ---------- Worker runtime image ----------
 FROM gcr.io/distroless/static-debian12 AS worker
@@ -79,9 +86,8 @@ EXPOSE 8081
 # Override at runtime with: -e WORKER_ARGS="--prod-mode --router=https://router:8080 ..."
 ENV WORKER_ARGS="--dev-mode"
 
-# Run worker
+# Run worker (ENTRYPOINT-ONLY, see router note above)
 ENTRYPOINT ["/worker"]
-CMD ["/bin/sh", "-c", "/worker $WORKER_ARGS"]
 
 # ---------- Relay runtime image ----------
 FROM gcr.io/distroless/static-debian12 AS relay
@@ -96,6 +102,5 @@ EXPOSE 8090
 # Override at runtime with: -e RELAY_ARGS="--prod-mode ..."
 ENV RELAY_ARGS="--dev-mode"
 
-# Run relay
+# Run relay (ENTRYPOINT-ONLY, see router note above)
 ENTRYPOINT ["/relay"]
-CMD ["/bin/sh", "-c", "/relay $RELAY_ARGS"]

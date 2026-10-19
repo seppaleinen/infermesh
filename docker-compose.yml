@@ -14,8 +14,6 @@
 # images' CMD runs the binary with $ROUTER_ARGS / $WORKER_ARGS / $RELAY_ARGS).
 # See the commented production example below for mTLS.
 
-version: "3.9"
-
 services:
   router:
     image: ghcr.io/seppaleinen/infermesh/router:latest
@@ -25,10 +23,28 @@ services:
       target: router
     container_name: infermesh-router
     ports:
-      - "8080:8080"
-    environment:
+      - "8081:8081"
+    command:
       # Router flags. Default: dev mode (no auth, loopback only).
-      ROUTER_ARGS: "--dev-mode"
+      # --addr :8081 sets the listen port; workers register to that port.
+      # The image is ENTRYPOINT-ONLY, so args go here (or via `docker run ...`).
+      - "--dev-mode"
+      - "--addr"
+      - ":8081"
+      - "--api-key"
+      - "heybaby"
+      - "--proxy-timeout"
+      - "120s"
+      - "--model-load-timeout"
+      - "120s"
+    environment:
+      # The worker resolves its router URL from INFERMESH_ROUTER_URL when
+      # --router is not passed, so it always matches this service's addr.
+      INFERMESH_ROUTER_URL: "http://router:8081"
+      # Outbound relay URL. The router dials this in a retrying goroutine, so
+      # an unresolvable hostname (relay service not up) just backlogs until it
+      # comes online — harmless when the relay profile is not active.
+      INFERMESH_RELAY_URL: "ws://relay:8090/v1/connect"
     restart: unless-stopped
     depends_on: []
 
@@ -40,10 +56,14 @@ services:
       target: worker
     container_name: infermesh-worker
     ports:
-      - "8081:8081"
-    environment:
+      - "8082:8082"
+    command:
       # Worker flags. Default: dev mode, registers to the router over plain
-      # HTTP inside the Compose network (--router http://router:8080).
+      # HTTP inside the Compose network.
+      #
+      # --dev-mode is REQUIRED: the worker binary has no dev-mode default, so
+      # without it the worker starts in prod mode and exits with
+      # "--model-path is required in production mode".
       #
       # WORKER_MODEL_PATH is the path to your model file on the HOST. The
       # worker image needs a local inference backend (llama-cpp / ollama /
@@ -54,7 +74,17 @@ services:
       # point --backend-url at the host-side backend (e.g.
       # --backend-url http://host.docker.internal:11434) since those run on
       # the host, not inside the container.
-      WORKER_ARGS: "--dev-mode --router http://router:8080 --backend lmstudio --model-path ${WORKER_MODEL_PATH:-}"
+      - "--dev-mode"
+      - "--backend"
+      - "llama-cpp"
+      - "--port"
+      - "8082"
+      - "--backend-timeout"
+      - "120s"
+    environment:
+      # The worker resolves its router URL from INFERMESH_ROUTER_URL when
+      # --router is not passed, so it always matches the router's addr.
+      INFERMESH_ROUTER_URL: "http://router:8081"
     restart: unless-stopped
     depends_on:
       - router
@@ -78,9 +108,19 @@ services:
       target: worker
     container_name: infermesh-worker-gpu
     ports:
-      - "8082:8081"
+      - "8082:8082"
+    command:
+      - "--dev-mode"
+      - "--backend"
+      - "ollama"
+      - "--port"
+      - "8082"
+      - "--model-path"
+      - "${WORKER_MODEL_PATH:-}"
+      - "--max-tokens"
+      - "${WORKER_MAX_TOKENS:-4096}"
     environment:
-      WORKER_ARGS: "--dev-mode --router http://router:8080 --backend ollama --model-path ${WORKER_MODEL_PATH:-} --max-tokens ${WORKER_MAX_TOKENS:-4096}"
+      INFERMESH_ROUTER_URL: "http://router:8081"
     deploy:
       resources:
         reservations:
@@ -117,8 +157,10 @@ services:
     container_name: infermesh-relay
     ports:
       - "8090:8090"
-    environment:
-      RELAY_ARGS: "--dev-mode --listen :8090"
+    command:
+      - "--dev-mode"
+      - "--listen"
+      - ":8090"
     restart: unless-stopped
     profiles:
       - relay
@@ -133,8 +175,11 @@ services:
 #     image: ghcr.io/seppaleinen/infermesh/router:latest
 #     ports:
 #       - "8080:8080"
-#     environment:
-#       ROUTER_ARGS: "--prod-mode --mtls-cert=/certs/tls.crt --mtls-key=/certs/tls.key --cert-dir=/certs"
+#     command:
+#       - "--prod-mode"
+#       - "--mtls-cert=/certs/tls.crt"
+#       - "--mtls-key=/certs/tls.key"
+#       - "--cert-dir=/certs"
 #     volumes:
 #       - "${CERT_DIR:-./certs}:/certs:ro"
 #     restart: unless-stopped
@@ -143,8 +188,15 @@ services:
 #     image: ghcr.io/seppaleinen/infermesh/worker:latest
 #     ports:
 #       - "8081:8081"
-#     environment:
-#       WORKER_ARGS: "--prod-mode --prod-router=https://router:8080 --mtls-cert=/certs/tls.crt --mtls-key=/certs/tls.key --backend lmstudio --model-path ${WORKER_MODEL_PATH:-}"
+#     command:
+#       - "--prod-mode"
+#       - "--prod-router=https://router:8080"
+#       - "--mtls-cert=/certs/tls.crt"
+#       - "--mtls-key=/certs/tls.key"
+#       - "--backend"
+#       - "lmstudio"
+#       - "--model-path"
+#       - "${WORKER_MODEL_PATH:-}"
 #     volumes:
 #       - "${CERT_DIR:-./certs}:/certs:ro"
 #     restart: unless-stopped

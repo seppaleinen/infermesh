@@ -42,6 +42,54 @@ docker compose up -d \
   -e WORKER_ARGS="--dev-mode --router http://router:8080 --backend ollama --model-path /models/qwen3-35b"
 ```
 
+### `--dev-mode` is mandatory on the worker
+
+The worker binary has **no dev-mode default**: with no mode flag it starts in
+prod mode and exits with `--model-path is required in production mode`. Both
+compose files pass `--dev-mode` explicitly; if you override at runtime, keep
+`--dev-mode` in the value.
+
+### Router URL resolution
+
+The worker resolves its router URL from three sources, in priority order:
+
+1. `--router` flag
+2. `INFERMESH_ROUTER_URL` env var
+3. `http://127.0.0.1:8080` (loopback default)
+
+The router exposes its URL on the Compose service name via
+`INFERMESH_ROUTER_URL`, so the worker always registers to the router's actual
+listen port — changing `--addr` on the router no longer requires a matching
+`--router` edit on the worker.
+
+The router's outbound relay URL resolves the same way: `--relay-url` flag, then
+`INFERMESH_RELAY_URL`, then no relay. The relay service sets it to
+`ws://relay:8090/v1/connect`.
+
+### How args are passed to the binaries
+
+The router, worker, and relay images are **ENTRYPOINT-ONLY** — they have no
+`CMD`. That is deliberate: Docker concatenates `ENTRYPOINT` and `CMD`, so a
+shell `CMD ["/bin/sh", "-c", "/router $ROUTER_ARGS"]` would actually run
+`/router /bin/sh -c /router $ROUTER_ARGS`, and the binary would choke on
+`/bin/sh` as an unknown flag. With no `CMD`, runtime args pass straight
+through.
+
+In the compose files the flags live in `command:` (a list, so shell quoting
+cannot split them). The `*_ARGS` env vars are kept for `docker run` users who
+pass them on the command line:
+
+```bash
+docker run -e ROUTER_ARGS="--dev-mode --addr :8080" \
+  ghcr.io/seppaleinen/infermesh/router:latest
+```
+
+The image `ENV ROUTER_ARGS="--dev-mode"` is a **literal** value — never
+`ENV ROUTER_ARGS=${ROUTER_ARGS:-"--dev-mode"}`. The shell form expands at
+*build* time and bakes the default into the image layer; Docker merges runtime
+`-e` over image `ENV` by *value*, so a baked `"--dev-mode"` silently wins over
+a runtime `-e ROUTER_ARGS="--prod-mode ..."`.
+
 ## Build from source
 
 Build and run directly from a local clone — no GitHub access, no registry
