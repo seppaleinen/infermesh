@@ -76,7 +76,9 @@ services:
       # the host, not inside the container.
       - "--dev-mode"
       - "--backend"
-      - "llama-cpp"
+      - "lmstudio"
+      - "--backend-url"
+      - "http://host.docker.internal:1234"
       - "--port"
       - "8082"
       - "--backend-timeout"
