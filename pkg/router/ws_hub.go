@@ -1877,6 +1877,19 @@ func (h *WSHub) relayReaderLoop(ctx context.Context, done chan struct{}) {
 			continue
 		}
 
+		// Echo relay keepalive pings straight back. The relay is blocked in
+		// its read loop, so its own outbound ping does not reset its idle
+		// deadline — the echo is what keeps the link alive (see
+		// relayPingLoop in cmd/relay/main.go).
+		if msg.Type == protocol.MsgPing {
+			reply := protocol.Message{ID: msg.ID, Type: protocol.MsgPing}
+			if err := wsutil.SendJSON(conn, reply); err != nil {
+				h.log.Debug("relay ping echo failed", "error", err)
+				return
+			}
+			continue
+		}
+
 		// Route response-type messages to relay-level pending calls
 		// (relayWorkerClient path). Returns true if consumed.
 		consumed := false

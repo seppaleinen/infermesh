@@ -20,6 +20,7 @@ import (
 	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/pkg/routeraddr"
 	"github.com/seppaleinen/infermesh/pkg/security"
+	"github.com/seppaleinen/infermesh/pkg/wsutil"
 )
 
 // ErrMissingModelPath is returned when a worker is configured without a model
@@ -79,6 +80,14 @@ type RunConfig struct {
 	// When non-empty, /v1/chat/completions and /v1/completions require a valid
 	// X-API-Key header. Mirrors the router's --api-key behavior (issue #81).
 	APIKey string
+	// RelayAPIKey is the key the worker presents to the router during relay
+	// registration. It is distinct from APIKey: the router's --api-key gates
+	// client inference requests, while the relay registration key gates which
+	// workers the router accepts over the broker. In relay mode the worker is
+	// on a remote host, so the router cannot verify it by peer IP — the key
+	// IS the identity check. Empty means "present nothing" (the router only
+	// rejects relay registrations when it has configured its own key).
+	RelayAPIKey string
 	// BackendTimeout is the HTTP client timeout for backend requests
 	// (default 30s). Inference calls that exceed this duration are
 	// aborted by the worker's HTTP client to the backend.
@@ -270,12 +279,23 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 	// (and any path that uses `info` directly) advertises them.
 	info.Capabilities.AllowedModels = allowed
 	info.Capabilities.ExcludedModels = excluded
+	// Relay registrations are identity-checked by the router's API key (the
+	// worker is on a remote host, so there is no peer IP to verify). Carry
+	// the relay key on the WorkerInfo so the register payload carries it.
+	info.APIKey = cfg.RelayAPIKey
 
-	// Relay WebSocket registration (dev mode only) - takes precedence over RouterBase
+	// Relay WebSocket registration (dev mode only) - takes precedence over RouterBase.
+	//
+	// When the relay is unreachable but a direct router URL is also configured
+	// (the common Docker Compose case, where both INFERMESH_RELAY_URL and
+	// INFERMESH_ROUTER_URL are set), the worker degrades gracefully to HTTP
+	// registration instead of spinning forever on a dead broker. On a true
+	// outbound-only host only the relay URL is set, so the check is skipped
+	// and the worker stays relay-only.
 	if cfg.RelayURL != "" {
 		if !cfg.DevMode {
 			log.Warn("--relay-url is only supported in dev mode; ignoring", "relay", cfg.RelayURL)
-		} else {
+		} else if relayReachable(wctx, cfg.RelayURL) || cfg.RouterBase == "" {
 			log.Info("registering with relay via websocket", "relay", cfg.RelayURL)
 			info.Transport = protocol.TransportWS
 			baseInfo := info
@@ -295,6 +315,8 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 				return current
 			}, srv, log)
 			return h, nil
+		} else {
+			log.Warn("relay unreachable; falling back to HTTP registration", "relay", cfg.RelayURL, "router", cfg.RouterBase)
 		}
 	}
 
@@ -454,6 +476,26 @@ func isLoopbackHost(host string) bool {
 		return true
 	}
 	return false
+}
+
+// relayReachable dials the relay URL with a short timeout to decide whether
+// the worker should register via the broker. A failed dial does not abort
+// the worker: on a host with both a relay and a direct router URL (the
+// Docker Compose relay profile), the worker falls back to HTTP registration;
+// on a true outbound-only host only the relay URL is set, so the worker
+// stays relay-only and the dial failure is logged as a startup warning.
+//
+// The dial is fire-and-forget: the returned connection is closed immediately
+// after a successful handshake so the real WSRegisterLoop can own the socket.
+func relayReachable(ctx context.Context, relayURL string) bool {
+	dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	conn, err := wsutil.Dial(dialCtx, relayURL, "")
+	if err != nil {
+		return false
+	}
+	_ = wsutil.Close(conn)
+	return true
 }
 
 // LocalIP returns the first non-loopback IPv4 address of the host, or

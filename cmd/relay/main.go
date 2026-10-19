@@ -192,9 +192,19 @@ func (r *Relay) handleRouter(ws *websocket.Conn) {
 	// Flush buffered messages for all workers when router reconnects
 	r.flushBufferedMessages()
 
+	// The relay is otherwise silent between inference requests: the router
+	// only writes to it when dispatching work. Both sides apply a 90s idle
+	// read deadline, so an idle router<->relay link is torn down every 90s
+	// and re-dialled on a timer. Keep it alive with protocol pings: the
+	// relay pings the router, and the router echoes the ping back, so each
+	// side sees inbound traffic and resets its idle deadline.
+	done := make(chan struct{})
+	go r.relayPingLoop(ws, done)
+
 	// Block until the connection closes (handler must not return or
 	// net/http will close the WebSocket connection immediately).
 	r.routerReadLoop(ws)
+	close(done)
 }
 
 // workerReadLoop reads messages from a worker and forwards them to the router.
@@ -320,6 +330,32 @@ func (r *Relay) sendToRouter(msg protocol.Message) error {
 	}
 
 	return wsutil.SendJSON(conn, msg)
+}
+
+// relayPingLoop sends protocol pings to the router at a fixed cadence so the
+// router<->relay link never goes idle. Both sides apply a 90s idle read
+// deadline, so without keepalive traffic the link is torn down and re-dialled
+// every 90s. The router echoes each ping back; the echo is what resets the
+// relay's own read deadline (the relay is blocked reading, so its outbound
+// ping alone does not help).
+func (r *Relay) relayPingLoop(ws *websocket.Conn, done chan struct{}) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			msg, err := protocol.NewMessage(protocol.MsgPing, protocol.PingPayload{Timestamp: time.Now().Unix()})
+			if err != nil {
+				continue
+			}
+			if err := r.sendToRouter(msg); err != nil {
+				r.log.Debug("relay ping failed", "error", err)
+				return
+			}
+		}
+	}
 }
 
 // flushBufferedMessages sends all buffered messages when router reconnects.

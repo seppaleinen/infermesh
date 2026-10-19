@@ -49,6 +49,14 @@ type WorkerFlags struct {
 	// Threads is the llama-cpp thread count (default 4). Other backends
 	// ignore it (issue #139).
  Threads int
+	// RelayAPIKey is the key presented to the router during relay registration.
+	// Distinct from APIKey: the router's --api-key gates client inference
+	// requests, while the relay registration key gates which workers the router
+	// accepts over the broker. In relay mode the worker is on a remote host,
+	// so the router cannot verify it by peer IP — the key IS the identity
+	// check. Empty means "present nothing" (the router only rejects relay
+	// registrations when it has configured its own key).
+	RelayAPIKey string
 }
 
 // parseWorkerFlags parses args into WorkerFlags. It uses ContinueOnError so
@@ -91,6 +99,7 @@ func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	// omits it. 4096 is a sensible default for most models.
 	fs.IntVar(&f.MaxTokens, "max-tokens", 4096, "default max_tokens to send to the backend when the incoming request omits it")
 	fs.IntVar(&f.Threads, "threads", 4, "number of threads for the llama-cpp backend (default 4); ignored by other backends")
+	fs.StringVar(&f.RelayAPIKey, "relay-api-key", "", "key presented to the router during relay registration; distinct from --api-key, which gates client inference requests")
 }
 
 // workerFlagUsage prints the worker flag help to w.
@@ -145,6 +154,26 @@ func runWorker(args []string) int {
 		}
 	}
 
+	// --relay-url wins; INFERMESH_RELAY_URL is the env-var fallback so the
+	// relay profile can inject the broker URL without editing WORKER_ARGS.
+	// When both the relay and a direct router URL are set (the Compose relay
+	// profile), the worker probes the relay first and falls back to HTTP
+	// registration if the broker is unreachable — see relayReachable in
+	// pkg/worker/run.go.
+	if f.RelayURL == "" {
+		if env := os.Getenv("INFERMESH_RELAY_URL"); env != "" {
+			f.RelayURL = env
+		}
+	}
+	// --relay-api-key wins; INFERMESH_RELAY_API_KEY is the env-var fallback so
+	// the relay profile can inject the registration key without editing
+	// WORKER_ARGS.
+	if f.RelayAPIKey == "" {
+		if env := os.Getenv("INFERMESH_RELAY_API_KEY"); env != "" {
+			f.RelayAPIKey = env
+		}
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -170,6 +199,7 @@ func runWorker(args []string) int {
 		APIKey:               f.APIKey,
 		BackendTimeout:       f.BackendTimeout,
 		Threads:              f.Threads,
+		RelayAPIKey:          f.RelayAPIKey,
 	})
 	if err != nil {
 		if errors.Is(err, worker.ErrMissingModelPath) {

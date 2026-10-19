@@ -91,9 +91,16 @@ type Message struct {
 }
 
 // Choice represents a single choice in a completion response.
+//
+// Delta mirrors the OpenAI streaming shape: mid-stream chunks carry token
+// increments in choices[i].delta.content rather than choices[i].message.
+// Backends that only emit the first-frame message form (or the legacy
+// choices[i].text form) leave Delta empty; omitempty keeps both shapes
+// wire-compatible for non-streaming responses.
 type Choice struct {
 	Index        int     `json:"index"`
 	Message      Message `json:"message,omitempty"`
+	Delta        Message `json:"delta,omitempty"`
 	Text         string  `json:"text,omitempty"`
 	FinishReason string  `json:"finish_reason"`
 }

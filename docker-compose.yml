@@ -41,10 +41,16 @@ services:
       # The worker resolves its router URL from INFERMESH_ROUTER_URL when
       # --router is not passed, so it always matches this service's addr.
       INFERMESH_ROUTER_URL: "http://router:8081"
-      # Outbound relay URL. The router dials this in a retrying goroutine, so
-      # an unresolvable hostname (relay service not up) just backlogs until it
-      # comes online — harmless when the relay profile is not active.
+      # Outbound relay URL. When the relay profile is active the worker
+      # registers through the broker; if the broker is unreachable it falls
+      # back to the direct HTTP registration above instead of spinning on a
+      # dead socket (see relayReachable in pkg/worker/run.go).
       INFERMESH_RELAY_URL: "ws://relay:8090/v1/connect"
+      # Key the worker presents to the router during relay registration. The
+      # router's --api-key gates client inference requests, but in relay mode
+      # the worker is on a remote host with no peer IP to verify, so the
+      # registration key IS the identity check — it must match the router's.
+      INFERMESH_RELAY_API_KEY: "heybaby"
     restart: unless-stopped
     depends_on: []
 
@@ -87,6 +93,16 @@ services:
       # The worker resolves its router URL from INFERMESH_ROUTER_URL when
       # --router is not passed, so it always matches the router's addr.
       INFERMESH_ROUTER_URL: "http://router:8081"
+      # Outbound relay URL. When the relay profile is active the worker
+      # registers through the broker; if the broker is unreachable it falls
+      # back to the direct HTTP registration above instead of spinning on a
+      # dead socket (see relayReachable in pkg/worker/run.go).
+      INFERMESH_RELAY_URL: "ws://relay:8090/v1/connect"
+      # Key the worker presents to the router during relay registration. The
+      # router's --api-key gates client inference requests, but in relay mode
+      # the worker is on a remote host with no peer IP to verify, so the
+      # registration key IS the identity check — it must match the router's.
+      INFERMESH_RELAY_API_KEY: "heybaby"
     restart: unless-stopped
     depends_on:
       - router
@@ -157,8 +173,13 @@ services:
       context: .
       dockerfile: docker/Dockerfile.relay
     container_name: infermesh-relay
-    ports:
-      - "8090:8090"
+    # No host port publish: the router and worker reach the relay via the
+    # Compose DNS name `relay:8090` on the shared network. Publishing 8090 to
+    # the host is only useful for direct host-side access, and on machines
+    # where ssh (or another process) already holds 8090 the bind fails and
+    # the relay never starts — silently dropping the whole relay profile to
+    # a direct-registration fallback. The relay is an internal broker, so it
+    # is intentionally host-port-free.
     command:
       - "--dev-mode"
       - "--listen"
