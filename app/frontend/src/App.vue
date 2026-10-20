@@ -4,10 +4,12 @@ import { Events } from '@wailsio/runtime'
 import WorkerCard from './components/WorkerCard.vue'
 import SettingsForm from './components/SettingsForm.vue'
 import PopularModelsTable from './components/PopularModelsTable.vue'
+import RequestsTable from './components/RequestsTable.vue'
 import AliasModal from './components/AliasModal.vue'
 import { useWorkers, relativeLastSeen, formatAbsolute } from './composables/useWorkers'
 import { usePopularModels } from './composables/usePopularModels'
 import { useConnectionCount } from './composables/useConnectionCount'
+import { useInflightRequests } from './composables/useInflightRequests'
 import { useSettings } from './composables/useSettings'
 import { useSupervisor } from './composables/useSupervisor'
 import { useRouterAuth } from './composables/useRouterAuth'
@@ -52,6 +54,11 @@ const popular = usePopularModels()
 // and first-load timeout, so the connection count stays in step with the
 // worker list. Surface next to the "router online · X workers" badge.
 const connectionCount = useConnectionCount()
+
+// In-flight + recent request trace (issue #156). Mirrors useWorkers — same
+// poll cadence and first-load timeout, so the trace stays in step with the
+// pool. Rendered alongside the models table as a "Requests" section.
+const requests = useInflightRequests()
 
 // Settings view (issue #46). Loaded on mount so we can detect the local
 // worker (the one this desktop is running) and tag its card with "You".
@@ -222,6 +229,7 @@ onMounted(async () => {
   workers.start()
   popular.start()
   connectionCount.start()
+  requests.start()
   await settings.load()
   // Detect own hostname for local-worker identification (issue #90)
   try {
@@ -241,6 +249,7 @@ onBeforeUnmount(() => {
   workers.stop()
   popular.stop()
   connectionCount.stop()
+  requests.stop()
 })
 
 const workerCount = computed(() => {
@@ -545,6 +554,23 @@ function prevModelPage() {
                   <path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
                 </svg>
               </button>
+            </div>
+
+            <!-- Requests: in-flight + recent-completed trace (issue #156) -->
+            <div class="requests-panel">
+              <div class="requests-head">
+                <h2 class="requests-title">Requests</h2>
+                <span class="requests-count" v-if="requests.state.value.kind === 'ready'">{{ requests.state.value.data.length }} recorded</span>
+              </div>
+              <RequestsTable
+                v-if="requests.state.value.kind === 'ready'"
+                class="requests-table-wrap"
+                :requests="requests.state.value.data"
+              />
+              <div v-else-if="requests.state.value.kind === 'error'" class="requests-error">
+                {{ requests.state.value.message }}
+              </div>
+              <div v-else class="requests-empty">Loading request trace…</div>
             </div>
           </div>
 
@@ -973,7 +999,7 @@ function prevModelPage() {
 }
 
 .models-table-wrap {
-  flex: 1;
+  flex: 0 1 auto;
   min-height: 0;
   overflow-y: auto;
   --wails-draggable: no-drag;
@@ -981,12 +1007,66 @@ function prevModelPage() {
 }
 
 .models-empty {
-  flex: 1;
   display: grid;
   place-items: center;
+  padding: 24px 0;
   color: var(--text-faint);
   font-style: italic;
   font-size: 13px;
+}
+
+/* Requests (issue #156): in-flight + recent-completed trace, rendered
+   alongside the models table. Capped so the models table above keeps
+   most of the vertical space. */
+.requests-panel {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.requests-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.requests-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.requests-count {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+}
+
+.requests-panel :deep(.requests-table) {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  --wails-draggable: no-drag;
+  overscroll-behavior: contain;
+}
+
+.requests-error {
+  color: #ef4444;
+  font-size: 12.5px;
+  padding: 8px 0;
+}
+
+.requests-empty {
+  color: var(--text-faint);
+  font-style: italic;
+  font-size: 13px;
+  padding: 12px 0;
 }
 
 /* Pagination */

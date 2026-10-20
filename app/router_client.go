@@ -386,6 +386,88 @@ func parsePopularModelsResponse(body []byte) ([]PopularModelView, error) {
 	return out, nil
 }
 
+// InflightRequestView is the UI projection of router.RequestRecord (the
+// GET /meta/requests/inflight trace, issue #156). Field names mirror the
+// router JSON tags exactly so the generated Wails binding is a straight
+// pass-through. StartedAt/FinishedAt are exposed as time.Time so the Vue
+// side can render relative timestamps.
+type InflightRequestView struct {
+	RequestID  string    `json:"request_id"`
+	Model      string    `json:"model"`
+	WorkerID   string    `json:"worker_id"`
+	Kind       string    `json:"kind"`
+	StartedAt  time.Time `json:"started_at"`
+	FinishedAt time.Time `json:"finished_at,omitempty"`
+	Status     string    `json:"status"`
+	DurationMs int64     `json:"duration_ms,omitempty"`
+}
+
+// inflightRequestsPath builds the full /meta/requests/inflight URL for the
+// configured base.
+func (c *RouterClient) inflightRequestsPath() string {
+	return c.baseURL + "/meta/requests/inflight"
+}
+
+// GetInflightRequests fetches the in-flight + recent-completed request trace
+// from the router. It returns an empty (non-nil) slice when the router is
+// reachable but idle, and a typed error when the router is unreachable or
+// returns a bad body. Mirrors GetWorkers / GetPopularModels.
+func (c *RouterClient) GetInflightRequests(ctx context.Context) ([]InflightRequestView, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.inflightRequestsPath(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	c.applyAuth(req)
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("router unreachable at %s: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, fmt.Errorf("router /meta/requests/inflight returned %d: %s", resp.StatusCode, truncateBody(body))
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read router body: %w", err)
+	}
+
+	return parseInflightRequestsResponse(body)
+}
+
+// parseInflightRequestsResponse decodes an InflightRequestsResponse envelope
+// and maps each router.RequestRecord into an InflightRequestView. It is
+// exported (and pure) so the unit tests can feed canned JSON without a live
+// router.
+func parseInflightRequestsResponse(body []byte) ([]InflightRequestView, error) {
+	var resp router.InflightRequestsResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("decode inflight requests response: %w (body snippet: %q)", err, truncateBody(body))
+	}
+	if resp.Requests == nil {
+		// JSON `null` is legal but useless; normalise to an empty slice so
+		// the UI can distinguish "reachable, idle" from "unreachable".
+		resp.Requests = []router.RequestRecord{}
+	}
+	out := make([]InflightRequestView, 0, len(resp.Requests))
+	for _, r := range resp.Requests {
+		out = append(out, InflightRequestView{
+			RequestID:  r.RequestID,
+			Model:      r.Model,
+			WorkerID:   r.WorkerID,
+			Kind:       r.Kind,
+			StartedAt:  r.StartedAt,
+			FinishedAt: r.FinishedAt,
+			Status:     r.Status,
+			DurationMs: r.DurationMs,
+		})
+	}
+	return out, nil
+}
+
 // InferenceStatsView is the UI projection of router.WorkerInferenceStats.
 // Field names mirror the router JSON tags exactly so the generated Wails
 // binding is a straight pass-through (issue #134).

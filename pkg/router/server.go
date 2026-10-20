@@ -242,6 +242,13 @@ type Server struct {
 	// (StateHijacked) connections so the count reflects live sockets, not
 	// in-flight requests.
 	connections atomic.Int64
+
+	// tracker records every dispatched inference request (model + worker +
+	// startedAt + status) for the GET /meta/requests/inflight visibility
+	// endpoint (issue #156). Nil-safe: every call site checks for nil so a
+	// minimal test server that never calls NewServer's full constructor is
+	// unaffected.
+	tracker *RequestTracker
 }
 
 // ChatMessage represents a single message in a chat conversation.
@@ -320,6 +327,7 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 		cfg:          cfg,
 		hub:          hub,
 		counter:      NewCallCounter(10 * time.Minute),
+		tracker:      NewRequestTracker(0, 0),
 		proxyTimeout: 120 * time.Second,
 		scorer:       scorer,
 		scorerWeights: schedulerWeights{
@@ -628,6 +636,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/meta/aliases", s.handleSetAliases)
 	mux.HandleFunc("/meta/auto-routing", s.handleAutoRouting)
 	mux.HandleFunc("/meta/connections/count", s.handleConnectionCount)
+	mux.HandleFunc("/meta/requests/inflight", s.handleInflightRequests)
 	mux.HandleFunc("/v1/queue/stats", s.handleQueueStats)
 
 	// Outbound WebSocket worker connectivity: workers dial ws://router:8080/v1/connect
@@ -649,6 +658,12 @@ func (s *Server) Start(ctx context.Context) error {
 	// window stays bounded.
 	if s.counter != nil {
 		s.counter.Start(ctx)
+	}
+
+	// Start the request tracker's periodic prune loop so the finished-request
+	// ring buffer stays bounded.
+	if s.tracker != nil {
+		s.tracker.Start(ctx)
 	}
 
 	var handler http.Handler = mux
@@ -837,7 +852,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
-		s.proxyChatStream(w, r, worker, req)
+		// Record this dispatch for the request-trace endpoint (issue #156).
+		// The record is finished inside proxyStream on every return path.
+		reqID := ""
+		if s.tracker != nil {
+			reqID = s.tracker.Begin(req.Model, worker.ID, "chat")
+		}
+		s.proxyChatStream(w, r, worker, req, reqID)
 		return
 	}
 
@@ -917,7 +938,13 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
-		s.proxyCompletionStream(w, r, worker, req)
+		// Record this dispatch for the request-trace endpoint (issue #156).
+		// The record is finished inside proxyStream on every return path.
+		reqID := ""
+		if s.tracker != nil {
+			reqID = s.tracker.Begin(req.Model, worker.ID, "completion")
+		}
+		s.proxyCompletionStream(w, r, worker, req, reqID)
 		return
 	}
 
@@ -1282,6 +1309,36 @@ func buildAliasConfig(raw map[string]string) *ModelAliasConfig {
 		return nil
 	}
 	return &ModelAliasConfig{Aliases: aliases}
+}
+
+// handleInflightRequests handles the GET /meta/requests/inflight endpoint.
+// It returns the set of currently in-flight (and recently completed) inference
+// requests with: request id, model, worker id, started-at, status
+// (in-flight / streaming / done / error). The trace is in-memory and bounded
+// (issue #156).
+func (s *Server) handleInflightRequests(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error", "method_not_allowed")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	var reqs []RequestRecord
+	if s.tracker != nil {
+		reqs = s.tracker.Snapshot()
+	}
+	if reqs == nil {
+		reqs = []RequestRecord{}
+	}
+	resp := InflightRequestsResponse{Requests: reqs}
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		s.log.Error("failed to encode inflight requests", "error", err)
+	}
+}
+
+// InflightRequestsResponse is the response from GET /meta/requests/inflight.
+type InflightRequestsResponse struct {
+	Requests []RequestRecord `json:"requests"`
 }
 
 // handleConnectionCount handles the /meta/connections/count HTTP endpoint. It reports
@@ -1755,6 +1812,18 @@ func (s *Server) dispatchWithFailover(ctx context.Context, model string, body []
 		}
 
 		resp, err := s.clientFactory(worker).Complete(ctx, worker, kind, body)
+		// Record this dispatch attempt for the request-trace endpoint
+		// (issue #156): a successful attempt is "done", a failed one is
+		// "error". Failover retries therefore appear as separate trace rows,
+		// which is the visibility the dashboard is for.
+		if s.tracker != nil {
+			reqID := s.tracker.Begin(model, worker.ID, kind)
+			if err == nil {
+				s.tracker.Finish(reqID, StatusDone)
+			} else {
+				s.tracker.Finish(reqID, StatusError)
+			}
+		}
 		if err == nil {
 			return resp, nil
 		}
@@ -1997,25 +2066,25 @@ func (s *Server) clientFor(worker protocol.WorkerInfo) WorkerClient {
 }
 
 // proxyChatStream proxies a chat completion request to a worker.
-func (s *Server) proxyChatStream(w http.ResponseWriter, r *http.Request, worker protocol.WorkerInfo, req ChatRequest) {
+func (s *Server) proxyChatStream(w http.ResponseWriter, r *http.Request, worker protocol.WorkerInfo, req ChatRequest, reqID string) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		s.log.Error("failed to marshal chat request", "error", err)
 		writeErrorResponse(w, http.StatusInternalServerError, "internal server error", "server_error", "marshal_error")
 		return
 	}
-	s.proxyStream(w, r, s.clientFor(worker), worker, "chat", body)
+	s.proxyStream(w, r, s.clientFor(worker), worker, "chat", body, reqID)
 }
 
 // proxyCompletionStream proxies a completion request to a worker.
-func (s *Server) proxyCompletionStream(w http.ResponseWriter, r *http.Request, worker protocol.WorkerInfo, req CompletionRequest) {
+func (s *Server) proxyCompletionStream(w http.ResponseWriter, r *http.Request, worker protocol.WorkerInfo, req CompletionRequest, reqID string) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		s.log.Error("failed to marshal completion request", "error", err)
 		writeErrorResponse(w, http.StatusInternalServerError, "internal server error", "server_error", "marshal_error")
 		return
 	}
-	s.proxyStream(w, r, s.clientFor(worker), worker, "completion", body)
+	s.proxyStream(w, r, s.clientFor(worker), worker, "completion", body, reqID)
 }
 
 // proxyStream relays an inference request to the worker via the transport
@@ -2027,7 +2096,7 @@ func (s *Server) proxyCompletionStream(w http.ResponseWriter, r *http.Request, w
 // proxyTimeout) triggers the timeout. The first-byte wait is also bounded by
 // the same value: if the backend doesn't answer within that window, the idle
 // timer fires and the request is aborted.
-func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client WorkerClient, worker protocol.WorkerInfo, kind string, body []byte) {
+func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client WorkerClient, worker protocol.WorkerInfo, kind string, body []byte, reqID string) {
 	// Idle timeout for streaming proxy: abort if no chunk arrives for this
 	// long. The timer resets on every chunk received, so active streaming
 	// is not bounded by this value. First-byte wait is also bounded by it.
@@ -2037,6 +2106,21 @@ func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client Work
 	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
+
+	// Request-trace lifecycle (issue #156). The record is marked "streaming"
+	// once the first chunk is written to the client and finished on every
+	// return path: a normal completion is "done", any error/timeout/cancel
+	// is "error". A deferred finish keeps all ~6 return paths in one place.
+	streamCompleted := false
+	if s.tracker != nil && reqID != "" {
+		defer func() {
+			status := StatusError
+			if streamCompleted {
+				status = StatusDone
+			}
+			s.tracker.Finish(reqID, status)
+		}()
+	}
 
 	// Start the idle timer before the dispatch so model loading (no bytes
 	// yet) still has a budget equal to the configured timeout.
@@ -2061,6 +2145,7 @@ func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client Work
 						flusher.Flush()
 					}
 				}
+				streamCompleted = true
 				return
 			}
 			// Reset the idle timer on every chunk received (including the
@@ -2078,6 +2163,9 @@ func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client Work
 				w.Header().Set("Cache-Control", "no-cache")
 				w.Header().Set("Connection", "keep-alive")
 				started = true
+				if s.tracker != nil && reqID != "" {
+					s.tracker.SetStatus(reqID, StatusStreaming)
+				}
 			}
 			sawDone = sawDone || chunk.Done
 			_, _ = w.Write(chunk.Data)
@@ -2085,6 +2173,7 @@ func (s *Server) proxyStream(w http.ResponseWriter, r *http.Request, client Work
 				flusher.Flush()
 			}
 			if chunk.Done {
+				streamCompleted = true
 				return
 			}
 		case err, ok := <-errs:

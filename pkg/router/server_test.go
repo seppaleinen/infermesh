@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -2369,7 +2370,7 @@ func TestChatCompletionsTimeoutRecords504(t *testing.T) {
 	defer cancel()
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(ctx)
 	wrec := httptest.NewRecorder()
-	srv.proxyStream(wrec, req, fc, info, "chat", []byte(`{"model":"to-model","messages":[]}`))
+	srv.proxyStream(wrec, req, fc, info, "chat", []byte(`{"model":"to-model","messages":[]}`), "")
 
 	if wrec.Code != http.StatusGatewayTimeout {
 		t.Errorf("expected status %d, got %d, body: %s", http.StatusGatewayTimeout, wrec.Code, wrec.Body.String())
@@ -2419,7 +2420,7 @@ func TestProxyStreamContextTimeout(t *testing.T) {
 	wrec := httptest.NewRecorder()
 
 	start := time.Now()
-	srv.proxyStream(wrec, req, stalledClient, info, "chat", []byte(`{"model":"ctx-timeout-model","messages":[]}`))
+	srv.proxyStream(wrec, req, stalledClient, info, "chat", []byte(`{"model":"ctx-timeout-model","messages":[]}`), "")
 	elapsed := time.Since(start)
 
 	if wrec.Code != http.StatusGatewayTimeout {
@@ -2615,7 +2616,7 @@ func TestProxyStreamIdleTimeoutSlowActive(t *testing.T) {
 	wrec := httptest.NewRecorder()
 
 	start := time.Now()
-	srv.proxyStream(wrec, req, client, info, "chat", []byte(`{"model":"idle-model","messages":[]}`))
+	srv.proxyStream(wrec, req, client, info, "chat", []byte(`{"model":"idle-model","messages":[]}`), "")
 	elapsed := time.Since(start)
 
 	body := wrec.Body.String()
@@ -2667,7 +2668,7 @@ func TestProxyStreamIdleTimeoutSilentMidStream(t *testing.T) {
 	wrec := httptest.NewRecorder()
 
 	start := time.Now()
-	srv.proxyStream(wrec, req, client, info, "chat", []byte(`{"model":"idle-model","messages":[]}`))
+	srv.proxyStream(wrec, req, client, info, "chat", []byte(`{"model":"idle-model","messages":[]}`), "")
 	elapsed := time.Since(start)
 
 	body := wrec.Body.String()
@@ -2718,7 +2719,7 @@ func TestProxyStreamIdleTimeoutSilentFromStart(t *testing.T) {
 	wrec := httptest.NewRecorder()
 
 	start := time.Now()
-	srv.proxyStream(wrec, req, stalled, info, "chat", []byte(`{"model":"idle-model","messages":[]}`))
+	srv.proxyStream(wrec, req, stalled, info, "chat", []byte(`{"model":"idle-model","messages":[]}`), "")
 	elapsed := time.Since(start)
 
 	if wrec.Code != http.StatusGatewayTimeout {
@@ -2761,7 +2762,7 @@ func TestProxyStreamClientCancellation(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		srv.proxyStream(wrec, req, stalled, info, "chat", []byte(`{"model":"idle-model","messages":[]}`))
+		srv.proxyStream(wrec, req, stalled, info, "chat", []byte(`{"model":"idle-model","messages":[]}`), "")
 	}()
 
 	// Give proxyStream time to enter its select loop, then cancel the client.
@@ -3543,5 +3544,108 @@ func TestConnectionCountEndpointIntegration(t *testing.T) {
 	}
 	if got := server.connections.Load(); got != 0 {
 		t.Errorf("expected connection count 0 after closing idle connections, got %d", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Request-trace endpoint (issue #156)
+// ---------------------------------------------------------------------------
+
+// inflightBody decodes the JSON body written by handleInflightRequests into
+// an InflightRequestsResponse. It drives the handler directly via
+// httptest.NewRecorder so the tests do not need a live listener.
+func inflightBody(t *testing.T, srv *Server, method string) (*http.Response, InflightRequestsResponse) {
+	t.Helper()
+	req := httptest.NewRequest(method, "/meta/requests/inflight", nil)
+	w := httptest.NewRecorder()
+	srv.handleInflightRequests(w, req)
+	resp := w.Result()
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var traced InflightRequestsResponse
+	if err := json.Unmarshal(body, &traced); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return resp, traced
+}
+
+// TestInflightRequestsEndpoint verifies GET /meta/requests/inflight returns
+// the bounded trace and that dispatching a non-streaming request records the
+// model + worker + startedAt + status, finishing as "done".
+func TestInflightRequestsEndpoint(t *testing.T) {
+	workers := []protocol.WorkerInfo{mkWorker("worker-a", "trace-model")}
+	tr, srv, fc := failoverTestServer(t, workers)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+
+	fc.results["worker-a"] = mockResult{
+		body: []byte(`{"id":"chatcmpl-1","object":"chat.completion","choices":[{"message":{"content":"ok"}}]}`),
+	}
+
+	// No requests yet: empty, non-null slice.
+	resp, empty := inflightBody(t, srv, http.MethodGet)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if empty.Requests == nil {
+		t.Fatal("requests is nil, want empty non-null slice")
+	}
+	if len(empty.Requests) != 0 {
+		t.Errorf("len(requests) = %d, want 0", len(empty.Requests))
+	}
+
+	// Dispatch a non-streaming request; the tracker must record it as done.
+	b := []byte(`{"model":"trace-model","messages":[{"role":"user","content":"hi"}]}`)
+	if _, err := srv.dispatchWithFailover(context.Background(), "trace-model", b, "chat", 1, 10*time.Second); err != nil {
+		t.Fatalf("dispatchWithFailover: %v", err)
+	}
+
+	resp, traced := inflightBody(t, srv, http.MethodGet)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if len(traced.Requests) != 1 {
+		t.Fatalf("len(requests) = %d, want 1", len(traced.Requests))
+	}
+	r := traced.Requests[0]
+	if r.Model != "trace-model" || r.WorkerID != "worker-a" || r.Kind != "chat" {
+		t.Errorf("record = %+v", r)
+	}
+	if r.Status != StatusDone {
+		t.Errorf("status = %q, want %q", r.Status, StatusDone)
+	}
+	if r.DurationMs < 0 {
+		t.Errorf("duration_ms = %d, want >= 0", r.DurationMs)
+	}
+	if r.FinishedAt.IsZero() {
+		t.Error("finished_at is zero")
+	}
+}
+
+// TestInflightRequestsMethodNotAllowed verifies POST is rejected with 405.
+func TestInflightRequestsMethodNotAllowed(t *testing.T) {
+	srv := NewServer(nil, testLogger(), ":0", security.Config{DevMode: true})
+	req := httptest.NewRequest(http.MethodPost, "/meta/requests/inflight", nil)
+	w := httptest.NewRecorder()
+	srv.handleInflightRequests(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// TestInflightRequestsBounded verifies the completed buffer is capped even
+// under a burst of dispatches.
+func TestInflightRequestsBounded(t *testing.T) {
+	srv := NewServer(nil, testLogger(), ":0", security.Config{DevMode: true})
+	srv.tracker = NewRequestTracker(5, 1*time.Hour)
+	for i := 0; i < 50; i++ {
+		id := srv.tracker.Begin("m", "w", "chat")
+		srv.tracker.Finish(id, StatusDone)
+	}
+	if got := len(srv.tracker.Snapshot()); got != 5 {
+		t.Errorf("snapshot len = %d, want 5 (bounded)", got)
 	}
 }

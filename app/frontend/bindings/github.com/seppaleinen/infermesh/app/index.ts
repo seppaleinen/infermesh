@@ -20,6 +20,7 @@ export type {
     AutoRoutingConfigRequest,
     AutoRoutingSettings,
     InferenceStatsView,
+    InflightRequestView,
     PopularModelView,
     ProcessStatus,
     Settings,

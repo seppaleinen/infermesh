@@ -44,6 +44,24 @@ export interface InferenceStatsView {
 }
 
 /**
+ * InflightRequestView is the UI projection of router.RequestRecord (the
+ * GET /meta/requests/inflight trace, issue #156). Field names mirror the
+ * router JSON tags exactly so the generated Wails binding is a straight
+ * pass-through. StartedAt/FinishedAt are exposed as time.Time so the Vue
+ * side can render relative timestamps.
+ */
+export interface InflightRequestView {
+    "request_id": string;
+    "model": string;
+    "worker_id": string;
+    "kind": string;
+    "started_at": string;
+    "finished_at"?: string;
+    "status": string;
+    "duration_ms"?: number;
+}
+
+/**
  * PopularModelView is the UI projection of router.PopularModelInfo. Field
  * names mirror the router JSON tags exactly so the generated Wails binding
  * is a straight pass-through.

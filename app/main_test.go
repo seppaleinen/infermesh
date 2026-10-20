@@ -388,6 +388,131 @@ func TestRouterClientConnectionCountParse(t *testing.T) {
 	})
 }
 
+// TestRouterClientInflightRequestsURL verifies the URL builder yields the
+// /meta/requests/inflight path and respects a custom base URL, including
+// trailing-slash trimming.
+func TestRouterClientInflightRequestsURL(t *testing.T) {
+	cases := []struct {
+		name string
+		base string
+		want string
+	}{
+		{"default empty", "", "http://127.0.0.1:8080/meta/requests/inflight"},
+		{"default explicit", "http://127.0.0.1:8080", "http://127.0.0.1:8080/meta/requests/inflight"},
+		{"trailing slash", "http://127.0.0.1:8080/", "http://127.0.0.1:8080/meta/requests/inflight"},
+		{"custom", "http://router.example:9000", "http://router.example:9000/meta/requests/inflight"},
+		{"custom trailing slash", "http://router.example:9000/", "http://router.example:9000/meta/requests/inflight"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewRouterClient(tc.base)
+			if got := c.inflightRequestsPath(); got != tc.want {
+				t.Fatalf("inflightRequestsPath: got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRouterClientInflightRequestsParse feeds canned JSON into the parser and
+// asserts field mapping: empty list, null normalisation, single-record
+// round-trip, malformed JSON, and unknown extra fields.
+func TestRouterClientInflightRequestsParse(t *testing.T) {
+	t.Run("empty list → empty slice, no error", func(t *testing.T) {
+		reqs, err := parseInflightRequestsResponse([]byte(`{"requests":[]}`))
+		if err != nil {
+			t.Fatalf("parse failed: %v", err)
+		}
+		if len(reqs) != 0 {
+			t.Fatalf("expected 0 requests, got %d", len(reqs))
+		}
+	})
+
+	t.Run("null list → empty slice", func(t *testing.T) {
+		reqs, err := parseInflightRequestsResponse([]byte(`{"requests":null}`))
+		if err != nil {
+			t.Fatalf("parse failed: %v", err)
+		}
+		if len(reqs) != 0 {
+			t.Fatalf("expected 0 requests for null, got %d", len(reqs))
+		}
+	})
+
+	t.Run("single record field round-trip", func(t *testing.T) {
+		body := `{"requests":[{"request_id":"req-1","model":"llama-3-8b","worker_id":"worker-a","kind":"chat","started_at":"2026-10-20T10:00:00Z","finished_at":"2026-10-20T10:00:01Z","status":"done","duration_ms":1234}]}`
+		reqs, err := parseInflightRequestsResponse([]byte(body))
+		if err != nil {
+			t.Fatalf("parse failed: %v", err)
+		}
+		if len(reqs) != 1 {
+			t.Fatalf("expected 1 request, got %d", len(reqs))
+		}
+		r := reqs[0]
+		if r.RequestID != "req-1" {
+			t.Errorf("RequestID: got %q want %q", r.RequestID, "req-1")
+		}
+		if r.Model != "llama-3-8b" {
+			t.Errorf("Model: got %q want %q", r.Model, "llama-3-8b")
+		}
+		if r.WorkerID != "worker-a" {
+			t.Errorf("WorkerID: got %q want %q", r.WorkerID, "worker-a")
+		}
+		if r.Kind != "chat" {
+			t.Errorf("Kind: got %q want %q", r.Kind, "chat")
+		}
+		if r.Status != "done" {
+			t.Errorf("Status: got %q want %q", r.Status, "done")
+		}
+		if r.DurationMs != 1234 {
+			t.Errorf("DurationMs: got %d want 1234", r.DurationMs)
+		}
+		if r.FinishedAt.IsZero() {
+			t.Error("FinishedAt is zero")
+		}
+		if r.StartedAt.IsZero() {
+			t.Error("StartedAt is zero")
+		}
+	})
+
+	t.Run("in-flight record omits finished_at and duration_ms", func(t *testing.T) {
+		body := `{"requests":[{"request_id":"req-2","model":"llama-3-8b","worker_id":"worker-a","kind":"chat","started_at":"2026-10-20T10:00:00Z","status":"in-flight"}]}`
+		reqs, err := parseInflightRequestsResponse([]byte(body))
+		if err != nil {
+			t.Fatalf("parse failed: %v", err)
+		}
+		if len(reqs) != 1 {
+			t.Fatalf("expected 1 request, got %d", len(reqs))
+		}
+		r := reqs[0]
+		if !r.FinishedAt.IsZero() {
+			t.Errorf("FinishedAt should be zero for in-flight, got %v", r.FinishedAt)
+		}
+		if r.DurationMs != 0 {
+			t.Errorf("DurationMs should be 0 for in-flight, got %d", r.DurationMs)
+		}
+		if r.Status != "in-flight" {
+			t.Errorf("Status: got %q want %q", r.Status, "in-flight")
+		}
+	})
+
+	t.Run("malformed JSON → error", func(t *testing.T) {
+		_, err := parseInflightRequestsResponse([]byte(`{not json`))
+		if err == nil || !strings.Contains(err.Error(), "decode inflight requests response") {
+			t.Fatalf("expected decode error, got: %v", err)
+		}
+	})
+
+	t.Run("unknown extra fields ignored", func(t *testing.T) {
+		body := `{"requests":[{"request_id":"req-3","model":"m","worker_id":"w","kind":"chat","started_at":"2026-10-20T10:00:00Z","status":"done","extra":true}]}`
+		reqs, err := parseInflightRequestsResponse([]byte(body))
+		if err != nil {
+			t.Fatalf("parse failed: %v", err)
+		}
+		if len(reqs) != 1 || reqs[0].RequestID != "req-3" || reqs[0].Model != "m" {
+			t.Errorf("unexpected parse result: %+v", reqs)
+		}
+	})
+}
+
 // TestSettingsRoundTrip verifies that saving and loading settings preserves
 // all fields, including unicode model paths. It also asserts that the YAML
 // output contains no "secrets" key because secrets must only exist in the

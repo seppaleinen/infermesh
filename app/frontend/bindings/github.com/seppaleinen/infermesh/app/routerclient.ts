@@ -70,6 +70,16 @@ export function GetInferenceStats(): $CancellablePromise<$models.InferenceStatsV
 }
 
 /**
+ * GetInflightRequests fetches the in-flight + recent-completed request trace
+ * from the router. It returns an empty (non-nil) slice when the router is
+ * reachable but idle, and a typed error when the router is unreachable or
+ * returns a bad body. Mirrors GetWorkers / GetPopularModels.
+ */
+export function GetInflightRequests(): $CancellablePromise<$models.InflightRequestView[] | null> {
+    return $Call.ByID(2493352397);
+}
+
+/**
  * GetPopularModels fetches the sorted popular-models list from the router.
  * It returns an empty (non-nil) slice when the router is reachable but idle,
  * and a typed error when the router is unreachable or returns a bad body.
