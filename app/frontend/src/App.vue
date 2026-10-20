@@ -248,11 +248,8 @@ const workerCount = computed(() => {
 	return 0
 })
 
-// Workers data for template
-const workersData = computed(() => {
-	if (workers.state.value.kind === 'ready') return workers.state.value.data
-	return []
-})
+// Workers data for template — stable ordering (issue #153).
+const workersData = workers.stableWorkers
 
 // Total model instances across all workers (sum of loaded_models.length)
 const totalModelInstances = computed(() => {

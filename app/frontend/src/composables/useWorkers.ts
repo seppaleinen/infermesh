@@ -1,4 +1,4 @@
-import { onBeforeUnmount, ref } from 'vue'
+import { computed } from 'vue'
 import { RouterClient } from '@bindings/github.com/seppaleinen/infermesh/app'
 import type { WorkerView } from '@bindings/github.com/seppaleinen/infermesh/app/models'
 import { useRouterPoll } from './useRouterPoll'
@@ -7,7 +7,31 @@ export function useWorkers() {
 	const { state, routerURL, start, stop, retry } = useRouterPoll<WorkerView[]>(
 		(_) => RouterClient.GetWorkers()
 	)
-	return { state, routerURL, start, stop, retry }
+
+	// The router's /v1/workers projection iterates an in-memory capability
+	// cache (a Go map), so the wire order is non-deterministic across polls.
+	// If the template bound the raw array directly, every 5s poll would
+	// re-order the list, and because Vue reuses <li> nodes by :key="w.id"
+	// while the surrounding v-if (expandedWorkerId === w.id) is evaluated
+	// against the freshly reassigned array, expanded worker cards would
+	// collapse and the rows would jump around (issue #153).
+	//
+	// Fix: expose a *stable* ordering. Sort once per poll by a deterministic
+	// key (worker id, falling back to hostname). The order never depends on
+	// map iteration order, so the v-for keys line up identically across
+	// refreshes and expanded rows stay mounted. No user-controlled sort
+	// column exists today; if one is added later, sort only on explicit
+	// user action, never on the automatic poll.
+	const stableWorkers = computed(() => {
+		if (state.value.kind !== 'ready' || !state.value.data) return []
+		return [...state.value.data].sort((a, b) => {
+			const ka = a.id || a.hostname || ''
+			const kb = b.id || b.hostname || ''
+			return ka.localeCompare(kb)
+		})
+	})
+
+	return { state, routerURL, start, stop, retry, stableWorkers }
 }
 
 /**
