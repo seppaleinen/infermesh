@@ -8,7 +8,7 @@ import (
 
 func TestRequestTrackerStartAndFinish(t *testing.T) {
 	tr := NewRequestTracker(0, 0)
-	id := tr.Begin("gemma-4-12b", "worker-a", "chat")
+	id := tr.BeginSimple("gemma-4-12b", "worker-a", "chat")
 	if id == "" {
 		t.Fatal("Start returned empty id")
 	}
@@ -48,7 +48,7 @@ func TestRequestTrackerStartAndFinish(t *testing.T) {
 
 func TestRequestTrackerSetStatus(t *testing.T) {
 	tr := NewRequestTracker(0, 0)
-	id := tr.Begin("m", "w", "completion")
+	id := tr.BeginSimple("m", "w", "completion")
 	tr.SetStatus(id, StatusStreaming)
 	tr.mu.Lock()
 	if tr.active[id].Status != StatusStreaming {
@@ -71,12 +71,12 @@ func TestRequestTrackerFinishUnknownID(t *testing.T) {
 func TestRequestTrackerSnapshotOrdering(t *testing.T) {
 	tr := NewRequestTracker(0, 0)
 	// Two in-flight + two completed; snapshot must be newest-first.
-	a := tr.Begin("m1", "w1", "chat")
+	a := tr.BeginSimple("m1", "w1", "chat")
 	time.Sleep(2 * time.Millisecond)
 	tr.Finish(a, StatusDone)
-	b := tr.Begin("m2", "w2", "chat")
+	b := tr.BeginSimple("m2", "w2", "chat")
 	time.Sleep(2 * time.Millisecond)
-	c := tr.Begin("m3", "w3", "chat")
+	c := tr.BeginSimple("m3", "w3", "chat")
 	tr.Finish(c, StatusError)
 
 	sn := tr.Snapshot()
@@ -99,8 +99,8 @@ func TestRequestTrackerSnapshotDeterministic(t *testing.T) {
 	tr := NewRequestTracker(0, 0)
 	// Two records started within the same nanosecond window: the tie-break on
 	// request_id must keep the order stable across polls.
-	tr.Begin("m", "w", "chat")
-	tr.Begin("m", "w", "chat")
+	tr.BeginSimple("m", "w", "chat")
+	tr.BeginSimple("m", "w", "chat")
 	first := tr.Snapshot()
 	for range 20 {
 		again := tr.Snapshot()
@@ -118,7 +118,7 @@ func TestRequestTrackerSnapshotDeterministic(t *testing.T) {
 func TestRequestTrackerBoundedCompleted(t *testing.T) {
 	tr := NewRequestTracker(3, 1*time.Hour)
 	for i := 0; i < 10; i++ {
-		id := tr.Begin("m", "w", "chat")
+		id := tr.BeginSimple("m", "w", "chat")
 		tr.Finish(id, StatusDone)
 	}
 	tr.mu.Lock()
@@ -136,7 +136,7 @@ func TestRequestTrackerBoundedCompleted(t *testing.T) {
 
 func TestRequestTrackerTTLPrune(t *testing.T) {
 	tr := NewRequestTracker(100, 50*time.Millisecond)
-	id := tr.Begin("m", "w", "chat")
+	id := tr.BeginSimple("m", "w", "chat")
 	tr.Finish(id, StatusDone)
 	if len(tr.Snapshot()) != 1 {
 		t.Fatal("expected 1 record before TTL")
@@ -151,7 +151,7 @@ func TestRequestTrackerStartStop(t *testing.T) {
 	tr := NewRequestTracker(0, 0)
 	ctx, cancel := context.WithCancel(context.Background())
 	tr.Start(ctx)
-	id := tr.Begin("m", "w", "chat")
+	id := tr.BeginSimple("m", "w", "chat")
 	tr.SetStatus(id, StatusStreaming)
 	tr.Finish(id, StatusDone)
 	if len(tr.Snapshot()) != 1 {

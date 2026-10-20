@@ -395,6 +395,7 @@ type InflightRequestView struct {
 	RequestID  string    `json:"request_id"`
 	Model      string    `json:"model"`
 	WorkerID   string    `json:"worker_id"`
+	WorkerHost string    `json:"worker_host,omitempty"` // hostname of the machine the request was routed to
 	Kind       string    `json:"kind"`
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
@@ -458,6 +459,7 @@ func parseInflightRequestsResponse(body []byte) ([]InflightRequestView, error) {
 			RequestID:  r.RequestID,
 			Model:      r.Model,
 			WorkerID:   r.WorkerID,
+			WorkerHost: r.WorkerHost,
 			Kind:       r.Kind,
 			StartedAt:  r.StartedAt,
 			FinishedAt: r.FinishedAt,

@@ -3642,7 +3642,7 @@ func TestInflightRequestsBounded(t *testing.T) {
 	srv := NewServer(nil, testLogger(), ":0", security.Config{DevMode: true})
 	srv.tracker = NewRequestTracker(5, 1*time.Hour)
 	for i := 0; i < 50; i++ {
-		id := srv.tracker.Begin("m", "w", "chat")
+		id := srv.tracker.BeginSimple("m", "w", "chat")
 		srv.tracker.Finish(id, StatusDone)
 	}
 	if got := len(srv.tracker.Snapshot()); got != 5 {

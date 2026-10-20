@@ -856,7 +856,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// The record is finished inside proxyStream on every return path.
 		reqID := ""
 		if s.tracker != nil {
-			reqID = s.tracker.Begin(req.Model, worker.ID, "chat")
+			reqID = s.tracker.Begin(req.Model, worker.ID, worker.Hostname, "chat")
 		}
 		s.proxyChatStream(w, r, worker, req, reqID)
 		return
@@ -942,7 +942,7 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 		// The record is finished inside proxyStream on every return path.
 		reqID := ""
 		if s.tracker != nil {
-			reqID = s.tracker.Begin(req.Model, worker.ID, "completion")
+			reqID = s.tracker.Begin(req.Model, worker.ID, worker.Hostname, "completion")
 		}
 		s.proxyCompletionStream(w, r, worker, req, reqID)
 		return
@@ -1817,7 +1817,7 @@ func (s *Server) dispatchWithFailover(ctx context.Context, model string, body []
 		// "error". Failover retries therefore appear as separate trace rows,
 		// which is the visibility the dashboard is for.
 		if s.tracker != nil {
-			reqID := s.tracker.Begin(model, worker.ID, kind)
+			reqID := s.tracker.Begin(model, worker.ID, worker.Hostname, kind)
 			if err == nil {
 				s.tracker.Finish(reqID, StatusDone)
 			} else {

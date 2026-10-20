@@ -59,7 +59,8 @@ function formatTime(ts: string): string {
     <tr>
       <th scope="col" class="col-id">Request</th>
       <th scope="col">Model</th>
-      <th scope="col">Worker</th>
+      <th scope="col" class="col-host">Host</th>
+      <th scope="col" class="col-worker">Worker</th>
       <th scope="col">Kind</th>
       <th scope="col">Started</th>
       <th scope="col">Duration</th>
@@ -70,6 +71,7 @@ function formatTime(ts: string): string {
     <tr v-for="r in requests" :key="r.request_id">
       <td class="col-id">{{ r.request_id }}</td>
       <td class="model-name">{{ r.model }}</td>
+      <td class="worker-host">{{ r.worker_host || '—' }}</td>
       <td class="worker-id">{{ r.worker_id }}</td>
       <td class="kind">{{ r.kind }}</td>
       <td class="time">{{ formatTime(r.started_at) }}</td>
@@ -77,7 +79,7 @@ function formatTime(ts: string): string {
       <td class="status"><span class="badge" :class="statusClass(r.status)">{{ statusLabel(r.status) }}</span></td>
     </tr>
     <tr v-if="requests.length === 0">
-      <td colspan="7" class="requests-empty">No requests recorded yet</td>
+      <td colspan="8" class="requests-empty">No requests recorded yet</td>
     </tr>
   </tbody>
 </table>
@@ -127,6 +129,13 @@ function formatTime(ts: string): string {
 .model-name {
   color: var(--text);
   max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.worker-host {
+  color: var(--text);
+  max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
 }

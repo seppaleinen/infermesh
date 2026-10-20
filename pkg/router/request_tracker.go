@@ -41,6 +41,7 @@ type RequestRecord struct {
 	RequestID  string    `json:"request_id"`
 	Model      string    `json:"model"`
 	WorkerID   string    `json:"worker_id"`
+	WorkerHost string    `json:"worker_host,omitempty"` // hostname, or empty when unknown
 	Kind       string    `json:"kind"`
 	StartedAt  time.Time `json:"started_at"`
 	FinishedAt time.Time `json:"finished_at,omitempty"`
@@ -85,19 +86,30 @@ func NewRequestTracker(maxCompleted int, completedTTL time.Duration) *RequestTra
 // The record stays "in-flight" until Finish or SetStatus is called.
 // (Named Begin rather than Start to avoid colliding with the Start(ctx)
 // lifecycle method that mirrors CallCounter.)
-func (t *RequestTracker) Begin(model, workerID, kind string) string {
+// Begin records the start of a dispatched inference request. workerHost is
+// the machine hostname (or IP) the request was routed to; it is optional and
+// omitted when the caller does not have it, so the endpoint still works for
+// callers that only know the worker id.
+func (t *RequestTracker) Begin(model, workerID, workerHost, kind string) string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	id := nextRequestID()
 	t.active[id] = &RequestRecord{
-		RequestID: id,
-		Model:     model,
-		WorkerID:  workerID,
-		Kind:      kind,
-		StartedAt: time.Now(),
-		Status:    StatusInflight,
+		RequestID:  id,
+		Model:      model,
+		WorkerID:   workerID,
+		WorkerHost: workerHost,
+		Kind:       kind,
+		StartedAt:  time.Now(),
+		Status:     StatusInflight,
 	}
 	return id
+}
+
+// BeginSimple records a dispatch without a known host. It is the convenience
+// form of Begin for callers that only have a worker id (e.g. unit tests).
+func (t *RequestTracker) BeginSimple(model, workerID, kind string) string {
+	return t.Begin(model, workerID, "", kind)
 }
 
 // SetStatus updates the status of an in-flight request (e.g. in-flight →

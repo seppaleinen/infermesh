@@ -54,6 +54,11 @@ export interface InflightRequestView {
     "request_id": string;
     "model": string;
     "worker_id": string;
+
+    /**
+     * hostname of the machine the request was routed to
+     */
+    "worker_host"?: string;
     "kind": string;
     "started_at": string;
     "finished_at"?: string;
