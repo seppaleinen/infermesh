@@ -1811,13 +1811,18 @@ func (s *Server) dispatchWithFailover(ctx context.Context, model string, body []
 			continue
 		}
 
-		resp, err := s.clientFactory(worker).Complete(ctx, worker, kind, body)
 		// Record this dispatch attempt for the request-trace endpoint
-		// (issue #156): a successful attempt is "done", a failed one is
-		// "error". Failover retries therefore appear as separate trace rows,
-		// which is the visibility the dashboard is for.
+		// (issue #156) BEFORE sending it, so the request is visible while
+		// in flight (model loading can take a long time). A successful
+		// attempt is "done", a failed one is "error". Failover retries
+		// therefore appear as separate trace rows, which is the visibility
+		// the dashboard is for.
+		reqID := ""
 		if s.tracker != nil {
-			reqID := s.tracker.Begin(model, worker.ID, worker.Hostname, kind)
+			reqID = s.tracker.Begin(model, worker.ID, worker.Hostname, kind)
+		}
+		resp, err := s.clientFactory(worker).Complete(ctx, worker, kind, body)
+		if s.tracker != nil && reqID != "" {
 			if err == nil {
 				s.tracker.Finish(reqID, StatusDone)
 			} else {

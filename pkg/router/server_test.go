@@ -3636,6 +3636,63 @@ func TestInflightRequestsMethodNotAllowed(t *testing.T) {
 	}
 }
 
+// TestInflightRequestsDispatchHookOrdering verifies that a slow non-streaming
+// dispatch is visible in the trace while it is still in flight, not only after
+// it completes. The dispatch hook used to call Begin() only after Complete()
+// returned, so a request that was mid-flight (e.g. model loading) produced no
+// trace row until it finished — the exact gap that made the GUI look empty.
+func TestInflightRequestsDispatchHookOrdering(t *testing.T) {
+	srv := NewServer(nil, testLogger(), ":0", security.Config{DevMode: true})
+	srv.tracker = NewRequestTracker(0, 0)
+
+	// A mock worker client whose Complete() blocks for 2s, so we can observe
+	// the trace while the request is in flight. The dispatch budget (5s) is
+	// wider than the block, so the request still completes and is marked done.
+	fc := newMockWorkerClient()
+	fc.results["worker-1"] = mockResult{body: []byte(`{"ok":true}`), block: 2 * time.Second}
+	srv.clientFactory = func(w protocol.WorkerInfo) WorkerClient { return fc }
+
+	// A registry with one worker advertising the model, plus a capability
+	// cache populated so selectWorker() finds it (mirrors failoverTestServer).
+	tr := testRegistry(t, []protocol.WorkerInfo{mkWorker("worker-1", "qwen3-8b")})
+	srv.reg = tr.reg
+	srv.cache = NewCapabilityCache(tr.reg, testLogger())
+	srv.cache.Start(tr.ctx)
+	srv.cache.mu.Lock()
+	srv.cache.cache["worker-1"] = protocol.WorkerInfo{ID: "worker-1", Hostname: "host-1"}
+	srv.cache.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = srv.dispatchWithFailover(context.Background(), "qwen3-8b", []byte(`{}`), "chat", 1, 5*time.Second)
+	}()
+
+	// Give the dispatch goroutine time to enter Complete() but not for the
+	// 2s block to elapse.
+	time.Sleep(100 * time.Millisecond)
+
+	// The request must be visible as in-flight BEFORE Complete() returns.
+	snap := srv.tracker.Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("expected 1 in-flight record, got %d: %+v", len(snap), snap)
+	}
+	if snap[0].Status != StatusInflight {
+		t.Errorf("status = %q, want %q (request should be in-flight, not done)", snap[0].Status, StatusInflight)
+	}
+	if snap[0].WorkerHost != "host-1" {
+		t.Errorf("worker_host = %q, want %q", snap[0].WorkerHost, "host-1")
+	}
+
+	// Wait for the dispatch to finish and confirm it transitions to "done".
+	<-done
+	snap = srv.tracker.Snapshot()
+	if len(snap) != 1 || snap[0].Status != StatusDone {
+		t.Errorf("after completion: %+v", snap)
+	}
+	tr.cancel()
+}
+
 // TestInflightRequestsBounded verifies the completed buffer is capped even
 // under a burst of dispatches.
 func TestInflightRequestsBounded(t *testing.T) {
