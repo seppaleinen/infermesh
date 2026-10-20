@@ -46,6 +46,12 @@ services:
       dockerfile: docker/Dockerfile
       target: worker
     container_name: infermesh-worker
+    # host.docker.internal is a Docker Desktop feature, not a Docker Engine
+    # one. On a bare Engine the name does not resolve, so any host-side
+    # backend reached via --backend-url http://host.docker.internal:... needs
+    # this mapping (see the worker service in docker-compose.yml).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8081:8081"
     command:
@@ -94,6 +100,11 @@ services:
       dockerfile: docker/Dockerfile
       target: worker
     container_name: infermesh-worker-gpu
+    # See the worker service above: host.docker.internal is a Docker Desktop
+    # feature and does not resolve on a bare Engine, so any host-side backend
+    # reached via --backend-url http://host.docker.internal:... needs this.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8081:8081"
     command:

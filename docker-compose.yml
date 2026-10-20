@@ -61,6 +61,15 @@ services:
       dockerfile: docker/Dockerfile
       target: worker
     container_name: infermesh-worker
+    # host.docker.internal is a Docker Desktop feature, not a Docker Engine
+    # one. On a bare Engine (the common case for a GPU node running llama-swap
+    # or vLLM on the host) the name does not resolve, so every backend
+    # ListModels call from the model-refresh loop fails with
+    # "dial tcp: lookup host.docker.internal ... no such host". Mapping it
+    # to the host gateway makes --backend-url http://host.docker.internal:...
+    # work on any Engine without the user having to edit the command line.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8082:8082"
     command:
@@ -125,6 +134,11 @@ services:
       dockerfile: docker/Dockerfile
       target: worker
     container_name: infermesh-worker-gpu
+    # See the worker service above: host.docker.internal is a Docker Desktop
+    # feature and does not resolve on a bare Engine, so any host-side backend
+    # reached via --backend-url http://host.docker.internal:... needs this.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8082:8082"
     command:

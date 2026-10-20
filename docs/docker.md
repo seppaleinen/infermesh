@@ -191,7 +191,20 @@ services:
 ```
 
 `host.docker.internal` resolves to the Docker host from inside the container
-(available on Linux 20.10+ and macOS/Windows by default).
+— but **only on Docker Desktop**. On a bare Docker Engine (the normal case
+for a GPU node running llama-swap, vLLM, LM Studio, or ollama on the host)
+the name does not resolve at all, and every backend `ListModels` call from
+the worker's model-refresh loop fails with
+`dial tcp: lookup host.docker.internal ... no such host`.
+
+The compose files handle this for you: the `worker` and `worker-gpu`
+services map `host.docker.internal` to `host-gateway` via `extra_hosts`, so
+the same command line works on any Engine. If you override the service or
+run the worker binary outside Compose, add the host yourself:
+
+```bash
+docker run ... --add-host host.docker.internal:host-gateway ...
+```
 
 > **Note:** For llama-cpp the default backend endpoint is `localhost:8080`
 > INSIDE the container, which collides with the router port on the host.
