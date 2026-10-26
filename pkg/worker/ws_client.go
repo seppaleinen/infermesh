@@ -294,14 +294,14 @@ func dispatchInferenceRequest(ctx context.Context, msg protocol.Message, out *ws
 }
 
 func dispatchChat(ctx context.Context, id string, p protocol.InferenceRequestPayload, backend Backend, out *wsOutbound) {
-	var req ChatRequest
+	var req protocol.ChatRequest
 	if err := json.Unmarshal(p.Body, &req); err != nil {
 		_ = sendError(out, id, fmt.Errorf("invalid chat request body: %w", err))
 		return
 	}
 	if req.Stream {
 		streamOrFallback(ctx, id, "chat",
-			func(c context.Context) (<-chan ChatChunk, <-chan error) {
+			func(c context.Context) (<-chan protocol.ChatChunk, <-chan error) {
 				return backend.StreamChat(c, req.Model, req)
 			},
 			func(c context.Context) (interface{}, error) {
@@ -325,14 +325,14 @@ func dispatchChat(ctx context.Context, id string, p protocol.InferenceRequestPay
 }
 
 func dispatchCompletion(ctx context.Context, id string, p protocol.InferenceRequestPayload, backend Backend, out *wsOutbound) {
-	var req CompletionRequest
+	var req protocol.CompletionRequest
 	if err := json.Unmarshal(p.Body, &req); err != nil {
 		_ = sendError(out, id, fmt.Errorf("invalid completion request body: %w", err))
 		return
 	}
 	if req.Stream {
 		streamOrFallback(ctx, id, "completion",
-			func(c context.Context) (<-chan CompletionChunk, <-chan error) {
+			func(c context.Context) (<-chan protocol.CompletionChunk, <-chan error) {
 				return backend.StreamCompletions(c, req.Model, req)
 			},
 			func(c context.Context) (interface{}, error) {

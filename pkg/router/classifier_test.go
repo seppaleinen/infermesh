@@ -1,6 +1,7 @@
 package router
 
 import (
+	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"strings"
 	"testing"
 )
@@ -72,8 +73,8 @@ func TestAutoRoutingConfig_Classify_Simple(t *testing.T) {
 		TierComplex: "large",
 	}
 
-	req := ChatRequest{
-		Messages: []ChatMessage{
+	req := protocol.ChatRequest{
+		Messages: []protocol.ChatMessage{
 			{Role: "user", Content: "Hi"},
 		},
 		MaxTokens: 100,
@@ -93,8 +94,8 @@ func TestAutoRoutingConfig_Classify_Medium(t *testing.T) {
 	}
 
 	// ~300 tokens (1200 chars / 4)
-	req := ChatRequest{
-		Messages: []ChatMessage{
+	req := protocol.ChatRequest{
+		Messages: []protocol.ChatMessage{
 			{Role: "user", Content: string(make([]byte, 1200))},
 		},
 		MaxTokens: 100,
@@ -114,8 +115,8 @@ func TestAutoRoutingConfig_Classify_Complex(t *testing.T) {
 	}
 
 	// ~800 tokens (3200 chars / 4)
-	req := ChatRequest{
-		Messages: []ChatMessage{
+	req := protocol.ChatRequest{
+		Messages: []protocol.ChatMessage{
 			{Role: "user", Content: string(make([]byte, 3200))},
 		},
 		MaxTokens: 100,
@@ -135,8 +136,8 @@ func TestAutoRoutingConfig_Classify_MaxTokensSignal(t *testing.T) {
 	}
 
 	// Short prompt but large max_tokens -> should bump to TierMedium
-	req := ChatRequest{
-		Messages: []ChatMessage{
+	req := protocol.ChatRequest{
+		Messages: []protocol.ChatMessage{
 			{Role: "user", Content: "Hi"},
 		},
 		MaxTokens: 1000,
@@ -156,8 +157,8 @@ func TestAutoRoutingConfig_Classify_ReasoningKeyword(t *testing.T) {
 	}
 	cfg.ReasoningKeywords = []string{"think", "reason", "step by step"}
 
-	req := ChatRequest{
-		Messages: []ChatMessage{
+	req := protocol.ChatRequest{
+		Messages: []protocol.ChatMessage{
 			{Role: "user", Content: "Please think step by step about this problem."},
 		},
 		MaxTokens: 100,
@@ -178,8 +179,8 @@ func TestAutoRoutingConfig_Classify_ReasoningKeywordCappedAtComplex(t *testing.T
 	cfg.ReasoningKeywords = []string{"think"}
 
 	// Long prompt (~800 tokens) -> TierComplex. Keyword should not go past Complex.
-	req := ChatRequest{
-		Messages: []ChatMessage{
+	req := protocol.ChatRequest{
+		Messages: []protocol.ChatMessage{
 			{Role: "user", Content: string(make([]byte, 3200)) + " please think"},
 		},
 		MaxTokens: 100,
@@ -198,7 +199,7 @@ func TestAutoRoutingConfig_ClassifyCompletion(t *testing.T) {
 		TierComplex: "large",
 	}
 
-	req := CompletionRequest{
+	req := protocol.CompletionRequest{
 		Prompt:    "Short prompt",
 		MaxTokens: 100,
 	}
@@ -207,7 +208,7 @@ func TestAutoRoutingConfig_ClassifyCompletion(t *testing.T) {
 		t.Errorf("expected TierSimple, got %s", tier)
 	}
 
-	req = CompletionRequest{
+	req = protocol.CompletionRequest{
 		Prompt:    string(make([]byte, 3200)),
 		MaxTokens: 100,
 	}
@@ -424,8 +425,8 @@ func TestAutoRoutingConfig_Classify_ShortReasoningBumped(t *testing.T) {
 
 	// "Prove that P != NP." is short (well under 200 tokens) but carries a
 	// strong reasoning instruction ("prove that").
-	req := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: "Prove that P is not equal to NP. Work through the argument step by step."}},
+	req := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: "Prove that P is not equal to NP. Work through the argument step by step."}},
 		MaxTokens: 100,
 	}
 	tier := cfg.Classify(req)
@@ -439,8 +440,8 @@ func TestAutoRoutingConfig_Classify_ShortReasoningBumped(t *testing.T) {
 func TestAutoRoutingConfig_Classify_CodeBlockBumped(t *testing.T) {
 	cfg := autoTestCfg()
 
-	req := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: "Explain this function.\n```go\nfunc Add(a, b int) int { return a + b }\n```"}},
+	req := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: "Explain this function.\n```go\nfunc Add(a, b int) int { return a + b }\n```"}},
 		MaxTokens: 100,
 	}
 	tier := cfg.Classify(req)
@@ -454,8 +455,8 @@ func TestAutoRoutingConfig_Classify_CodeBlockBumped(t *testing.T) {
 func TestAutoRoutingConfig_Classify_MathNotationBumped(t *testing.T) {
 	cfg := autoTestCfg()
 
-	req := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: "Solve the equation $x^2 + 2x - 3 = 0$ for x."}},
+	req := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: "Solve the equation $x^2 + 2x - 3 = 0$ for x."}},
 		MaxTokens: 100,
 	}
 	tier := cfg.Classify(req)
@@ -477,12 +478,12 @@ func TestAutoRoutingConfig_Classify_NumberedListBumped(t *testing.T) {
 	withList := "Review these items carefully:\n1. First item concerns resource allocation.\n2. Second item concerns risk assessment.\n3. Third item concerns timeline.\n" + neutral
 	withoutList := "Review these items carefully and provide feedback. " + neutral
 
-	reqList := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: withList}},
+	reqList := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: withList}},
 		MaxTokens: 100,
 	}
-	reqPlain := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: withoutList}},
+	reqPlain := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: withoutList}},
 		MaxTokens: 100,
 	}
 
@@ -509,12 +510,12 @@ func TestAutoRoutingConfig_Classify_WhyQuestionBumped(t *testing.T) {
 	withWhy := "How does the TCP three-way handshake work? Explain the sequence of flags and timeouts. " + neutral
 	withoutWhy := "A discussion about the TCP protocol and its flags. " + neutral
 
-	reqWhy := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: withWhy}},
+	reqWhy := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: withWhy}},
 		MaxTokens: 100,
 	}
-	reqPlain := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: withoutWhy}},
+	reqPlain := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: withoutWhy}},
 		MaxTokens: 100,
 	}
 
@@ -534,8 +535,8 @@ func TestAutoRoutingConfig_Classify_WhyQuestionBumped(t *testing.T) {
 func TestAutoRoutingConfig_Classify_WhatQuestionNotBumped(t *testing.T) {
 	cfg := autoTestCfg()
 
-	req := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: "What is the capital of France? When did the war end?"}},
+	req := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: "What is the capital of France? When did the war end?"}},
 		MaxTokens: 100,
 	}
 	tier := cfg.Classify(req)
@@ -555,12 +556,12 @@ func TestAutoRoutingConfig_Classify_SimplePhraseDemoted(t *testing.T) {
 	simplePrompt := "Translate to French: " + base
 	plainPrompt := "Here is some text: " + base
 
-	reqSimple := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: simplePrompt}},
+	reqSimple := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: simplePrompt}},
 		MaxTokens: 100,
 	}
-	reqPlain := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: plainPrompt}},
+	reqPlain := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: plainPrompt}},
 		MaxTokens: 100,
 	}
 
@@ -577,8 +578,8 @@ func TestAutoRoutingConfig_Classify_SimplePhraseDemoted(t *testing.T) {
 func TestAutoRoutingConfig_Classify_FewShotBumped(t *testing.T) {
 	cfg := autoTestCfg()
 
-	req := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: "Classify sentiment. Example 1: \"Great!\" Input: positive. Example 2: \"Terrible.\" Output: negative. Now: \"Okay.\""}},
+	req := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: "Classify sentiment. Example 1: \"Great!\" Input: positive. Example 2: \"Terrible.\" Output: negative. Now: \"Okay.\""}},
 		MaxTokens: 100,
 	}
 	tier := cfg.Classify(req)
@@ -592,8 +593,8 @@ func TestAutoRoutingConfig_Classify_FewShotBumped(t *testing.T) {
 func TestAutoRoutingConfig_Classify_RoleFramingBumped(t *testing.T) {
 	cfg := autoTestCfg()
 
-	req := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: "Act as an expert cryptographer and explain this cipher."}},
+	req := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: "Act as an expert cryptographer and explain this cipher."}},
 		MaxTokens: 100,
 	}
 	tier := cfg.Classify(req)
@@ -614,12 +615,12 @@ func TestAutoRoutingConfig_Classify_MultipleSignalsBumpMultiTier(t *testing.T) {
 	// Same length, but with reasoning phrase + code block + why-question.
 	richPrompt := "Why does this matter? Explain why. Here is the code:\n```\nlet x = 1\n```\n" + plain
 
-	reqPlain := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: plainPrompt}},
+	reqPlain := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: plainPrompt}},
 		MaxTokens: 100,
 	}
-	reqRich := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: richPrompt}},
+	reqRich := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: richPrompt}},
 		MaxTokens: 100,
 	}
 
@@ -640,8 +641,8 @@ func TestAutoRoutingConfig_Classify_ComplexCappedAtTop(t *testing.T) {
 
 	// ~800 tokens + reasoning signals -> should cap at TierComplex.
 	longPrompt := strings.Repeat("analyze the impact of the policy on stakeholders ", 40) // ~1600 chars = 400 tokens
-	req := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: longPrompt}},
+	req := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: longPrompt}},
 		MaxTokens: 100,
 	}
 	tier := cfg.Classify(req)
@@ -656,8 +657,8 @@ func TestAutoRoutingConfig_FourTierMode_Simple(t *testing.T) {
 	cfg := autoTestCfg()
 	cfg.UseFourTierMode = true
 
-	req := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: "Hi"}},
+	req := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: "Hi"}},
 		MaxTokens: 100,
 	}
 	tier := cfg.Classify(req)
@@ -677,8 +678,8 @@ func TestAutoRoutingConfig_FourTierMode_HardTier(t *testing.T) {
 	base := strings.Repeat("lorem ipsum dolor sit amet ", 20)                                                 // 800 chars
 	prompt := "Explain why this design is wrong. Work through it step by step.\n```\nlet x = 1\n```\n" + base // +200 chars = 1000 chars total ~ 250 tokens
 
-	req := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: prompt}},
+	req := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: prompt}},
 		MaxTokens: 100,
 	}
 	tier := cfg.Classify(req)
@@ -701,8 +702,8 @@ func TestAutoRoutingConfig_FourTierMode_HardestTier(t *testing.T) {
 	prompt := "Act as an expert systems architect. Prove that the following invariant holds. " + base +
 		"\n```\nfunc main() { }\n```"
 
-	req := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: prompt}},
+	req := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: prompt}},
 		MaxTokens: 100,
 	}
 	tier := cfg.Classify(req)
@@ -741,7 +742,7 @@ func TestAutoRoutingConfig_FourTierMode_ResolveModel(t *testing.T) {
 func TestAutoRoutingConfig_ClassifyCompletion_ReasoningBumped(t *testing.T) {
 	cfg := autoTestCfg()
 
-	req := CompletionRequest{
+	req := protocol.CompletionRequest{
 		Prompt:    "Prove that every even number greater than 2 is the sum of two primes.",
 		MaxTokens: 100,
 	}
@@ -760,8 +761,8 @@ func TestAutoRoutingConfig_Classify_NoSignalsPreservesBaseline(t *testing.T) {
 	// ~300 tokens (1200 chars), no reasoning/simple phrases, no structure.
 	// Use repeated words that avoid any phrase match.
 	base := strings.Repeat("x y z w v u t s r q p o n m l k j h g f e d c b a ", 18) // 1224 chars ~ 306 tokens
-	req := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: base}},
+	req := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: base}},
 		MaxTokens: 100,
 	}
 	tier := cfg.Classify(req)

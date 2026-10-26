@@ -3,95 +3,9 @@ package router
 import (
 	"regexp"
 	"strings"
+
+	"github.com/seppaleinen/infermesh/pkg/protocol"
 )
-
-// AliasTarget wraps the canonical model name that a user-facing alias
-// resolves to. The wrapper exists so future per-alias metadata (e.g. a
-// description or routing hints) can be added without changing the map
-// value type.
-type AliasTarget struct {
-	Canonical string `json:"canonical"`
-}
-
-// ModelAliasConfig maps user-facing model aliases to canonical model names.
-// When nil or empty, alias resolution is disabled and requests are routed
-// with the literal model name the client sent (backward compatible).
-//
-// Canonical names are kept verbatim — they may contain characters that are
-// not valid in an alias key (e.g. "@", "/", "."), so the split-on-first-"="
-// rule in ParseModelAliases is load-bearing.
-type ModelAliasConfig struct {
-	Aliases map[string]AliasTarget `json:"aliases"`
-}
-
-// modelAliasesActive reports whether cfg is non-nil and contains at least
-// one alias with a non-empty Canonical. Mirrors autoRoutingActive.
-func modelAliasesActive(cfg *ModelAliasConfig) bool {
-	if cfg == nil || cfg.Aliases == nil {
-		return false
-	}
-	for _, t := range cfg.Aliases {
-		if t.Canonical != "" {
-			return true
-		}
-	}
-	return false
-}
-
-// autoRoutingActive reports whether cfg is non-nil and contains at least
-// one tier with a non-empty model name. Mirrors modelAliasesActive.
-func autoRoutingActive(cfg *AutoRoutingConfig) bool {
-	if cfg == nil || cfg.Models == nil {
-		return false
-	}
-	for _, m := range cfg.Models {
-		if m != "" {
-			return true
-		}
-	}
-	return false
-}
-
-// ParseModelAliases parses a comma-separated "alias=canonical" specification
-// into a ModelAliasConfig. Returns nil for empty/whitespace input or when
-// no valid alias survives parsing, so callers can use a nil receiver as a
-// sentinel for "aliasing disabled".
-//
-// Parsing rules:
-//   - Split on commas; trim each part; skip empty parts.
-//   - Split each part on the FIRST "=" only, so a canonical containing "="
-//     (e.g. "foo=bar=baz") is preserved verbatim.
-//   - Trim key and canonical; skip if either is empty.
-//   - Duplicate keys: last write wins.
-func ParseModelAliases(s string) *ModelAliasConfig {
-	if strings.TrimSpace(s) == "" {
-		return nil
-	}
-
-	aliases := make(map[string]AliasTarget)
-	for _, part := range strings.Split(s, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		idx := strings.Index(part, "=")
-		if idx < 0 {
-			// No "=": skip — an alias without a canonical is not usable.
-			continue
-		}
-		key := strings.TrimSpace(part[:idx])
-		canonical := strings.TrimSpace(part[idx+1:])
-		if key == "" || canonical == "" {
-			continue
-		}
-		aliases[key] = AliasTarget{Canonical: canonical}
-	}
-
-	if len(aliases) == 0 {
-		return nil
-	}
-	return &ModelAliasConfig{Aliases: aliases}
-}
 
 // ComplexityTier classifies a prompt by estimated reasoning demand.
 // Four tiers: Simple, Medium, Hard, Hardest.
@@ -206,6 +120,20 @@ func init() {
 		whyHowQuestions:   regexp.MustCompile(`(?i)^(why|how)\s+(does|do|did|would|could|can|will|should|must|may|might)`),
 		whatWhenQuestions: regexp.MustCompile(`(?i)^(what|when|where|who|which)\s+(is|are|was|were|does|do|did)`),
 	}
+}
+
+// autoRoutingActive reports whether cfg is non-nil and contains at least
+// one tier with a non-empty model name. Mirrors modelAliasesActive.
+func autoRoutingActive(cfg *AutoRoutingConfig) bool {
+	if cfg == nil || cfg.Models == nil {
+		return false
+	}
+	for _, m := range cfg.Models {
+		if m != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultAutoRoutingConfig returns a config with the documented default
@@ -341,7 +269,7 @@ func countPhraseMatches(content string, phrases []string) int {
 // The token-based baseline (classifyByTokens) is preserved, so this acts as
 // a correction on top of length — keeping backward compatibility with the
 // existing 24 auto-routing tests while adding semantic discrimination.
-func (c *AutoRoutingConfig) computeSemanticAdjustment(req ChatRequest) int {
+func (c *AutoRoutingConfig) computeSemanticAdjustment(req protocol.ChatRequest) int {
 	// Concatenate all message content
 	var content strings.Builder
 	for _, msg := range req.Messages {
@@ -465,7 +393,7 @@ func (c *AutoRoutingConfig) classifyByTokens(tokens int) ComplexityTier {
 //   - TierMedium: mid-length prompts with moderate reasoning
 //   - TierHard: reasoning-heavy prompts with structural complexity
 //   - TierHardest: most complex (multi-step reasoning, code/math, role framing)
-func (c *AutoRoutingConfig) Classify(req ChatRequest) ComplexityTier {
+func (c *AutoRoutingConfig) Classify(req protocol.ChatRequest) ComplexityTier {
 	tokens := c.estimateChatTokens(req)
 
 	// Optional signal: a large max_tokens request implies a longer
@@ -522,10 +450,10 @@ func (c *AutoRoutingConfig) Classify(req ChatRequest) ComplexityTier {
 // ClassifyCompletion estimates the complexity of a text-completion request.
 // Uses the same multi-signal scoring as Classify but operates on a single
 // prompt string instead of chat messages.
-func (c *AutoRoutingConfig) ClassifyCompletion(req CompletionRequest) ComplexityTier {
+func (c *AutoRoutingConfig) ClassifyCompletion(req protocol.CompletionRequest) ComplexityTier {
 	// Wrap as a single-message chat request for scoring
-	chatReq := ChatRequest{
-		Messages:  []ChatMessage{{Role: "user", Content: req.Prompt}},
+	chatReq := protocol.ChatRequest{
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: req.Prompt}},
 		MaxTokens: req.MaxTokens,
 	}
 	return c.Classify(chatReq)
@@ -534,7 +462,7 @@ func (c *AutoRoutingConfig) ClassifyCompletion(req CompletionRequest) Complexity
 // estimateChatTokens sums the estimated token count across all message
 // contents in a chat request. Role tags are not counted; the heuristic is
 // intentionally coarse.
-func (c *AutoRoutingConfig) estimateChatTokens(req ChatRequest) int {
+func (c *AutoRoutingConfig) estimateChatTokens(req protocol.ChatRequest) int {
 	total := 0
 	for i := range req.Messages {
 		total += estimateTokens(req.Messages[i].Content)
@@ -544,7 +472,7 @@ func (c *AutoRoutingConfig) estimateChatTokens(req ChatRequest) int {
 
 // hasReasoningKeyword returns true if any message content contains one of
 // the configured reasoning keywords (case-insensitive substring match).
-func (c *AutoRoutingConfig) hasReasoningKeyword(req ChatRequest) bool {
+func (c *AutoRoutingConfig) hasReasoningKeyword(req protocol.ChatRequest) bool {
 	if len(c.ReasoningKeywords) == 0 {
 		return false
 	}
@@ -574,159 +502,4 @@ func (c *AutoRoutingConfig) ResolveModel(tier ComplexityTier) (string, bool) {
 	return model, ok && model != ""
 }
 
-// AutoRoutingConfigRequest is the JSON DTO for the GET/POST /meta/auto-routing
-// endpoint. It uses string tier names ("simple", "medium", "hard", "hardest")
-// rather than the internal ComplexityTier enum so the wire format is stable
-// and human-readable. The internal AutoRoutingConfig is never serialized
-// directly — conversion is explicit in toAutoRoutingConfigDTO /
-// buildAutoRoutingConfig.
-type AutoRoutingConfigRequest struct {
-	Enabled         bool              `json:"enabled"`
-	UseFourTier     bool              `json:"use_four_tier"`
-	Models          map[string]string `json:"models"` // tier name → model name
-	SimpleMaxTokens int               `json:"simple_max_tokens"`
-	MediumMaxTokens int               `json:"medium_max_tokens"`
-}
 
-// tierToString maps a ComplexityTier to its wire-format string name.
-// TierHardest and TierComplex both map to "hardest" — in 3-tier mode the
-// ladder uses TierComplex as the top, but the wire name is "hardest" for
-// consistency across modes.
-func tierToString(tier ComplexityTier) string {
-	switch tier {
-	case TierSimple:
-		return "simple"
-	case TierMedium:
-		return "medium"
-	case TierHard:
-		return "hard"
-	case TierHardest:
-		// TierHardest and TierComplex have the same underlying value (3),
-		// so checking TierHardest is sufficient for both.
-		return "hardest"
-	default:
-		return ""
-	}
-}
-
-// stringToTier maps a wire-format tier name back to ComplexityTier.
-// Accepted names: "simple", "medium", "hard", "hardest" (always),
-// and "complex" (alias for hardest, backward compatible with 3-tier configs).
-// Both "hardest" and "complex" map to TierHardest (== TierComplex, value 3).
-// The UseFourTierMode flag is handled by the caller (buildAutoRoutingConfig).
-func stringToTier(name string) (ComplexityTier, bool) {
-	switch name {
-	case "simple":
-		return TierSimple, true
-	case "medium":
-		return TierMedium, true
-	case "hard":
-		return TierHard, true
-	case "hardest", "complex":
-		// TierHardest and TierComplex have the same value (3), so both
-		// map to TierHardest. The caller decides whether this means
-		// TierComplex (3-tier) or TierHardest (4-tier) — they are equal.
-		return TierHardest, true
-	default:
-		return TierSimple, false
-	}
-}
-
-// buildAutoRoutingConfig converts an AutoRoutingConfigRequest DTO into the
-// internal AutoRoutingConfig. Returns nil when the request has no non-empty
-// tier model, which disables auto routing (backward compatible nil
-// behavior). An empty/nil models map or enabled=false also yields nil.
-func buildAutoRoutingConfig(req *AutoRoutingConfigRequest) *AutoRoutingConfig {
-	if req == nil || !req.Enabled || req.Models == nil {
-		return nil
-	}
-
-	models := make(map[ComplexityTier]string, len(req.Models))
-	hasModel := false
-	for name, model := range req.Models {
-		name = strings.TrimSpace(name)
-		model = strings.TrimSpace(model)
-		if name == "" || model == "" {
-			continue
-		}
-		tier, ok := stringToTier(name)
-		if !ok {
-			continue
-		}
-		// TierHardest and TierComplex have the same value (3), so the
-		// stringToTier mapping already returns TierHardest for both
-		// "hardest" and "complex". No mode-specific remap is needed.
-		models[tier] = model
-		hasModel = true
-	}
-
-	if !hasModel {
-		return nil
-	}
-
-	simpleMax := req.SimpleMaxTokens
-	if simpleMax <= 0 {
-		simpleMax = 200
-	}
-	if simpleMax > 1_000_000 {
-		simpleMax = 1_000_000
-	}
-	mediumMax := req.MediumMaxTokens
-	if mediumMax <= 0 {
-		mediumMax = 600
-	}
-	if mediumMax > 1_000_000 {
-		mediumMax = 1_000_000
-	}
-	if mediumMax <= simpleMax {
-		mediumMax = simpleMax + 1
-	}
-
-	return &AutoRoutingConfig{
-		Models:          models,
-		SimpleMaxTokens: simpleMax,
-		MediumMaxTokens: mediumMax,
-		UseFourTierMode: req.UseFourTier,
-	}
-}
-
-// toAutoRoutingConfigDTO converts the internal AutoRoutingConfig into the
-// wire-format AutoRoutingConfigRequest. Returns a zero-value DTO with
-// enabled=false and an empty models map when cfg is nil.
-func toAutoRoutingConfigDTO(cfg *AutoRoutingConfig) AutoRoutingConfigRequest {
-	if cfg == nil || cfg.Models == nil {
-		return AutoRoutingConfigRequest{
-			Enabled:         false,
-			UseFourTier:     false,
-			Models:          make(map[string]string),
-			SimpleMaxTokens: 0,
-			MediumMaxTokens: 0,
-		}
-	}
-
-	models := make(map[string]string, len(cfg.Models))
-	for tier, model := range cfg.Models {
-		name := tierToString(tier)
-		if name == "" {
-			continue
-		}
-		models[name] = model
-	}
-
-	simpleMax := cfg.SimpleMaxTokens
-	if simpleMax <= 0 {
-		simpleMax = 200
-	}
-	mediumMax := cfg.MediumMaxTokens
-	if mediumMax <= 0 {
-		mediumMax = 600
-	}
-
-	return AutoRoutingConfigRequest{
-		Enabled:         true,
-		UseFourTier:     cfg.UseFourTierMode,
-		Models:          models,
-		SimpleMaxTokens: simpleMax,
-		MediumMaxTokens: mediumMax,
-	}
-}

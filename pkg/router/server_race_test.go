@@ -179,9 +179,9 @@ func TestServerAutoRouting_RaceConcurrentReads(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		req := &ChatRequest{
+		req := &protocol.ChatRequest{
 			Model:    "auto",
-			Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+			Messages: []protocol.ChatMessage{{Role: "user", Content: "hi"}},
 		}
 		for {
 			select {
@@ -215,7 +215,7 @@ func TestServerAutoRouting_RaceConcurrentReads(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		req := &CompletionRequest{
+		req := &protocol.CompletionRequest{
 			Model:  "auto",
 			Prompt: "hello",
 		}
@@ -388,7 +388,7 @@ func TestServerAutoRouting_IntegrationRace(t *testing.T) {
 			defer wg.Done()
 			body := map[string]interface{}{
 				"model":      "auto",
-				"messages":   []ChatMessage{{Role: "user", Content: "hi"}},
+				"messages":   []protocol.ChatMessage{{Role: "user", Content: "hi"}},
 				"max_tokens": 50,
 				"stream":     false,
 			}

@@ -28,7 +28,7 @@ type Server struct {
 	server        *http.Server
 	addr          string
 	models        []protocol.ModelInfo
-	chatHistory   []ChatRequest
+	chatHistory   []protocol.ChatRequest
 	capabilities  *capabilities.Aggregator
 	config        security.Config
 	backend       Backend // Backend adapter for model inference
@@ -60,166 +60,10 @@ type Server struct {
 	excludedModels []string
 }
 
-// ChatMessage represents a single message in a chat conversation.
-type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-// ChatRequest represents a request to the chat completions endpoint.
-type ChatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
-	Stream      bool          `json:"stream"`
-	MaxTokens   int           `json:"max_tokens"`
-	Temperature float64       `json:"temperature"`
-}
-
-// CompletionRequest represents a request to the completions endpoint.
-type CompletionRequest struct {
-	Model       string  `json:"model"`
-	Prompt      string  `json:"prompt"`
-	MaxTokens   int     `json:"max_tokens"`
-	Temperature float64 `json:"temperature"`
-	Stream      bool    `json:"stream"`
-}
-
-// Message represents a message in the chat completion response.
-type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-// Choice represents a single choice in a completion response.
-//
-// Delta mirrors the OpenAI streaming shape: mid-stream chunks carry token
-// increments in choices[i].delta.content rather than choices[i].message.
-// Backends that only emit the first-frame message form (or the legacy
-// choices[i].text form) leave Delta empty; omitempty keeps both shapes
-// wire-compatible for non-streaming responses.
-type Choice struct {
-	Index        int     `json:"index"`
-	Message      Message `json:"message,omitempty"`
-	Delta        Message `json:"delta,omitempty"`
-	Text         string  `json:"text,omitempty"`
-	FinishReason string  `json:"finish_reason"`
-}
-
-// CompletionChunk represents a streaming chunk of a completion response.
-type CompletionChunk struct {
-	ID      string   `json:"id"`
-	Object  string   `json:"object"`
-	Created int64    `json:"created"`
-	Model   string   `json:"model,omitempty"`
-	Choices []Choice `json:"choices"`
-	// Usage is the final-frame token usage, present only on the last
-	// streaming chunk when the backend reports it (issue #134). It is
-	// populated by the OpenAI-compatible backend's final SSE frame.
-	Usage *Usage `json:"usage,omitempty"`
-}
-
-// ChatChunk represents a streaming chunk of a chat completion response.
-type ChatChunk struct {
-	ID      string   `json:"id"`
-	Object  string   `json:"object"`
-	Created int64    `json:"created"`
-	Model   string   `json:"model,omitempty"`
-	Choices []Choice `json:"choices"`
-	// Usage is the final-frame token usage, present only on the last
-	// streaming chunk when the backend reports it (issue #134). It is
-	// populated by the OpenAI-compatible backend's final SSE frame.
-	Usage *Usage `json:"usage,omitempty"`
-}
-
-// ModelsResponse represents the response from the models endpoint.
-type ModelsResponse struct {
-	Object string               `json:"object"`
-	Data   []protocol.ModelInfo `json:"data"`
-}
-
-// BackendAdapter wraps the backend interface for the server.
-type BackendAdapter struct {
-	Backend Backend
-	Model   string // The model name to use for this worker
-}
-
-// NewBackendAdapter creates a new backend adapter.
-func NewBackendAdapter(backend Backend, model string) *BackendAdapter {
-	return &BackendAdapter{
-		Backend: backend,
-		Model:   model,
-	}
-}
-
-// ChatCompletion handles a chat completion request using the backend.
-func (a *BackendAdapter) ChatCompletion(ctx context.Context, req ChatRequest) (ChatResponse, error) {
-	return a.Backend.CompleteChat(ctx, a.Model, req)
-}
-
-// Completion handles a completion request using the backend.
-func (a *BackendAdapter) Completion(ctx context.Context, req CompletionRequest) (CompletionResponse, error) {
-	return a.Backend.CompleteCompletions(ctx, a.Model, req)
-}
-
-// CompleteChat implements the Backend interface.
-func (a *BackendAdapter) CompleteChat(ctx context.Context, model string, req ChatRequest) (ChatResponse, error) {
-	return a.Backend.CompleteChat(ctx, model, req)
-}
-
-// CompleteCompletions implements the Backend interface.
-func (a *BackendAdapter) CompleteCompletions(ctx context.Context, model string, req CompletionRequest) (CompletionResponse, error) {
-	return a.Backend.CompleteCompletions(ctx, model, req)
-}
-
-// StreamChat implements the Backend interface.
-func (a *BackendAdapter) StreamChat(ctx context.Context, model string, req ChatRequest) (<-chan ChatChunk, <-chan error) {
-	return a.Backend.StreamChat(ctx, model, req)
-}
-
-// StreamCompletions implements the Backend interface.
-func (a *BackendAdapter) StreamCompletions(ctx context.Context, model string, req CompletionRequest) (<-chan CompletionChunk, <-chan error) {
-	return a.Backend.StreamCompletions(ctx, model, req)
-}
-
-// LoadModel implements the Backend interface.
-func (a *BackendAdapter) LoadModel(path string) (bool, error) {
-	return a.Backend.LoadModel(path)
-}
-
-// UnloadModel implements the Backend interface.
-func (a *BackendAdapter) UnloadModel() error {
-	return a.Backend.UnloadModel()
-}
-
-// ListModels implements the Backend interface.
-func (a *BackendAdapter) ListModels() ([]protocol.ModelInfo, error) {
-	return a.Backend.ListModels()
-}
-
-// GetMetrics implements the Backend interface.
-func (a *BackendAdapter) GetMetrics() (Metrics, error) {
-	return a.Backend.GetMetrics()
-}
-
-// Name implements the Backend interface.
-func (a *BackendAdapter) Name() string {
-	return a.Backend.Name()
-}
-
-// IsHealthy implements the Backend interface.
-func (a *BackendAdapter) IsHealthy() bool {
-	return a.Backend.IsHealthy()
-}
-
-// HealthCheck implements the Backend interface.
-func (a *BackendAdapter) HealthCheck() error {
-	return a.Backend.HealthCheck()
-}
-
-// GetCircuitState implements the Backend interface.
-func (a *BackendAdapter) GetCircuitState() CircuitState {
-	return a.Backend.GetCircuitState()
-}
+// Wire-protocol types (ChatRequest, ChatMessage, Choice, ChatChunk,
+// CompletionChunk, ModelsResponse, Usage, ChatResponse, CompletionResponse)
+// live in pkg/protocol/api.go — see docs/adr/0004-code-quality-ceilings.md.
+// The worker package references them as protocol.* throughout.
 
 // NewServer creates a new worker HTTP server.
 func NewServer(log *slog.Logger, addr string, cfg security.Config) *Server {
@@ -229,7 +73,7 @@ func NewServer(log *slog.Logger, addr string, cfg security.Config) *Server {
 		log:           log,
 		addr:          addr,
 		models:        []protocol.ModelInfo{},
-		chatHistory:   []ChatRequest{},
+		chatHistory:   []protocol.ChatRequest{},
 		capabilities:  agg,
 		config:        cfg,
 		backend:       nil,
@@ -238,9 +82,11 @@ func NewServer(log *slog.Logger, addr string, cfg security.Config) *Server {
 	}
 }
 
-// SetBackend sets the backend adapter for this server.
+// SetBackend stores the backend directly. The old passthrough wrapper was
+// removed as dead code (issue #159): its stored model field was never read
+// because every call site passes the model from the request anyway.
 func (s *Server) SetBackend(backend Backend, model string) {
-	s.backend = NewBackendAdapter(backend, model)
+	s.backend = backend
 
 	// Initialize concurrency estimator, seeded with the backend's thread
 	// count when available (llama-cpp). Backends without a thread concept
@@ -324,7 +170,7 @@ func (s *Server) ApplyModelFilters(caps *protocol.Capabilities) {
 // model into the inference tracker. It is a no-op when no backend is
 // configured (inferenceStats is nil), so callers can invoke it
 // unconditionally after a successful response.
-func (s *Server) recordInference(model string, usage *Usage, ttft, total time.Duration) {
+func (s *Server) recordInference(model string, usage *protocol.Usage, ttft, total time.Duration) {
 	if s.inferenceStats == nil || usage == nil {
 		return
 	}
@@ -336,7 +182,7 @@ func (s *Server) recordInference(model string, usage *Usage, ttft, total time.Du
 // otherwise fall back to chunk count as a completion-token proxy (one
 // content chunk ≈ one token) with zero prompt tokens, so the tracker
 // still records a throughput sample for backends that omit usage.
-func (s *Server) recordStreamingInference(model string, usage *Usage, chunkCount int, firstChunkAt time.Time) {
+func (s *Server) recordStreamingInference(model string, usage *protocol.Usage, chunkCount int, firstChunkAt time.Time) {
 	if s.inferenceStats == nil {
 		return
 	}
@@ -613,395 +459,8 @@ func ensureSSEHeaders(w http.ResponseWriter) {
 	w.Header().Set("Connection", "keep-alive")
 }
 
-// chatCompletions handles the /v1/chat/completions HTTP endpoint.
-func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
-	// Parse request
-	var req ChatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.log.Error("failed to parse chat request", "error", err)
-		http.Error(w, "invalid request", http.StatusBadRequest)
-		return
-	}
-
-	// Store in history for debugging (capped at maxChatHistory to prevent unbounded growth)
-	const maxChatHistory = 1000
-	s.chatHistory = append(s.chatHistory, req)
-	if len(s.chatHistory) > maxChatHistory {
-		s.chatHistory = s.chatHistory[len(s.chatHistory)-maxChatHistory:]
-	}
-
-	// Check if backend is configured
-	if s.backend == nil {
-		s.log.Error("backend not configured")
-		http.Error(w, "backend not configured", http.StatusInternalServerError)
-		return
-	}
-
-	// Check circuit breaker state
-	if !s.backend.IsHealthy() {
-		if s.concurrencyEstimator != nil {
-			s.concurrencyEstimator.RecordCircuitOpen()
-		}
-		s.log.Error("backend is unhealthy")
-		http.Error(w, "backend is unhealthy", http.StatusServiceUnavailable)
-		return
-	}
-
-	ctx := r.Context()
-
-	// Non-streaming: return the full response as application/json.
-	if !req.Stream {
-		w.Header().Set("Content-Type", "application/json")
-		start := time.Now()
-		chatResp, err := s.backend.CompleteChat(ctx, req.Model, req)
-		elapsed := time.Since(start)
-		if s.concurrencyEstimator != nil {
-			if err != nil {
-				var bhErr *BackendHTTPError
-				if errors.As(err, &bhErr) {
-					s.concurrencyEstimator.RecordRequest(start, bhErr.StatusCode)
-				} else {
-					s.concurrencyEstimator.RecordRequest(start, 0)
-				}
-			} else {
-				s.concurrencyEstimator.RecordRequest(start, http.StatusOK)
-			}
-		}
-		if err != nil {
-			s.log.Error("backend error", "error", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		// Record inference throughput for scheduler ranking (issue #134).
-		// For non-streaming responses the whole generation is one shot, so
-		// TTFT == total elapsed.
-		s.recordInference(req.Model, chatResp.Usage, elapsed, elapsed)
-		if err := json.NewEncoder(w).Encode(chatResp); err != nil {
-			s.log.Error("failed to encode response", "error", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		return
-	}
-
-	// Streaming: forward ChatChunks as OpenAI-compatible SSE frames.
-	// Headers are set lazily on the first flushed chunk so that a backend
-	// error arriving before any chunk can still produce a proper JSON error
-	// response (see writeStreamBackendError).
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		s.log.Error("streaming unsupported")
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
-
-	chatCh, errCh := s.backend.StreamChat(ctx, req.Model, req)
-	started := false
-	var firstChunkAt time.Time
-	var chunkCount int
-	var finalUsage *Usage
-	for {
-		// Prioritise an already-buffered backend error: on early failure the
-		// real backends close BOTH channels, so a plain select could randomly
-		// pick the closed chunk channel and mask the error.
-		var pendingErr error
-		select {
-		case err, ok := <-errCh:
-			if ok && err != nil {
-				pendingErr = err
-			}
-			// ok == false: errCh closed without error — keep waiting for chunks.
-		default:
-		}
-		if pendingErr != nil {
-			s.writeStreamBackendError(w, pendingErr, started)
-			return
-		}
-
-		select {
-		case chunk, ok := <-chatCh:
-			if !ok {
-				// The chunk channel closed. The real backends close errCh
-				// before chatCh and buffer the error before either close, so
-				// check errCh one last time to catch an error that raced with
-				// the close.
-				select {
-				case err, ok := <-errCh:
-					if ok && err != nil {
-						s.writeStreamBackendError(w, err, started)
-						return
-					}
-				default:
-				}
-				if !started {
-					ensureSSEHeaders(w)
-				}
-				// Clean close: record inference throughput for scheduler
-				// ranking (issue #134). TTFT is the time from request start
-				// to the first flushed chunk; total is the wall-clock
-				// generation time. When the backend's final frame carried a
-				// Usage, use it; otherwise fall back to chunk count as a
-				// token estimate (one completion token per content chunk).
-				if started {
-					s.recordStreamingInference(req.Model, finalUsage, chunkCount, firstChunkAt)
-				}
-				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
-				flusher.Flush()
-				return
-			}
-			if !started {
-				ensureSSEHeaders(w)
-				started = true
-				firstChunkAt = time.Now()
-			}
-			// Capture the final-frame usage (OpenAI sends usage only on the
-			// last streaming chunk), so the clean-close path can record
-			// accurate token counts.
-			if chunk.Usage != nil {
-				finalUsage = chunk.Usage
-			}
-			chunkCount++
-			jsonChunk, err := json.Marshal(chunk)
-			if err != nil {
-				s.log.Error("failed to marshal chunk", "error", err)
-				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
-				flusher.Flush()
-				return
-			}
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(jsonChunk))
-			flusher.Flush()
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-// completions handles the /v1/completions HTTP endpoint.
-func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
-	// Parse request
-	var req CompletionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.log.Error("failed to parse completion request", "error", err)
-		http.Error(w, "invalid request", http.StatusBadRequest)
-		return
-	}
-
-	// Check if backend is configured
-	if s.backend == nil {
-		s.log.Error("backend not configured")
-		http.Error(w, "backend not configured", http.StatusInternalServerError)
-		return
-	}
-
-	// Check circuit breaker state
-	if !s.backend.IsHealthy() {
-		if s.concurrencyEstimator != nil {
-			s.concurrencyEstimator.RecordCircuitOpen()
-		}
-		s.log.Error("backend is unhealthy")
-		http.Error(w, "backend is unhealthy", http.StatusServiceUnavailable)
-		return
-	}
-
-	ctx := r.Context()
-
-	// Non-streaming: return the full response as application/json.
-	if !req.Stream {
-		w.Header().Set("Content-Type", "application/json")
-		start := time.Now()
-		compResp, err := s.backend.CompleteCompletions(ctx, req.Model, req)
-		elapsed := time.Since(start)
-		if s.concurrencyEstimator != nil {
-			if err != nil {
-				var bhErr *BackendHTTPError
-				if errors.As(err, &bhErr) {
-					s.concurrencyEstimator.RecordRequest(start, bhErr.StatusCode)
-				} else {
-					s.concurrencyEstimator.RecordRequest(start, 0)
-				}
-			} else {
-				s.concurrencyEstimator.RecordRequest(start, http.StatusOK)
-			}
-		}
-		if err != nil {
-			s.log.Error("backend error", "error", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		// Record inference throughput for scheduler ranking (issue #134).
-		// For non-streaming responses the whole generation is one shot, so
-		// TTFT == total elapsed.
-		s.recordInference(req.Model, compResp.Usage, elapsed, elapsed)
-		if err := json.NewEncoder(w).Encode(compResp); err != nil {
-			s.log.Error("failed to encode response", "error", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		return
-	}
-
-	// Streaming: forward CompletionChunks as OpenAI-compatible SSE frames.
-	// Headers are set lazily on the first flushed chunk so that a backend
-	// error arriving before any chunk can still produce a proper JSON error
-	// response (see writeStreamBackendError).
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		s.log.Error("streaming unsupported")
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
-
-	compCh, errCh := s.backend.StreamCompletions(ctx, req.Model, req)
-	started := false
-	var firstChunkAt time.Time
-	var chunkCount int
-	var finalUsage *Usage
-	for {
-		// Prioritise an already-buffered backend error: on early failure the
-		// real backends close BOTH channels, so a plain select could randomly
-		// pick the closed chunk channel and mask the error.
-		var pendingErr error
-		select {
-		case err, ok := <-errCh:
-			if ok && err != nil {
-				pendingErr = err
-			}
-			// ok == false: errCh closed without error — keep waiting for chunks.
-		default:
-		}
-		if pendingErr != nil {
-			s.writeStreamBackendError(w, pendingErr, started)
-			return
-		}
-
-		select {
-		case chunk, ok := <-compCh:
-			if !ok {
-				// The chunk channel closed. The real backends close errCh
-				// before compCh and buffer the error before either close, so
-				// check errCh one last time to catch an error that raced with
-				// the close.
-				select {
-				case err, ok := <-errCh:
-					if ok && err != nil {
-						s.writeStreamBackendError(w, err, started)
-						return
-					}
-				default:
-				}
-				if !started {
-					ensureSSEHeaders(w)
-				}
-				// Clean close: record inference throughput for scheduler
-				// ranking (issue #134). TTFT is the time from request start
-				// to the first flushed chunk; total is the wall-clock
-				// generation time. When the backend's final frame carried a
-				// Usage, use it; otherwise fall back to chunk count as a
-				// token estimate (one completion token per content chunk).
-				if started {
-					s.recordStreamingInference(req.Model, finalUsage, chunkCount, firstChunkAt)
-				}
-				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
-				flusher.Flush()
-				return
-			}
-			if !started {
-				ensureSSEHeaders(w)
-				started = true
-				firstChunkAt = time.Now()
-			}
-			// Capture the final-frame usage (OpenAI sends usage only on the
-			// last streaming chunk), so the clean-close path can record
-			// accurate token counts.
-			if chunk.Usage != nil {
-				finalUsage = chunk.Usage
-			}
-			chunkCount++
-			jsonChunk, err := json.Marshal(chunk)
-			if err != nil {
-				s.log.Error("failed to marshal chunk", "error", err)
-				_, _ = fmt.Fprintf(w, "data: [DONE]\n\n")
-				flusher.Flush()
-				return
-			}
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(jsonChunk))
-			flusher.Flush()
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-// modelsList handles the /v1/models HTTP endpoint.
-func (s *Server) modelsList(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	s.modelsMu.Lock()
-	data := make([]protocol.ModelInfo, len(s.models))
-	copy(data, s.models)
-	s.modelsMu.Unlock()
-	// make([]T, n) is never nil, so no nil-guard is needed here; an empty
-	// s.models yields an empty (non-nil) slice, which JSON encodes as [].
-	response := ModelsResponse{Object: "list", Data: data}
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		s.log.Error("failed to encode models", "error", err)
-		http.Error(w, "failed to encode models", http.StatusInternalServerError)
-	}
-}
-
-// loadModelByName marks a declared model as loaded, mirroring the HTTP
-// /v1/models/load handler. It is used by the WebSocket model_load_request
-// dispatch; the next heartbeat carries the updated models so the router's
-// capability cache sees the load.
-func (s *Server) loadModelByName(name string) (bool, string) {
-	s.modelsMu.Lock()
-	defer s.modelsMu.Unlock()
-	for i, m := range s.models {
-		if m.Name == name {
-			s.models[i].Loaded = true
-			return true, ""
-		}
-	}
-	return false, "model not found"
-}
-
-// loadModelHandler handles the /v1/models/load HTTP endpoint.
-func (s *Server) loadModelHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req struct {
-		Model string `json:"model"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request", http.StatusBadRequest)
-		return
-	}
-
-	found := false
-	s.modelsMu.Lock()
-	for i, m := range s.models {
-		if m.Name == req.Model {
-			found = true
-			// Update loaded flag – simple in-memory state change.
-			s.models[i].Loaded = true
-			break
-		}
-	}
-	s.modelsMu.Unlock()
-
-	if !found {
-		http.Error(w, "model not found", http.StatusNotFound)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	resp := map[string]string{"status": "loaded"}
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-	}
-}
+// chatCompletions, completions, modelsList, loadModelByName, loadModelHandler
+// and the shared streamSSE/dispatchNonStreaming helpers live in handlers.go.
 
 // StartHealthCheckLoop periodically checks the backend health and records the result.
 func (s *Server) StartHealthCheckLoop(ctx context.Context, interval time.Duration) {

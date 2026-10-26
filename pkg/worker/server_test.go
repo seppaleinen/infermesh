@@ -97,26 +97,26 @@ func (m *mockBackend) SetThreads(threads int) {
 	defer m.mu.Unlock()
 	m.threads = threads
 }
-func (m *mockBackend) CompleteChat(ctx context.Context, model string, req ChatRequest) (ChatResponse, error) {
-	return ChatResponse{
+func (m *mockBackend) CompleteChat(ctx context.Context, model string, req protocol.ChatRequest) (protocol.ChatResponse, error) {
+	return protocol.ChatResponse{
 		ID:      "chatcmpl-test",
 		Object:  "chat.completion",
 		Created: time.Now().Unix(),
-		Choices: []Choice{
+		Choices: []protocol.Choice{
 			{
 				Index:        0,
-				Message:      Message{Role: "assistant", Content: "Mock response"},
+				Message:      protocol.ChatMessage{Role: "assistant", Content: "Mock response"},
 				FinishReason: "stop",
 			},
 		},
 	}, nil
 }
-func (m *mockBackend) CompleteCompletions(ctx context.Context, model string, req CompletionRequest) (CompletionResponse, error) {
-	return CompletionResponse{
+func (m *mockBackend) CompleteCompletions(ctx context.Context, model string, req protocol.CompletionRequest) (protocol.CompletionResponse, error) {
+	return protocol.CompletionResponse{
 		ID:      "cmpl-test",
 		Object:  "text_completion",
 		Created: time.Now().Unix(),
-		Choices: []Choice{
+		Choices: []protocol.Choice{
 			{
 				Index:        0,
 				Text:         "Mock completion",
@@ -143,8 +143,8 @@ func (m *mockBackend) GetCircuitState() CircuitState { return CircuitClosed }
 // The chunk channel is unbuffered so that a mid-stream error is emitted
 // only after the handler has consumed the first chunk, making the error
 // path deterministic.
-func (m *mockBackend) StreamChat(ctx context.Context, model string, req ChatRequest) (<-chan ChatChunk, <-chan error) {
-	chatCh := make(chan ChatChunk)
+func (m *mockBackend) StreamChat(ctx context.Context, model string, req protocol.ChatRequest) (<-chan protocol.ChatChunk, <-chan error) {
+	chatCh := make(chan protocol.ChatChunk)
 	errCh := make(chan error, 1)
 	go func() {
 		defer close(chatCh)
@@ -157,15 +157,15 @@ func (m *mockBackend) StreamChat(ctx context.Context, model string, req ChatRequ
 			errCh <- err
 			return
 		}
-		chatCh <- ChatChunk{
+		chatCh <- protocol.ChatChunk{
 			ID:      "chatcmpl-test",
 			Object:  "chat.completion.chunk",
 			Created: time.Now().Unix(),
 			Model:   model,
-			Choices: []Choice{
+			Choices: []protocol.Choice{
 				{
 					Index:        0,
-					Message:      Message{Role: "assistant", Content: "Mock streaming response"},
+					Message:      protocol.ChatMessage{Role: "assistant", Content: "Mock streaming response"},
 					FinishReason: "stop",
 				},
 			},
@@ -178,8 +178,8 @@ func (m *mockBackend) StreamChat(ctx context.Context, model string, req ChatRequ
 }
 
 // StreamCompletions implements the Backend interface.
-func (m *mockBackend) StreamCompletions(ctx context.Context, model string, req CompletionRequest) (<-chan CompletionChunk, <-chan error) {
-	compCh := make(chan CompletionChunk, 100)
+func (m *mockBackend) StreamCompletions(ctx context.Context, model string, req protocol.CompletionRequest) (<-chan protocol.CompletionChunk, <-chan error) {
+	compCh := make(chan protocol.CompletionChunk, 100)
 	errCh := make(chan error, 1)
 	go func() {
 		defer close(compCh)
@@ -192,12 +192,12 @@ func (m *mockBackend) StreamCompletions(ctx context.Context, model string, req C
 			errCh <- err
 			return
 		}
-		compCh <- CompletionChunk{
+		compCh <- protocol.CompletionChunk{
 			ID:      "cmpl-test",
 			Object:  "text_completion",
 			Created: time.Now().Unix(),
 			Model:   model,
-			Choices: []Choice{
+			Choices: []protocol.Choice{
 				{
 					Index:        0,
 					Text:         "Mock streaming completion",
@@ -512,7 +512,7 @@ func TestModelsListHandler(t *testing.T) {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
 			}
 
-			var response ModelsResponse
+			var response protocol.ModelsResponse
 			err := json.NewDecoder(w.Body).Decode(&response)
 			if err != nil {
 				t.Errorf("failed to decode response: %v", err)
@@ -545,9 +545,9 @@ func TestChatCompletionsHandler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			chatReq := ChatRequest{
+			chatReq := protocol.ChatRequest{
 				Model:    "gpt-4",
-				Messages: []ChatMessage{{Role: "user", Content: "Hello"}},
+				Messages: []protocol.ChatMessage{{Role: "user", Content: "Hello"}},
 				Stream:   true,
 			}
 
@@ -578,15 +578,15 @@ func TestChatCompletionsHandler(t *testing.T) {
 }
 
 // TestChatCompletionsHandler_NonStreaming verifies that a non-streaming
-// chat request returns application/json with the full ChatResponse and no
+// chat request returns application/json with the full protocol.ChatResponse and no
 // SSE framing (issue #115).
 func TestChatCompletionsHandler_NonStreaming(t *testing.T) {
 	server := NewServer(testLogger(), "", security.Config{DevMode: true})
 	server.SetBackend(newMockBackend(), "gpt-4")
 
-	chatReq := ChatRequest{
+	chatReq := protocol.ChatRequest{
 		Model:    "gpt-4",
-		Messages: []ChatMessage{{Role: "user", Content: "Hello"}},
+		Messages: []protocol.ChatMessage{{Role: "user", Content: "Hello"}},
 		Stream:   false,
 	}
 
@@ -614,7 +614,7 @@ func TestChatCompletionsHandler_NonStreaming(t *testing.T) {
 		t.Errorf("non-streaming response must not contain SSE framing, got: %s", respBody)
 	}
 
-	var chatResp ChatResponse
+	var chatResp protocol.ChatResponse
 	if err := json.Unmarshal([]byte(respBody), &chatResp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -628,14 +628,14 @@ func TestChatCompletionsHandler_NonStreaming(t *testing.T) {
 
 // TestChatCompletionsHandler_StreamingChunkFormat verifies that a streaming
 // chat request returns OpenAI-compatible SSE frames (issue #115): each
-// "data:" frame is a ChatChunk JSON object, terminated by "data: [DONE]".
+// "data:" frame is a protocol.ChatChunk JSON object, terminated by "data: [DONE]".
 func TestChatCompletionsHandler_StreamingChunkFormat(t *testing.T) {
 	server := NewServer(testLogger(), "", security.Config{DevMode: true})
 	server.SetBackend(newMockBackend(), "gpt-4")
 
-	chatReq := ChatRequest{
+	chatReq := protocol.ChatRequest{
 		Model:    "gpt-4",
-		Messages: []ChatMessage{{Role: "user", Content: "Hello"}},
+		Messages: []protocol.ChatMessage{{Role: "user", Content: "Hello"}},
 		Stream:   true,
 	}
 
@@ -659,7 +659,7 @@ func TestChatCompletionsHandler_StreamingChunkFormat(t *testing.T) {
 		t.Errorf("streaming response must end with 'data: [DONE]', got: %s", respBody)
 	}
 
-	// Every non-[DONE] data frame must decode as a ChatChunk.
+	// Every non-[DONE] data frame must decode as a protocol.ChatChunk.
 	frames := strings.Split(strings.TrimRight(respBody, "\n"), "\n\n")
 	foundChunk := false
 	for _, frame := range frames {
@@ -670,9 +670,9 @@ func TestChatCompletionsHandler_StreamingChunkFormat(t *testing.T) {
 		if payload == "[DONE]" {
 			continue
 		}
-		var chunk ChatChunk
+		var chunk protocol.ChatChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			t.Fatalf("SSE frame is not valid ChatChunk JSON: %v\nframe: %s", err, payload)
+			t.Fatalf("SSE frame is not valid protocol.ChatChunk JSON: %v\nframe: %s", err, payload)
 		}
 		foundChunk = true
 	}
@@ -690,9 +690,9 @@ func TestChatCompletionsHandler_StreamErrorBeforeFirstChunk(t *testing.T) {
 	backend.SetStreamError(errors.New("backend request failed: context deadline exceeded"), true)
 	server.SetBackend(backend, "gpt-4")
 
-	chatReq := ChatRequest{
+	chatReq := protocol.ChatRequest{
 		Model:    "gpt-4",
-		Messages: []ChatMessage{{Role: "user", Content: "Hello"}},
+		Messages: []protocol.ChatMessage{{Role: "user", Content: "Hello"}},
 		Stream:   true,
 	}
 
@@ -735,9 +735,9 @@ func TestChatCompletionsHandler_StreamErrorMidStream(t *testing.T) {
 	backend.SetStreamError(errors.New("backend request failed"), false)
 	server.SetBackend(backend, "gpt-4")
 
-	chatReq := ChatRequest{
+	chatReq := protocol.ChatRequest{
 		Model:    "gpt-4",
-		Messages: []ChatMessage{{Role: "user", Content: "Hello"}},
+		Messages: []protocol.ChatMessage{{Role: "user", Content: "Hello"}},
 		Stream:   true,
 	}
 
@@ -775,7 +775,7 @@ func TestCompletionsHandler_StreamErrorBeforeFirstChunk(t *testing.T) {
 	backend.SetStreamError(errors.New("backend request failed: context deadline exceeded"), true)
 	server.SetBackend(backend, "gpt-4")
 
-	completionReq := CompletionRequest{
+	completionReq := protocol.CompletionRequest{
 		Model:     "gpt-4",
 		Prompt:    "Hello",
 		MaxTokens: 100,
@@ -821,7 +821,7 @@ func TestCompletionsHandler_StreamErrorMidStream(t *testing.T) {
 	backend.SetStreamError(errors.New("backend request failed"), false)
 	server.SetBackend(backend, "gpt-4")
 
-	completionReq := CompletionRequest{
+	completionReq := protocol.CompletionRequest{
 		Model:     "gpt-4",
 		Prompt:    "Hello",
 		MaxTokens: 100,
@@ -854,12 +854,12 @@ func TestCompletionsHandler_StreamErrorMidStream(t *testing.T) {
 }
 
 // completion request returns application/json with the full
-// CompletionResponse and no SSE framing (issue #115).
+// protocol.CompletionResponse and no SSE framing (issue #115).
 func TestCompletionsHandler_NonStreaming(t *testing.T) {
 	server := NewServer(testLogger(), "", security.Config{DevMode: true})
 	server.SetBackend(newMockBackend(), "gpt-4")
 
-	completionReq := CompletionRequest{
+	completionReq := protocol.CompletionRequest{
 		Model:     "gpt-4",
 		Prompt:    "Hello",
 		MaxTokens: 100,
@@ -890,7 +890,7 @@ func TestCompletionsHandler_NonStreaming(t *testing.T) {
 		t.Errorf("non-streaming response must not contain SSE framing, got: %s", respBody)
 	}
 
-	var compResp CompletionResponse
+	var compResp protocol.CompletionResponse
 	if err := json.Unmarshal([]byte(respBody), &compResp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -908,7 +908,7 @@ func TestCompletionsHandler_StreamingChunkFormat(t *testing.T) {
 	server := NewServer(testLogger(), "", security.Config{DevMode: true})
 	server.SetBackend(newMockBackend(), "gpt-4")
 
-	completionReq := CompletionRequest{
+	completionReq := protocol.CompletionRequest{
 		Model:     "gpt-4",
 		Prompt:    "Hello",
 		MaxTokens: 100,
@@ -945,9 +945,9 @@ func TestCompletionsHandler_StreamingChunkFormat(t *testing.T) {
 		if payload == "[DONE]" {
 			continue
 		}
-		var chunk CompletionChunk
+		var chunk protocol.CompletionChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			t.Fatalf("SSE frame is not valid CompletionChunk JSON: %v\nframe: %s", err, payload)
+			t.Fatalf("SSE frame is not valid protocol.CompletionChunk JSON: %v\nframe: %s", err, payload)
 		}
 		foundChunk = true
 	}
@@ -972,7 +972,7 @@ func TestCompletionsHandler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			completionReq := CompletionRequest{
+			completionReq := protocol.CompletionRequest{
 				Model:     "gpt-4",
 				Prompt:    "Hello",
 				MaxTokens: 100,

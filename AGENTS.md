@@ -79,7 +79,37 @@ pkg/discovery                 # mDNS listener (router) / announcer (worker), plu
 pkg/registry                  # in-memory worker registry, heartbeats
 pkg/scheduler                 # capability matching & deterministic scoring
 pkg/router                    # router HTTP server + OpenAI-compatible API
+  server.go                   # Server struct, NewServer, Start, Addr, config setters
+  handlers_chat.go            # chat/completions endpoints, shared inference skeleton
+  handlers_meta.go            # meta endpoints (workers, models, popular, aliases, auto-routing, stats)
+  dispatch.go                 # worker selection, scoring, failover dispatch, model loading
+  middleware.go               # error responses, rate-limit wrapper, inference middleware
+  ws_hub.go                   # WSHub struct, lifecycle, handler registration
+  ws_conn.go                  # wsConnection, reader/writer loops, pending calls
+  ws_relay.go                 # relay dialing, reader/writer, relay call registration
+  ws_stats.go                 # queue stats, snapshots, rejection/timeout recording
+  classifier.go               # auto-routing tier classification
+  aliases.go                  # model alias config and parsing
+  routing_config.go           # auto-routing config DTOs and conversion
+  capability_cache.go         # capability caching for scheduler
+  request_tracker.go          # in-flight request tracking
+  call_counter.go             # model popularity call counting
+  queue_stats.go              # queue statistics
+  worker_client.go            # HTTP/WebSocket client to worker
 pkg/worker                    # worker HTTP server + backend adapters
+  server.go                   # Server struct, lifecycle, model management, health, metrics
+  handlers.go                 # HTTP handlers, shared streamSSE/dispatchNonStreaming helpers
+  openai.go                   # non-streaming OpenAI backend calls, model listing
+  openai_stream.go            # streaming OpenAI backend calls, shared streamOpenAI helper
+  idle.go                     # idle timeout type and lifecycle
+  run.go                      # worker run loop, model refresh, registration
+  ws_client.go                # WebSocket client to router
+  register.go                 # router registration logic
+  backend.go                  # backend interface and implementations
+  breaker.go                  # circuit breaker for backends
+  concurrency_estimator.go    # per-worker concurrency estimation from 429/latency
+  inference_stats.go          # inference throughput and latency tracking
+  model_health.go             # model health monitoring
 pkg/security                  # mTLS, cert generation, API-key middleware
 pkg/capabilities              # GPU/VRAM detection, model parsing
 pkg/platform                  # platform helpers (macOS/Linux)

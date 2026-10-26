@@ -1,0 +1,238 @@
+version: "2"
+
+# golangci-lint configuration for infermesh.
+#
+# Code-quality ceilings (see docs/adr/0004-code-quality-ceilings.md):
+#   - Max 500 lines per production .go file
+#   - Max 20 functions per file
+#   - Max 100 lines per function (funlen)
+#   - Max cyclomatic complexity 15 (gocyclo)
+#   - Max nesting depth 4 (nestif)
+#   - Duplicate-code threshold 100 (dupl)
+#
+# This is the FIRST enforcement gate. It is intentionally configured so that
+# `make lint` stays GREEN on the current codebase: linters.exclusions.rules
+# silence the violations that already exist so CI does not break on first run.
+# Each subsequent phase narrows the exclusion list as the code is refactored
+# (see the phased plan in the research brief). The exclusions are enumerated
+# PER FILE AND PER LINTER (not blanket) so that NEW violations of any other
+# kind — and new occurrences of these same linters in files not listed here —
+# still fail the gate. That is the whole point of a ratchet.
+#
+# Linter version pinned by CI: golangci-lint v2.13.2 (golangci-lint-action@v9).
+
+linters:
+  enable:
+    - funlen        # max function length (100 lines / 50 statements)
+    - gocyclo       # cyclomatic complexity (max 15)
+    - nestif        # nested if depth (max 4)
+    - dupl          # duplicate code detection (threshold 100)
+    - govet         # standard vet checks
+    - errcheck      # unchecked errors
+    - staticcheck   # comprehensive static analysis (gosimple + stylecheck merged in v2)
+    - unused        # unused code detection
+    - revive        # replacement for golint
+
+  settings:
+    funlen:
+      lines: 100
+      statements: 50
+    gocyclo:
+      min-complexity: 15
+    nestif:
+      min-complexity: 4
+    dupl:
+      threshold: 100
+
+  exclusions:
+    # No default presets — every suppression below is explicit and auditable.
+    generated: strict
+
+    rules:
+      # ------------------------------------------------------------------
+      # TEST FILES — deferred to a follow-up pass. Test bodies routinely
+      # exceed the production ceilings (long table-driven cases, inline
+      # mock servers, e2e harness glue). Out of scope for Phase 1-4
+      # ("core packages only"). The ceiling still applies to production
+      # code: any new *_test.go that trips these linters is suppressed
+      # here, but any new PRODUCTION violation of any linter still fails.
+      # ------------------------------------------------------------------
+      - path: '_test\.go'
+        linters:
+          - funlen
+          - gocyclo
+          - nestif
+          - dupl
+          - revive
+
+      # ------------------------------------------------------------------
+      # PRODUCTION FILES — per-file, per-linter exclusions for pre-existing
+      # tech debt. Each entry lists only the linters that this file
+      # currently trips; all other linters still apply.
+      # ------------------------------------------------------------------
+      - path: 'pkg/capabilities/aggregator\.go'
+        linters:
+          - revive
+      - path: 'pkg/capabilities/capabilities\.go'
+        linters:
+          - revive
+      - path: 'pkg/capabilities/engines\.go'
+        linters:
+          - revive
+      - path: 'pkg/discovery/config\.go'
+        linters:
+          - revive
+      - path: 'pkg/discovery/factory\.go'
+        linters:
+          - revive
+      - path: 'pkg/discovery/mdns_announcer\.go'
+        linters:
+          - revive
+      - path: 'pkg/platform/detection\.go'
+        linters:
+          - revive
+      - path: 'pkg/platform/system\.go'
+        linters:
+          - nestif
+      - path: 'pkg/protocol/worker\.go'
+        linters:
+          - revive
+      - path: 'pkg/protocol/ws\.go'
+        linters:
+          - revive
+      - path: 'pkg/registry/config\.go'
+        linters:
+          - revive
+      - path: 'pkg/registry/registry\.go'
+        linters:
+          - revive
+      - path: 'pkg/router/call_counter\.go'
+        linters:
+          - dupl
+          - revive
+      - path: 'pkg/router/request_tracker\.go'
+        linters:
+          - dupl
+      - path: 'pkg/router/worker_client\.go'
+        linters:
+          - revive
+      - path: 'pkg/router/server\.go'
+        linters:
+          - funlen
+          - revive
+      - path: 'pkg/router/handlers_chat\.go'
+        linters:
+          - funlen
+          - gocyclo
+          - nestif
+          - revive
+      - path: 'pkg/router/handlers_meta\.go'
+        linters:
+          - gocyclo
+          - nestif
+      - path: 'pkg/router/dispatch\.go'
+        linters:
+          - funlen
+          - gocyclo
+          - nestif
+      - path: 'pkg/router/ws_hub\.go'
+        linters:
+          - funlen
+          - gocyclo
+          - revive
+      - path: 'pkg/router/ws_conn\.go'
+        linters:
+          - dupl
+          - revive
+      - path: 'pkg/router/ws_relay\.go'
+        linters:
+          - dupl
+          - gocyclo
+          - nestif
+          - revive
+      - path: 'pkg/router/ws_stats\.go'
+        linters:
+          - revive
+      - path: 'pkg/router/classifier\.go'
+        linters:
+          - gocyclo
+          - revive
+      - path: 'pkg/router/aliases\.go'
+        linters:
+          - revive
+      - path: 'pkg/routeraddr/routeraddr\.go'
+        linters:
+          - revive
+      - path: 'pkg/scheduler/scheduler\.go'
+        linters:
+          - dupl
+          - funlen
+          - gocyclo
+          - nestif
+          - revive
+      - path: 'pkg/security/certgen\.go'
+        linters:
+          - revive
+      - path: 'pkg/security/middleware\.go'
+        linters:
+          - revive
+      - path: 'pkg/security/security\.go'
+        linters:
+          - revive
+      - path: 'pkg/worker/backend\.go'
+        linters:
+          - revive
+      - path: 'pkg/worker/breaker\.go'
+        linters:
+          - revive
+      - path: 'pkg/worker/concurrency_estimator\.go'
+        linters:
+          - dupl
+          - funlen
+          - gocyclo
+          - nestif
+          - revive
+      - path: 'pkg/worker/model_health\.go'
+        linters:
+          - revive
+      - path: 'pkg/worker/openai\.go'
+        linters:
+          - dupl
+      - path: 'pkg/worker/register\.go'
+        linters:
+          - revive
+      - path: 'pkg/worker/run\.go'
+        linters:
+          - dupl
+          - funlen
+          - gocyclo
+          - nestif
+          - revive
+      - path: 'pkg/worker/server\.go'
+        linters:
+          - funlen
+          - gocyclo
+          - nestif
+          - revive
+      - path: 'pkg/worker/ws_client\.go'
+        linters:
+          - dupl
+          - gocyclo
+          - revive
+      - path: 'pkg/wsutil/wsutil\.go'
+        linters:
+          - revive
+
+      # ------------------------------------------------------------------
+      # cmd/ — OUT OF SCOPE for this cleanup pass (thin binary entry
+      # points; see research brief "OUT of scope"). Existing violations
+      # are silenced so `make lint` stays green; they are NOT part of the
+      # ratchet and are not narrowed by any phase.
+      # ------------------------------------------------------------------
+      - path: 'cmd/'
+        linters:
+          - funlen
+          - gocyclo
+          - nestif
+          - dupl
+          - revive

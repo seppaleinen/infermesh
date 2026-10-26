@@ -47,7 +47,7 @@ func setupAliasHandler(t *testing.T, workers []protocol.WorkerInfo, aliasCfg *Mo
 	return srv, fc, tr
 }
 
-func makeChatRequest(model string, messages []ChatMessage, maxTokens int, stream bool) (*httptest.ResponseRecorder, *http.Request) {
+func makeChatRequest(model string, messages []protocol.ChatMessage, maxTokens int, stream bool) (*httptest.ResponseRecorder, *http.Request) {
 	body := map[string]interface{}{
 		"model":      model,
 		"messages":   messages,
@@ -69,7 +69,7 @@ func TestAutoRouting_DisabledByDefault(t *testing.T) {
 	srv, _, tr := setupAutoRoutingHandler(t, workers, nil)
 	defer func() { _ = tr.reg.Stop() }()
 
-	w, req := makeChatRequest("auto", []ChatMessage{{Role: "user", Content: "hi"}}, 100, false)
+	w, req := makeChatRequest("auto", []protocol.ChatMessage{{Role: "user", Content: "hi"}}, 100, false)
 	srv.handleChatCompletions(w, req)
 
 	if w.Code != http.StatusServiceUnavailable {
@@ -100,7 +100,7 @@ func TestAutoRouting_SimplePrompt(t *testing.T) {
 		body: []byte(`{"id":"chatcmpl-1","object":"chat.completion","choices":[{"message":{"content":"small"}}]}`),
 	}
 
-	w, req := makeChatRequest("auto", []ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
+	w, req := makeChatRequest("auto", []protocol.ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
 	srv.handleChatCompletions(w, req)
 
 	if w.Code != http.StatusOK {
@@ -137,7 +137,7 @@ func TestAutoRouting_MediumPrompt(t *testing.T) {
 
 	// ~300 token prompt
 	longPrompt := string(make([]byte, 1200))
-	w, req := makeChatRequest("auto", []ChatMessage{{Role: "user", Content: longPrompt}}, 100, false)
+	w, req := makeChatRequest("auto", []protocol.ChatMessage{{Role: "user", Content: longPrompt}}, 100, false)
 	srv.handleChatCompletions(w, req)
 
 	if w.Code != http.StatusOK {
@@ -175,7 +175,7 @@ func TestAutoRouting_ComplexPrompt(t *testing.T) {
 
 	// ~800 token prompt
 	longPrompt := string(make([]byte, 3200))
-	w, req := makeChatRequest("auto", []ChatMessage{{Role: "user", Content: longPrompt}}, 100, false)
+	w, req := makeChatRequest("auto", []protocol.ChatMessage{{Role: "user", Content: longPrompt}}, 100, false)
 	srv.handleChatCompletions(w, req)
 
 	if w.Code != http.StatusOK {
@@ -212,7 +212,7 @@ func TestAutoRouting_ReasoningKeyword(t *testing.T) {
 	}
 
 	// Short prompt with "think" keyword -> TierMedium
-	w, req := makeChatRequest("auto", []ChatMessage{{Role: "user", Content: "Please think about this"}}, 100, false)
+	w, req := makeChatRequest("auto", []protocol.ChatMessage{{Role: "user", Content: "Please think about this"}}, 100, false)
 	srv.handleChatCompletions(w, req)
 
 	if w.Code != http.StatusOK {
@@ -248,7 +248,7 @@ func TestAutoRouting_MaxTokensSignal(t *testing.T) {
 	}
 
 	// Short prompt but large max_tokens -> TierMedium
-	w, req := makeChatRequest("auto", []ChatMessage{{Role: "user", Content: "Hi"}}, 1000, false)
+	w, req := makeChatRequest("auto", []protocol.ChatMessage{{Role: "user", Content: "Hi"}}, 1000, false)
 	srv.handleChatCompletions(w, req)
 
 	if w.Code != http.StatusOK {
@@ -280,7 +280,7 @@ func TestAutoRouting_NoModelForTier(t *testing.T) {
 
 	// Medium prompt -> no model configured for TierMedium
 	longPrompt := string(make([]byte, 1200))
-	w, req := makeChatRequest("auto", []ChatMessage{{Role: "user", Content: longPrompt}}, 100, false)
+	w, req := makeChatRequest("auto", []protocol.ChatMessage{{Role: "user", Content: longPrompt}}, 100, false)
 	srv.handleChatCompletions(w, req)
 
 	if w.Code != http.StatusServiceUnavailable {
@@ -323,7 +323,7 @@ func TestAutoRouting_ModelsListIncludesAuto(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
-	var resp ModelsResponse
+	var resp protocol.ModelsResponse
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("failed to decode: %v", err)
 	}
@@ -368,7 +368,7 @@ func TestAutoRouting_ModelsListExcludesAutoWhenDisabled(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleModelsList(w, req)
 
-	var resp ModelsResponse
+	var resp protocol.ModelsResponse
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("failed to decode: %v", err)
 	}
@@ -448,7 +448,7 @@ func TestAutoRouting_NonAutoModelUnchanged(t *testing.T) {
 		body: []byte(`{"id":"chatcmpl-1","object":"chat.completion","choices":[{"message":{"content":"llama"}}]}`),
 	}
 
-	w, req := makeChatRequest("llama-3-8b", []ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
+	w, req := makeChatRequest("llama-3-8b", []protocol.ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
 	srv.handleChatCompletions(w, req)
 
 	if w.Code != http.StatusOK {
@@ -478,9 +478,9 @@ func TestAutoRouting_StreamingPath(t *testing.T) {
 
 	// Streaming doesn't use mock client's Complete; just verify selectWorker
 	// gets the right model by checking the internal resolve logic.
-	model, err := srv.resolveAutoModelChat(&ChatRequest{
+	model, err := srv.resolveAutoModelChat(&protocol.ChatRequest{
 		Model:     "auto",
-		Messages:  []ChatMessage{{Role: "user", Content: "Hi"}},
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: "Hi"}},
 		Stream:    true,
 		MaxTokens: 100,
 	})
@@ -511,7 +511,7 @@ func TestAutoRouting_CounterRecordsConcreteModel(t *testing.T) {
 		body: []byte(`{"id":"chatcmpl-1","object":"chat.completion","choices":[{"message":{"content":"small"}}]}`),
 	}
 
-	w, req := makeChatRequest("auto", []ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
+	w, req := makeChatRequest("auto", []protocol.ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
 	srv.handleChatCompletions(w, req)
 
 	if w.Code != http.StatusOK {
@@ -549,7 +549,7 @@ func TestAutoRouting_StreamingCounterRecordsConcreteModel(t *testing.T) {
 
 	// For streaming, the mock returns empty stream (channel closed immediately)
 	// but we can still verify the model resolution and counter
-	w, req := makeChatRequest("auto", []ChatMessage{{Role: "user", Content: "Hi"}}, 100, true)
+	w, req := makeChatRequest("auto", []protocol.ChatMessage{{Role: "user", Content: "Hi"}}, 100, true)
 	srv.handleChatCompletions(w, req)
 
 	// Streaming may return 200 with empty SSE or may fail due to mock setup,
@@ -582,7 +582,7 @@ func TestModelAlias_ChatRewritesBeforeSelect(t *testing.T) {
 		body: []byte(`{"id":"chatcmpl-1","object":"chat.completion","choices":[{"message":{"content":"ok"}}]}`),
 	}
 
-	w, req := makeChatRequest("gemma-4-12b", []ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
+	w, req := makeChatRequest("gemma-4-12b", []protocol.ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
 	srv.handleChatCompletions(w, req)
 
 	if w.Code != http.StatusOK {
@@ -630,7 +630,7 @@ func TestModelAlias_StreamingRewrites(t *testing.T) {
 	if model != "google/gemma-4-12b" {
 		t.Errorf("expected canonical, got %s", model)
 	}
-	// Verify resolve works in handler path via ChatRequest
+	// Verify resolve works in handler path via protocol.ChatRequest
 	resolved := srv.resolveAliasModel("gemma-4-12b")
 	if resolved != "google/gemma-4-12b" {
 		t.Errorf("expected resolved canonical, got %s", resolved)
@@ -651,7 +651,7 @@ func TestModelAlias_QuantPinRoutesToQuantWorker(t *testing.T) {
 		body: []byte(`{"id":"chatcmpl-1","object":"chat.completion","choices":[{"message":{"content":"8bit"}}]}`),
 	}
 
-	w, req := makeChatRequest("qwen-coder-7b@8bit", []ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
+	w, req := makeChatRequest("qwen-coder-7b@8bit", []protocol.ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
 	srv.handleChatCompletions(w, req)
 
 	if w.Code != http.StatusOK {
@@ -674,7 +674,7 @@ func TestModelAlias_NoWorkersForCanonical(t *testing.T) {
 	srv, _, tr := setupAliasHandler(t, workers, aliasCfg)
 	defer func() { _ = tr.reg.Stop() }()
 
-	w, req := makeChatRequest("gemma-4-12b", []ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
+	w, req := makeChatRequest("gemma-4-12b", []protocol.ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
 	srv.handleChatCompletions(w, req)
 
 	if w.Code != http.StatusServiceUnavailable {
@@ -698,7 +698,7 @@ func TestModelAlias_NonAliasModelUnchanged(t *testing.T) {
 		body: []byte(`{"id":"chatcmpl-1","object":"chat.completion","choices":[{"message":{"content":"llama"}}]}`),
 	}
 
-	w, req := makeChatRequest("llama-3-8b", []ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
+	w, req := makeChatRequest("llama-3-8b", []protocol.ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
 	srv.handleChatCompletions(w, req)
 
 	if w.Code != http.StatusOK {
@@ -740,7 +740,7 @@ func TestModelAlias_AutoThenAliasChain(t *testing.T) {
 	}
 	defer func() { _ = tr.reg.Stop() }()
 
-	w, req := makeChatRequest("auto", []ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
+	w, req := makeChatRequest("auto", []protocol.ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
 	srv.handleChatCompletions(w, req)
 
 	if w.Code != http.StatusOK {
@@ -764,7 +764,7 @@ func TestModelAlias_CounterRecordsCanonical(t *testing.T) {
 		body: []byte(`{"id":"chatcmpl-1","object":"chat.completion","choices":[{"message":{"content":"ok"}}]}`),
 	}
 
-	w, req := makeChatRequest("gemma-4-12b", []ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
+	w, req := makeChatRequest("gemma-4-12b", []protocol.ChatMessage{{Role: "user", Content: "Hi"}}, 100, false)
 	srv.handleChatCompletions(w, req)
 
 	if w.Code != http.StatusOK {
@@ -804,7 +804,7 @@ func TestModelAlias_ModelsListIncludesAliasKeys(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	var resp ModelsResponse
+	var resp protocol.ModelsResponse
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
@@ -841,7 +841,7 @@ func TestModelAlias_ModelsListExcludesWhenDisabled(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleModelsList(w, req)
 
-	var resp ModelsResponse
+	var resp protocol.ModelsResponse
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
@@ -879,7 +879,7 @@ func TestModelAlias_ModelsList_AliasAndAutoCoexist(t *testing.T) {
 	w := httptest.NewRecorder()
 	srv.handleModelsList(w, req)
 
-	var resp ModelsResponse
+	var resp protocol.ModelsResponse
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
@@ -928,7 +928,7 @@ func TestModelAlias_ModelsListHidesCanonical(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	var resp ModelsResponse
+	var resp protocol.ModelsResponse
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}
@@ -975,7 +975,7 @@ func TestModelAlias_ModelsListKeepsCanonicalWhenNoAlias(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	var resp ModelsResponse
+	var resp protocol.ModelsResponse
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode error: %v", err)
 	}

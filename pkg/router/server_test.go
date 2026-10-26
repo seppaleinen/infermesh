@@ -136,7 +136,7 @@ func TestModelsListHandler(t *testing.T) {
 			}
 
 			if tt.expectModels {
-				var resp ModelsResponse
+				var resp protocol.ModelsResponse
 				if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 					t.Fatalf("failed to decode response: %v", err)
 				}
@@ -175,7 +175,7 @@ func TestModelsListHandlerNoWorkers(t *testing.T) {
 		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
 	}
 
-	var resp ModelsResponse
+	var resp protocol.ModelsResponse
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -208,10 +208,10 @@ func TestChatCompletionsHandlerNoWorkers(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			chatReq := ChatRequest{
+			chatReq := protocol.ChatRequest{
 				Model:  "llama-3-8b",
 				Stream: true,
-				Messages: []ChatMessage{
+				Messages: []protocol.ChatMessage{
 					{Role: "user", Content: "Hello"},
 				},
 			}
@@ -336,7 +336,7 @@ func TestCompletionsHandlerNoWorkers(t *testing.T) {
 	defer func() { _ = tr.reg.Stop() }()
 	server := tr.Server()
 
-	completionReq := CompletionRequest{
+	completionReq := protocol.CompletionRequest{
 		Model:     "llama-3-8b",
 		Prompt:    "Hello, world!",
 		MaxTokens: 100,
@@ -465,7 +465,7 @@ func TestChatCompletionsProxiesToWorker(t *testing.T) {
 		}
 
 		// Verify request format
-		var req ChatRequest
+		var req protocol.ChatRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
@@ -477,15 +477,15 @@ func TestChatCompletionsProxiesToWorker(t *testing.T) {
 
 		// Send SSE chunks
 		for i, msg := range req.Messages {
-			chunk := CompletionChunk{
+			chunk := protocol.CompletionChunk{
 				ID:      "chatcmpl-test-" + string(rune('0'+i)),
 				Object:  "chat.completion.chunk",
 				Created: 1700000000,
 				Model:   req.Model,
-				Choices: []Choice{
+				Choices: []protocol.Choice{
 					{
 						Index: i,
-						Message: Message{
+						Message: protocol.ChatMessage{
 							Role:    "assistant",
 							Content: "Echo: " + msg.Content,
 						},
@@ -538,10 +538,10 @@ func TestChatCompletionsProxiesToWorker(t *testing.T) {
 	// Manually update the cache with capabilities fetched from the mock server
 	_ = server.cache.Update(worker)
 
-	chatReq := ChatRequest{
+	chatReq := protocol.ChatRequest{
 		Model:  "test-model",
 		Stream: true,
-		Messages: []ChatMessage{
+		Messages: []protocol.ChatMessage{
 			{Role: "user", Content: "Hello from OpenAI client"},
 		},
 	}
@@ -609,7 +609,7 @@ func TestCompletionsProxiesToWorker(t *testing.T) {
 			return
 		}
 
-		var req CompletionRequest
+		var req protocol.CompletionRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
@@ -621,12 +621,12 @@ func TestCompletionsProxiesToWorker(t *testing.T) {
 
 		// Send a few chunks
 		for i := 0; i < 3; i++ {
-			chunk := CompletionChunk{
+			chunk := protocol.CompletionChunk{
 				ID:      "cmpl-test-" + string(rune('0'+i)),
 				Object:  "text_completion",
 				Created: 1700000000,
 				Model:   req.Model,
-				Choices: []Choice{
+				Choices: []protocol.Choice{
 					{
 						Index:        i,
 						Text:         "chunk " + string(rune('0'+i)),
@@ -674,7 +674,7 @@ func TestCompletionsProxiesToWorker(t *testing.T) {
 	server.cache.Start(tr.ctx)
 	_ = server.cache.Update(worker)
 
-	completionReq := CompletionRequest{
+	completionReq := protocol.CompletionRequest{
 		Model:     "completion-model",
 		Prompt:    "Once upon a time",
 		MaxTokens: 50,
@@ -739,22 +739,22 @@ func TestChatCompletionsNonStreamingProxiesToWorker(t *testing.T) {
 			return
 		}
 
-		var req ChatRequest
+		var req protocol.ChatRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
 
 		// Non-streaming response
-		chunk := CompletionChunk{
+		chunk := protocol.CompletionChunk{
 			ID:      "chatcmpl-nosteam",
 			Object:  "chat.completion",
 			Created: 1700000000,
 			Model:   req.Model,
-			Choices: []Choice{
+			Choices: []protocol.Choice{
 				{
 					Index: 0,
-					Message: Message{
+					Message: protocol.ChatMessage{
 						Role:    "assistant",
 						Content: "This is a non-streaming response",
 					},
@@ -797,10 +797,10 @@ func TestChatCompletionsNonStreamingProxiesToWorker(t *testing.T) {
 	server.cache.Start(tr.ctx)
 	_ = server.cache.Update(worker)
 
-	chatReq := ChatRequest{
+	chatReq := protocol.ChatRequest{
 		Model:  "nosteam-model",
 		Stream: false,
-		Messages: []ChatMessage{
+		Messages: []protocol.ChatMessage{
 			{Role: "user", Content: "Tell me something"},
 		},
 	}
@@ -1303,9 +1303,9 @@ func TestWorkerUnavailable(t *testing.T) {
 	server.cache.Start(tr.ctx)
 	_ = server.cache.Update(worker)
 
-	chatReq := ChatRequest{
+	chatReq := protocol.ChatRequest{
 		Model: "dead-model",
-		Messages: []ChatMessage{
+		Messages: []protocol.ChatMessage{
 			{Role: "user", Content: "Hello"},
 		},
 		Stream: true,
@@ -1366,9 +1366,9 @@ func TestChatCompletionsRateLimitRejectsAtCap(t *testing.T) {
 	srv.cache.cache[info.ID] = info
 	srv.cache.mu.Unlock()
 
-	chatReq := ChatRequest{
+	chatReq := protocol.ChatRequest{
 		Model: "rl-model", Stream: true,
-		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages: []protocol.ChatMessage{{Role: "user", Content: "hi"}},
 	}
 	body, _ := json.Marshal(chatReq)
 
@@ -1736,10 +1736,10 @@ func TestWorkersListBusyStatusLiveWS(t *testing.T) {
 	w.send(t, rawMsg(t, protocol.MsgRegister, protocol.RegisterPayload{Worker: info}))
 	_ = w.recv(t, 3*time.Second) // welcome
 
-	chatReq := ChatRequest{
+	chatReq := protocol.ChatRequest{
 		Model:    "live-model",
 		Stream:   true,
-		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages: []protocol.ChatMessage{{Role: "user", Content: "hi"}},
 	}
 	body, _ := json.Marshal(chatReq)
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))

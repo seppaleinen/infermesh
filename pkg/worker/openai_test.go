@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -24,12 +25,12 @@ func TestOpenAICompatibleBackendStreamChatIdleTimeoutSlowActive(t *testing.T) {
 
 		// Send 15 chunks every 100ms = 1.5s total
 		for i := 0; i < 15; i++ {
-			chunk := ChatChunk{
+			chunk := protocol.ChatChunk{
 				ID:      "test",
 				Object:  "chat.completion.chunk",
 				Created: time.Now().Unix(),
 				Model:   "test",
-				Choices: []Choice{{Index: 0, Text: "token", FinishReason: ""}},
+				Choices: []protocol.Choice{{Index: 0, Text: "token", FinishReason: ""}},
 			}
 			data, _ := json.Marshal(chunk)
 			_, _ = w.Write([]byte("data: " + string(data) + "\n\n"))
@@ -43,9 +44,9 @@ func TestOpenAICompatibleBackendStreamChatIdleTimeoutSlowActive(t *testing.T) {
 	defer server.Close()
 
 	backend := NewOpenAICompatibleBackend(server.URL, "", 300*time.Millisecond, 0)
-	req := ChatRequest{
+	req := protocol.ChatRequest{
 		Model:       "test",
-		Messages:    []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages:    []protocol.ChatMessage{{Role: "user", Content: "hi"}},
 		MaxTokens:   100,
 		Temperature: 0.7,
 	}
@@ -95,12 +96,12 @@ func TestOpenAICompatibleBackendStreamChatIdleTimeoutSilentMidStream(t *testing.
 		w.Header().Set("Connection", "keep-alive")
 		flusher, _ := w.(http.Flusher)
 
-		chunk := ChatChunk{
+		chunk := protocol.ChatChunk{
 			ID:      "test",
 			Object:  "chat.completion.chunk",
 			Created: time.Now().Unix(),
 			Model:   "test",
-			Choices: []Choice{{Index: 0, Text: "token", FinishReason: ""}},
+			Choices: []protocol.Choice{{Index: 0, Text: "token", FinishReason: ""}},
 		}
 		data, _ := json.Marshal(chunk)
 		_, _ = w.Write([]byte("data: " + string(data) + "\n\n"))
@@ -113,9 +114,9 @@ func TestOpenAICompatibleBackendStreamChatIdleTimeoutSilentMidStream(t *testing.
 	defer server.Close()
 
 	backend := NewOpenAICompatibleBackend(server.URL, "", 300*time.Millisecond, 0)
-	req := ChatRequest{
+	req := protocol.ChatRequest{
 		Model:       "test",
-		Messages:    []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages:    []protocol.ChatMessage{{Role: "user", Content: "hi"}},
 		MaxTokens:   100,
 		Temperature: 0.7,
 	}
@@ -173,9 +174,9 @@ func TestOpenAICompatibleBackendStreamChatIdleTimeoutNeverResponds(t *testing.T)
 	defer server.Close()
 
 	backend := NewOpenAICompatibleBackend(server.URL, "", 200*time.Millisecond, 0)
-	req := ChatRequest{
+	req := protocol.ChatRequest{
 		Model:       "test",
-		Messages:    []ChatMessage{{Role: "user", Content: "hi"}},
+		Messages:    []protocol.ChatMessage{{Role: "user", Content: "hi"}},
 		MaxTokens:   100,
 		Temperature: 0.7,
 	}

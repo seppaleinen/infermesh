@@ -1,15 +1,12 @@
 package worker
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
@@ -130,7 +127,7 @@ func (b *OpenAICompatibleBackend) Name() string {
 }
 
 // LoadModel loads a model into the backend.
-func (b *OpenAICompatibleBackend) LoadModel(path string) (bool, error) {
+func (b *OpenAICompatibleBackend) LoadModel(_ string) (bool, error) {
 	// For OpenAI-compatible backends, model loading is typically
 	// handled by the backend itself. We just verify connectivity.
 	_, err := b.client.Get(b.baseURL + "/v1/models")
@@ -147,13 +144,13 @@ func (b *OpenAICompatibleBackend) UnloadModel() error {
 }
 
 // CompleteChat generates a chat completion via the backend.
-func (b *OpenAICompatibleBackend) CompleteChat(ctx context.Context, model string, req ChatRequest) (ChatResponse, error) {
+func (b *OpenAICompatibleBackend) CompleteChat(ctx context.Context, model string, req protocol.ChatRequest) (protocol.ChatResponse, error) {
 	// Check circuit breaker
 	if !b.circuitBreaker.CanExecute() {
-		return ChatResponse{}, fmt.Errorf("circuit breaker is open for backend %s", b.baseURL)
+		return protocol.ChatResponse{}, fmt.Errorf("circuit breaker is open for backend %s", b.baseURL)
 	}
 
-	var resp ChatResponse
+	var resp protocol.ChatResponse
 	err := retryWithBackoff(ctx, 3, func() error {
 		var err error
 		resp, err = b.completeChatInternal(ctx, model, req)
@@ -167,7 +164,7 @@ func (b *OpenAICompatibleBackend) CompleteChat(ctx context.Context, model string
 	return resp, err
 }
 
-func (b *OpenAICompatibleBackend) completeChatInternal(ctx context.Context, model string, req ChatRequest) (ChatResponse, error) {
+func (b *OpenAICompatibleBackend) completeChatInternal(ctx context.Context, model string, req protocol.ChatRequest) (protocol.ChatResponse, error) {
 	url := b.baseURL + "/v1/chat/completions"
 
 	// Set default max_tokens if not specified. Use backend-configured default,
@@ -181,7 +178,7 @@ func (b *OpenAICompatibleBackend) completeChatInternal(ctx context.Context, mode
 		}
 	}
 
-	// Convert ChatRequest to backend-specific request
+	// Convert protocol.ChatRequest to backend-specific request
 	backendReq := map[string]interface{}{
 		"model":       model,
 		"messages":    req.Messages,
@@ -192,12 +189,12 @@ func (b *OpenAICompatibleBackend) completeChatInternal(ctx context.Context, mode
 
 	jsonBody, err := json.Marshal(backendReq)
 	if err != nil {
-		return ChatResponse{}, fmt.Errorf("failed to marshal request: %w", err)
+		return protocol.ChatResponse{}, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
 	if err != nil {
-		return ChatResponse{}, fmt.Errorf("failed to create request: %w", err)
+		return protocol.ChatResponse{}, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -207,238 +204,27 @@ func (b *OpenAICompatibleBackend) completeChatInternal(ctx context.Context, mode
 
 	resp, err := b.client.Do(httpReq)
 	if err != nil {
-		return ChatResponse{}, fmt.Errorf("backend request failed: %w", err)
+		return protocol.ChatResponse{}, fmt.Errorf("backend request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return ChatResponse{}, &BackendHTTPError{StatusCode: resp.StatusCode, Message: string(body)}
+		return protocol.ChatResponse{}, &BackendHTTPError{StatusCode: resp.StatusCode, Message: string(body)}
 	}
 
-	var chatResp ChatResponse
+	var chatResp protocol.ChatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return ChatResponse{}, fmt.Errorf("failed to decode response: %w", err)
+		return protocol.ChatResponse{}, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	return chatResp, nil
 }
 
-// idleTimeout manages a timer that cancels ctx when no activity occurs for
-// the configured duration. A single goroutine owns the timer exclusively,
-// so resets are race-free: activity sends a duration on the reset channel,
-// and the goroutine stops, drains, and restarts the timer atomically.
-//
-// The timer starts immediately, so the first-byte wait (model loading) is
-// also bounded by the configured duration.
-type idleTimeout struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	timer  *time.Timer
-	done   chan struct{}
-	// resetCh carries fresh durations from activity callers to the watcher
-	// goroutine, which owns the timer exclusively. A single-slot buffer is
-	// sufficient: only the most recent reset matters.
-	resetCh chan time.Duration
-}
-
-func newIdleTimeout(parent context.Context, d time.Duration) *idleTimeout {
-	idleCtx, cancel := context.WithCancel(parent)
-	it := &idleTimeout{
-		ctx:     idleCtx,
-		cancel:  cancel,
-		timer:   time.NewTimer(d),
-		done:    make(chan struct{}),
-		resetCh: make(chan time.Duration, 1),
-	}
-	go it.run()
-	return it
-}
-
-func (it *idleTimeout) run() {
-	defer close(it.done)
-	defer it.timer.Stop()
-	for {
-		select {
-		case <-it.timer.C:
-			it.cancel()
-			return
-		case d := <-it.resetCh:
-			if !it.timer.Stop() {
-				select {
-				case <-it.timer.C:
-				default:
-				}
-			}
-			it.timer.Reset(d)
-		case <-it.ctx.Done():
-			return
-		}
-	}
-}
-
-// reset restarts the idle timer with a fresh duration. Non-blocking: if a
-// reset is already pending the previous one is dropped (the latest duration
-// wins, which is correct — we only care about the most recent activity). If
-// the watcher has already exited (idle timeout fired or parent cancelled)
-// the reset is a no-op.
-func (it *idleTimeout) reset(d time.Duration) {
-	select {
-	case <-it.done:
-		// Watcher exited; nothing to reset.
-	case it.resetCh <- d:
-	default:
-	}
-}
-
-// stop cancels the underlying context and waits for the watcher goroutine
-// to exit. Safe to call exactly once.
-func (it *idleTimeout) stop() {
-	it.cancel()
-	<-it.done
-}
-
-func (b *OpenAICompatibleBackend) StreamChat(ctx context.Context, model string, req ChatRequest) (<-chan ChatChunk, <-chan error) {
-	chatCh := make(chan ChatChunk, 100)
-	errCh := make(chan error, 1)
-
-	go func() {
-		defer close(chatCh)
-		defer close(errCh)
-
-		// Idle timeout: fire when no SSE line arrives for the backend timeout
-		// duration. A slow-but-healthy stream that keeps producing tokens will
-		// never be killed; only prolonged silence triggers the timeout. The
-		// configured timeout is read from the shared client (b.client.Timeout),
-		// which is the value passed to NewOpenAICompatibleBackend and matches
-		// the --backend-timeout flag.
-		idleTimeout := b.client.Timeout
-		if idleTimeout <= 0 {
-			idleTimeout = defaultBackendTimeout
-		}
-		idle := newIdleTimeout(ctx, idleTimeout)
-		defer idle.stop()
-
-		// Set stream to true and build the request
-		req.Stream = true
-		url := b.baseURL + "/v1/chat/completions"
-
-		// Set default max_tokens if not specified. Use backend-configured default,
-		// falling back to 100 for backward compatibility with LM Studio.
-		maxTokens := req.MaxTokens
-		if maxTokens <= 0 {
-			if b.maxTokens > 0 {
-				maxTokens = b.maxTokens
-			} else {
-				maxTokens = 100 // fallback for LM Studio compatibility
-			}
-		}
-
-		// Convert ChatRequest to backend-specific request
-		backendReq := map[string]interface{}{
-			"model":       model,
-			"messages":    req.Messages,
-			"stream":      true,
-			"max_tokens":  maxTokens,
-			"temperature": req.Temperature,
-		}
-
-		jsonBody, err := json.Marshal(backendReq)
-		if err != nil {
-			errCh <- fmt.Errorf("failed to marshal request: %w", err)
-			return
-		}
-
-		httpReq, err := http.NewRequestWithContext(idle.ctx, "POST", url, bytes.NewReader(jsonBody))
-		if err != nil {
-			errCh <- fmt.Errorf("failed to create request: %w", err)
-			return
-		}
-
-		httpReq.Header.Set("Content-Type", "application/json")
-		if b.apiKey != "" {
-			httpReq.Header.Set("Authorization", "Bearer "+b.apiKey)
-		}
-
-		resp, err := b.streamClient.Do(httpReq)
-		if err != nil {
-			// If the request failed because idle.ctx was cancelled (idle
-			// timeout fired before first byte), classify it as a timeout.
-			if idle.ctx.Err() != nil {
-				errCh <- fmt.Errorf("backend stream idle timeout: no response for %v", idleTimeout)
-				return
-			}
-			errCh <- fmt.Errorf("backend request failed: %w", err)
-			return
-		}
-		defer func() { _ = resp.Body.Close() }()
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			errCh <- fmt.Errorf("backend returned %d: %s", resp.StatusCode, string(body))
-			return
-		}
-
-		// Parse SSE stream using bufio.Scanner for proper line reading
-		scanner := bufio.NewScanner(resp.Body)
-		for scanner.Scan() {
-			// Any SSE line (including blank lines between events) counts as
-			// activity: reset the idle timer so a slow-but-healthy stream
-			// is never killed.
-			idle.reset(idleTimeout)
-
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" || line == "\r" {
-				continue
-			}
-
-			// Strip SSE prefix "data: "
-			if strings.HasPrefix(line, "data: ") {
-				dataStr := strings.TrimPrefix(line, "data: ")
-				if dataStr == "[DONE]" {
-					return
-				}
-
-				var chunk ChatChunk
-				if err := json.Unmarshal([]byte(dataStr), &chunk); err != nil {
-					slog.Warn("failed to parse SSE chunk", "error", err)
-					continue
-				}
-
-				select {
-				case chatCh <- chunk:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-
-		if err := scanner.Err(); err != nil {
-			// If the read failed because idle.ctx was cancelled, classify as
-			// an idle timeout.
-			if idle.ctx.Err() != nil {
-				errCh <- fmt.Errorf("backend stream idle timeout: no data for %v", idleTimeout)
-				return
-			}
-			errCh <- fmt.Errorf("failed to read SSE stream: %w", err)
-			return
-		}
-
-		// Send [DONE] marker to indicate stream completion
-		chatCh <- ChatChunk{
-			ID:      "",
-			Object:  "chat.completion.chunk",
-			Created: time.Now().Unix(),
-			Model:   model,
-			Choices: []Choice{},
-		}
-	}()
-
-	return chatCh, errCh
-}
+// StreamChat and StreamCompletions live in openai_stream.go.
 
 // CompleteCompletions generates a completion via the backend.
-func (b *OpenAICompatibleBackend) CompleteCompletions(ctx context.Context, model string, req CompletionRequest) (CompletionResponse, error) {
+func (b *OpenAICompatibleBackend) CompleteCompletions(ctx context.Context, model string, req protocol.CompletionRequest) (protocol.CompletionResponse, error) {
 	url := b.baseURL + "/v1/completions"
 
 	// Set default max_tokens if not specified. Use backend-configured default,
@@ -462,12 +248,12 @@ func (b *OpenAICompatibleBackend) CompleteCompletions(ctx context.Context, model
 
 	jsonBody, err := json.Marshal(backendReq)
 	if err != nil {
-		return CompletionResponse{}, fmt.Errorf("failed to marshal request: %w", err)
+		return protocol.CompletionResponse{}, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
 	if err != nil {
-		return CompletionResponse{}, fmt.Errorf("failed to create request: %w", err)
+		return protocol.CompletionResponse{}, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -477,160 +263,21 @@ func (b *OpenAICompatibleBackend) CompleteCompletions(ctx context.Context, model
 
 	resp, err := b.client.Do(httpReq)
 	if err != nil {
-		return CompletionResponse{}, fmt.Errorf("backend request failed: %w", err)
+		return protocol.CompletionResponse{}, fmt.Errorf("backend request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return CompletionResponse{}, &BackendHTTPError{StatusCode: resp.StatusCode, Message: string(body)}
+		return protocol.CompletionResponse{}, &BackendHTTPError{StatusCode: resp.StatusCode, Message: string(body)}
 	}
 
-	var compResp CompletionResponse
+	var compResp protocol.CompletionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&compResp); err != nil {
-		return CompletionResponse{}, fmt.Errorf("failed to decode response: %w", err)
+		return protocol.CompletionResponse{}, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	return compResp, nil
-}
-
-// StreamCompletions generates a completion via the backend with streaming support.
-func (b *OpenAICompatibleBackend) StreamCompletions(ctx context.Context, model string, req CompletionRequest) (<-chan CompletionChunk, <-chan error) {
-	compCh := make(chan CompletionChunk, 100)
-	errCh := make(chan error, 1)
-
-	go func() {
-		defer close(compCh)
-		defer close(errCh)
-
-		// Idle timeout: fire when no SSE line arrives for the backend timeout
-		// duration. A slow-but-healthy stream that keeps producing tokens will
-		// never be killed; only prolonged silence triggers the timeout. The
-		// configured timeout is read from the shared client (b.client.Timeout),
-		// which is the value passed to NewOpenAICompatibleBackend and matches
-		// the --backend-timeout flag.
-		idleTimeout := b.client.Timeout
-		if idleTimeout <= 0 {
-			idleTimeout = defaultBackendTimeout
-		}
-		idle := newIdleTimeout(ctx, idleTimeout)
-		defer idle.stop()
-
-		// Set stream to true and build the request
-		req.Stream = true
-		url := b.baseURL + "/v1/completions"
-
-		// Set default max_tokens if not specified. Use backend-configured default,
-		// falling back to 100 for backward compatibility.
-		maxTokens := req.MaxTokens
-		if maxTokens <= 0 {
-			if b.maxTokens > 0 {
-				maxTokens = b.maxTokens
-			} else {
-				maxTokens = 100 // fallback for backward compatibility
-			}
-		}
-
-		backendReq := map[string]interface{}{
-			"model":       model,
-			"prompt":      req.Prompt,
-			"stream":      true,
-			"max_tokens":  maxTokens,
-			"temperature": req.Temperature,
-		}
-
-		jsonBody, err := json.Marshal(backendReq)
-		if err != nil {
-			errCh <- fmt.Errorf("failed to marshal request: %w", err)
-			return
-		}
-
-		httpReq, err := http.NewRequestWithContext(idle.ctx, "POST", url, bytes.NewReader(jsonBody))
-		if err != nil {
-			errCh <- fmt.Errorf("failed to create request: %w", err)
-			return
-		}
-
-		httpReq.Header.Set("Content-Type", "application/json")
-		if b.apiKey != "" {
-			httpReq.Header.Set("Authorization", "Bearer "+b.apiKey)
-		}
-
-		resp, err := b.streamClient.Do(httpReq)
-		if err != nil {
-			// If the request failed because idle.ctx was cancelled (idle
-			// timeout fired before first byte), classify it as a timeout.
-			if idle.ctx.Err() != nil {
-				errCh <- fmt.Errorf("backend stream idle timeout: no response for %v", idleTimeout)
-				return
-			}
-			errCh <- fmt.Errorf("backend request failed: %w", err)
-			return
-		}
-		defer func() { _ = resp.Body.Close() }()
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			errCh <- fmt.Errorf("backend returned %d: %s", resp.StatusCode, string(body))
-			return
-		}
-
-		// Parse SSE stream using bufio.Scanner for proper line reading
-		scanner := bufio.NewScanner(resp.Body)
-		for scanner.Scan() {
-			// Any SSE line (including blank lines between events) counts as
-			// activity: reset the idle timer so a slow-but-healthy stream
-			// is never killed.
-			idle.reset(idleTimeout)
-
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" || line == "\r" {
-				continue
-			}
-
-			// Strip SSE prefix "data: "
-			if strings.HasPrefix(line, "data: ") {
-				dataStr := strings.TrimPrefix(line, "data: ")
-				if dataStr == "[DONE]" {
-					return
-				}
-
-				var chunk CompletionChunk
-				if err := json.Unmarshal([]byte(dataStr), &chunk); err != nil {
-					slog.Warn("failed to parse SSE chunk", "error", err)
-					continue
-				}
-
-				select {
-				case compCh <- chunk:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-
-		if err := scanner.Err(); err != nil {
-			// If the read failed because idle.ctx was cancelled, classify as
-			// an idle timeout.
-			if idle.ctx.Err() != nil {
-				errCh <- fmt.Errorf("backend stream idle timeout: no data for %v", idleTimeout)
-				return
-			}
-			errCh <- fmt.Errorf("failed to read SSE stream: %w", err)
-			return
-		}
-
-		// Send [DONE] marker to indicate stream completion
-		compCh <- CompletionChunk{
-			ID:      "",
-			Object:  "text_completion",
-			Created: time.Now().Unix(),
-			Model:   model,
-			Choices: []Choice{},
-		}
-	}()
-
-	return compCh, errCh
 }
 
 // ListModels returns available models from the backend.
