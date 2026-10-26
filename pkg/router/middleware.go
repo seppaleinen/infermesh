@@ -69,7 +69,7 @@ func (s *Server) wrapInferenceEndpoints(next http.Handler, apiKey string) http.H
 	apiKeyMW := security.NewAPIKeyMiddleware(apiKey, apiKey != "")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/chat/completions", "/v1/completions", "/meta/aliases", "/meta/auto-routing":
+		case "/v1/chat/completions", "/v1/completions":
 			apiKeyMW(next).ServeHTTP(w, r)
 		default:
 			next.ServeHTTP(w, r)

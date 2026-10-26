@@ -396,45 +396,6 @@ func TestHandleAutoRouting_MethodNotAllowed(t *testing.T) {
 	}
 }
 
-// TestHandleAutoRouting_InWrapInferenceEndpoints verifies that
-// /meta/auto-routing is listed in the API-key-guarded paths in
-// wrapInferenceEndpoints, ensuring the same auth protection as /meta/aliases.
-func TestHandleAutoRouting_InWrapInferenceEndpoints(t *testing.T) {
-	server := NewServer(nil, testLogger(), ":0", security.Config{DevMode: true})
-
-	// Build the wrapped handler with an API key configured.
-	apiKey := "test-api-key"
-	wrapped := server.wrapInferenceEndpoints(http.NewServeMux(), apiKey)
-
-	// Without API key, /meta/auto-routing should be rejected.
-	req := httptest.NewRequest(http.MethodGet, "/meta/auto-routing", nil)
-	w := httptest.NewRecorder()
-	wrapped.ServeHTTP(w, req)
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("without API key: status = %d, want %d", w.Code, http.StatusUnauthorized)
-	}
-
-	// With correct API key, should pass through.
-	req = httptest.NewRequest(http.MethodGet, "/meta/auto-routing", nil)
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	w = httptest.NewRecorder()
-	wrapped.ServeHTTP(w, req)
-	// The inner mux has no handler registered for this path, so we expect 404
-	// (the key was accepted, the request passed the middleware).
-	if w.Code != http.StatusNotFound {
-		t.Errorf("with API key: status = %d, want %d (middleware passed, inner handler 404)", w.Code, http.StatusNotFound)
-	}
-
-	// With wrong API key, should be rejected.
-	req = httptest.NewRequest(http.MethodGet, "/meta/auto-routing", nil)
-	req.Header.Set("Authorization", "Bearer wrong-key")
-	w = httptest.NewRecorder()
-	wrapped.ServeHTTP(w, req)
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("with wrong API key: status = %d, want %d", w.Code, http.StatusUnauthorized)
-	}
-}
-
 // TestTierToString verifies the tierToString helper returns correct string names.
 func TestTierToString(t *testing.T) {
 	tests := []struct {

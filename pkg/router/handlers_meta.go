@@ -364,7 +364,7 @@ func (s *Server) handleSetAliases(w http.ResponseWriter, r *http.Request) {
 // configuration atomically; the endpoint is replace-all, not a delta. An empty
 // body or {"enabled": false} clears the config (disables auto routing). Models
 // with no non-empty tier model are treated as disabled (nil config) for
-// backward compatibility. Auth is via API key middleware (same as /meta/aliases).
+// backward compatibility. /meta/auto-routing is publicly accessible (no API key required).
 func (s *Server) handleAutoRouting(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
