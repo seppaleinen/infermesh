@@ -109,7 +109,6 @@ func TestServerScorerWeights_Race(t *testing.T) {
 					float64((i+4)%10)/10.0,
 					0, // loadedModelBonus
 					0, // coldLoadPenalty
-					0, // throughput weight (disabled)
 					5+(i%10),
 				)
 				time.Sleep(time.Millisecond)
