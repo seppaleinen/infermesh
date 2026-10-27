@@ -2,9 +2,13 @@ import { defineConfig } from '@playwright/test';
 
 // Playwright config for InferMesh E2E tests against the Wails server build.
 //
-// The webServer command starts two processes:
-//   1. The mock router (app/mock/mockRouter.js) on MOCK_ROUTER_PORT
-//   2. The Wails server build (go build -tags server,production) on WAILS_SERVER_PORT
+// The webServer command launches a single launcher script (app/scripts/launch-e2e.sh)
+// which:
+//   1. Writes a temp settings.yml from MOCK_ROUTER_PORT / WAILS_SERVER_PORT env vars
+//   2. Starts app/mock/mockRouter.js on MOCK_ROUTER_PORT and waits for TCP ready
+//   3. Pre-builds (or reuses) the Wails server binary with go build -tags server,production
+//   4. Starts the server, waits for HTTP 200 on http://127.0.0.1:$WAILS_SERVER_PORT/
+//   5. Cleans up the mock router on exit
 //
 // Both ports are read from env so parallel CI runs and local development
 // never collide (see #181). Defaults are 8081 (mock) and 8080 (server).
@@ -26,13 +30,9 @@ export default defineConfig({
     trace: 'on-first-retry',
   },
   webServer: {
-    command:
-      `mkdir -p $PLAYWRIGHT_TEMP_HOME/.config/infermesh && ` +
-      `echo "router_addr: http://127.0.0.1:${process.env.MOCK_ROUTER_PORT || 8081}" > ` +
-      `$PLAYWRIGHT_TEMP_HOME/.config/infermesh/settings.yml && ` +
-      `node mock/mockRouter.js & ` +
-      `go build -tags server,production -o $PLAYWRIGHT_TEMP_HOME/infermesh-server . && ` +
-      `exec $PLAYWRIGHT_TEMP_HOME/infermesh-server`,
+    // The launcher script does its own health probes (TCP for mock, HTTP for server).
+    // Playwright's url polling serves as a backstop.
+    command: 'bash scripts/launch-e2e.sh',
     url: `http://127.0.0.1:${process.env.WAILS_SERVER_PORT || 8080}`,
     reuseExistingServer: !process.env.CI,
     timeout: 180_000,
@@ -43,6 +43,8 @@ export default defineConfig({
       GOCACHE: `${process.env.HOME}/.cache/go-build`,
       WAILS_SERVER_PORT: String(process.env.WAILS_SERVER_PORT || 8080),
       MOCK_ROUTER_PORT: String(process.env.MOCK_ROUTER_PORT || 8081),
+      // Allow pre-built binary override for CI speed
+      // INFERMESH_SERVER_BIN: <path>,
     },
   },
   projects: [
