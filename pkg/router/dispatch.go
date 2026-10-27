@@ -336,7 +336,13 @@ func (s *Server) dispatchWithFailover(ctx context.Context, model string, body []
 		if s.tracker != nil {
 			reqID = s.tracker.Begin(model, worker.ID, worker.Hostname, kind)
 		}
-		resp, err := s.clientFactory(worker).Complete(ctx, worker, kind, body)
+		var client WorkerClient
+	if s.clientFactory != nil {
+		client = s.clientFactory(worker)
+	} else {
+		client = s.clientFor(worker)
+	}
+	resp, err := client.Complete(ctx, worker, kind, body)
 		if s.tracker != nil && reqID != "" {
 			if err == nil {
 				s.tracker.Finish(reqID, StatusDone)
@@ -569,6 +575,9 @@ func (s *Server) toSchedulerWorker(w protocol.WorkerInfo, load WorkerQueueStats,
 // active WebSocket connection for WS workers and falling back to HTTP
 // dial-back for legacy (mDNS/dev-HTTP) workers.
 func (s *Server) clientFor(worker protocol.WorkerInfo) WorkerClient {
+	if s.clientFactory != nil {
+		return s.clientFactory(worker)
+	}
 	if worker.Transport == protocol.TransportWS {
 		if c := s.hub.Client(worker.ID); c != nil {
 			return c

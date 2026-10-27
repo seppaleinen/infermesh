@@ -34,7 +34,7 @@ to support testing", and a simple web server showing the same information
 
 ### Negative
 
-- Wails is pinned to `v3.0.0-beta.24`, so release risk is real.
+- Wails is pinned to `v3.0.0-beta.34`, so release risk is real.
 - Build complexity: requires `wails3` + Node + CGO. macOS verified; Linux
   needs webkit2gtk build deps; Windows desktop is deferred.
 - Larger binary and slower iteration than a static webapp.

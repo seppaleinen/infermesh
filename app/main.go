@@ -49,7 +49,7 @@ type closeToTrayWindow interface {
 // instead of destroying it (issue #49).
 //
 // RegisterHook runs synchronously BEFORE the default WindowClosing listeners
-// (wails v3.0.0-beta.24 webview_window.go:366 marks the window destroyed +
+// (wails v3.0.0-beta.34 webview_window.go:366 marks the window destroyed +
 // closes it; after that Show() is a no-op and the tray can never re-show the
 // window). Calling e.Cancel() prevents those listeners from running, so the
 // window survives hidden and tray Open / click-to-toggle keep working.
@@ -249,7 +249,7 @@ func main() {
 	// AttachWindow gives the tray its Wails smart defaults: left-click toggles
 	// the window (including the Windows close-state dance) and right-click
 	// opens the menu — no explicit OnClick handler needed. Verified against
-	// wails v3.0.0-beta.24 pkg/application/systemtray.go (applySmartDefaults).
+	// wails v3.0.0-beta.34 pkg/application/systemtray.go (applySmartDefaults).
 	tray.AttachWindow(win)
 
 	menu := application.NewMenu()

@@ -505,17 +505,17 @@ The bundles can be copied to `~/Applications` or `/Applications` and run from th
 
 ## Desktop App (Wails v3)
 
-A native manager window + system tray for the InferMesh pool: Dashboard (pool status), Settings (router/worker configuration, secrets to the OS keyring), process supervisor (start/stop the router and worker), autostart (login item), and tray controls (Open/Hide/Quit, live status). It lives in its own Go module (`app/`) on **Wails v3.0.0-beta.24** — issues #40–#45 merged (Dashboard, Settings, supervisor, autostart, tray).
+A native manager window + system tray for the InferMesh pool: Dashboard (pool status), Settings (router/worker configuration, secrets to the OS keyring), process supervisor (start/stop the router and worker), autostart (login item), and tray controls (Open/Hide/Quit, live status). It lives in its own Go module (`app/`) on **Wails v3.0.0-beta.34** — issues #40–#45 merged (Dashboard, Settings, supervisor, autostart, tray).
 
 ### Prerequisites
 
 - Go 1.27+
 - Node + npm (the first build installs frontend deps)
 - CGO toolchain (native GUI libs; macOS = Xcode CLT)
-- `wails3` pinned to `v3.0.0-beta.24`:
+- `wails3` pinned to `v3.0.0-beta.34`:
 
 ```bash
-go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.24
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.34
 ```
 
 The `make` targets below prepend `$(go env GOPATH)/bin` to `PATH` automatically, so a `go install`-ed `wails3` resolves even when it is not on your shell `PATH`.

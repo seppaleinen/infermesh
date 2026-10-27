@@ -165,7 +165,8 @@ func NewServer(reg registry.Registry, log *slog.Logger, addr string, cfg securit
 	srv.retryBudget = 60 * time.Second
 	srv.proxyTimeout = 120 * time.Second
 	srv.modelLoadTimeout = 120 * time.Second
-	srv.clientFactory = srv.clientFor
+	// clientFactory defaults to nil; clientFor() provides the default
+	// implementation when it is nil.  Tests may override it to inject a mock.
 	return srv
 }
 
