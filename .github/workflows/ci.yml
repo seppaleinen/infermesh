@@ -144,6 +144,12 @@ jobs:
         working-directory: app/frontend
         run: npx playwright install --with-deps chromium
 
+      - name: Run mock fixtures contract test
+        working-directory: app
+        run: go test ./mock -run TestMockFixturesContract -v
+        env:
+          GOFLAGS: -mod=mod
+
       - name: Run E2E tests
         working-directory: app/frontend
         run: npx playwright test
