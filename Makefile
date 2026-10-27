@@ -39,7 +39,7 @@ APP_NAME    ?= InferMesh
 APP_BIN_DIR ?= bin/app
 
 # Pinned by app/go.mod and AGENTS.md — keep in sync.
-WAILS3_VERSION ?= v3.0.0-beta.24
+WAILS3_VERSION ?= v3.0.0
 
 # Ensure wails3 is on PATH; auto-install the pinned version when missing.
 # Fails ONLY when the install itself fails (no network, go install error).
