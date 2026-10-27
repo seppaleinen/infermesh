@@ -1,0 +1,14 @@
+{"models": [
+  {"model": "llama-3-8b", "worker_count": 2, "loaded_worker_count": 1, "call_count": 42},
+  {"model": "gpt-oss-20b", "worker_count": 1, "loaded_worker_count": 1, "call_count": 18},
+  {"model": "phi-4-mini", "worker_count": 3, "loaded_worker_count": 0, "call_count": 99},
+  {"model": "qwen-2.5-7b", "worker_count": 1, "loaded_worker_count": 1, "call_count": 31},
+  {"model": "mistral-7b", "worker_count": 2, "loaded_worker_count": 2, "call_count": 27},
+  {"model": "gemma-2-9b", "worker_count": 1, "loaded_worker_count": 0, "call_count": 14},
+  {"model": "deepseek-v3", "worker_count": 1, "loaded_worker_count": 1, "call_count": 53},
+  {"model": "yi-34b", "worker_count": 2, "loaded_worker_count": 1, "call_count": 22},
+  {"model": "command-r-plus", "worker_count": 1, "loaded_worker_count": 0, "call_count": 11},
+  {"model": "jamba-1.5-large", "worker_count": 1, "loaded_worker_count": 1, "call_count": 8},
+  {"model": "granite-3.1-8b", "worker_count": 2, "loaded_worker_count": 2, "call_count": 40},
+  {"model": "stablelm-2-1.6b", "worker_count": 1, "loaded_worker_count": 0, "call_count": 5}
+]}

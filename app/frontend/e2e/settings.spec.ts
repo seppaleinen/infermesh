@@ -1,11 +1,13 @@
 import { test, expect } from '@playwright/test';
+import { openSettings } from './helpers';
 
 test('settings view opens and form loads', async ({ page }) => {
   await page.goto('/');
-  await page.waitForTimeout(2000);
+  await openSettings(page);
 
-  await page.click('text=Settings');
-  await expect(page.locator('text=Settings')).toBeVisible();
-  // The settings form should have router URL field
-  await expect(page.locator('input, [data-testid="router-url"]')).toBeVisible();
+  // The form must render its Connection section fields.
+  await expect(page.locator('#router_addr')).toBeVisible();
+  await expect(page.locator('#worker_backend')).toBeVisible();
+  await expect(page.locator('#worker_model_path')).toBeVisible();
+  await expect(page.locator('#worker_port')).toBeVisible();
 });

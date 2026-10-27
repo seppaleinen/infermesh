@@ -1,19 +1,26 @@
 import { test, expect } from '@playwright/test';
+import {
+  waitForWorkerCount,
+  waitForWorkerHostname,
+  expandWorker,
+  waitForDashboardReady,
+  sel,
+} from './helpers';
 
 test('mock workers render in right panel', async ({ page }) => {
   await page.goto('/');
-  await page.waitForTimeout(3000);
+  await waitForDashboardReady(page);
 
-  const workersPanel = page.locator('aside').filter({ hasText: 'Workers' });
-  await expect(workersPanel).toBeVisible();
+  // The mock fixture ships two workers; the right panel must list both.
+  await waitForWorkerCount(page, 2);
 
-  const workerList = page.locator('.worker-hostname-list');
-  await expect(workerList).toHaveCount(1);
+  // Click the first worker to expand its detail card.
+  await expandWorker(page, 'alpha');
 
-  // Click first worker to expand
-  const firstWorker = page.locator('.worker-hostname-btn').first();
-  await firstWorker.click();
-
-  await expect(page.locator('text=alpha')).toBeVisible();
-  await expect(page.locator('text=llama-3-8b')).toBeVisible();
+  // The expanded card must show the hostname and its loaded model. Scope to
+  // the worker card: the hostname also appears in the requests table, and the
+  // model name also appears in the popular-models table.
+  const card = page.locator('css=.worker-card').filter({ hasText: 'alpha' }).first();
+  await expect(card).toBeVisible();
+  await expect(card.locator('.model-chip', { hasText: 'llama-3-8b' })).toBeVisible();
 });
