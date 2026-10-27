@@ -13,7 +13,7 @@ import (
 	"golang.org/x/net/websocket"
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
-	"github.com/seppaleinen/infermesh/pkg/wsutil"
+	"github.com/seppaleinen/infermesh/internal/wsutil"
 )
 
 // errConnClosed is delivered to in-flight calls when their connection dies.

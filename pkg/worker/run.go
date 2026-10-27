@@ -18,9 +18,9 @@ import (
 	"github.com/seppaleinen/infermesh/pkg/capabilities"
 	"github.com/seppaleinen/infermesh/pkg/discovery"
 	"github.com/seppaleinen/infermesh/pkg/protocol"
-	"github.com/seppaleinen/infermesh/pkg/routeraddr"
+	"github.com/seppaleinen/infermesh/internal/routeraddr"
 	"github.com/seppaleinen/infermesh/pkg/security"
-	"github.com/seppaleinen/infermesh/pkg/wsutil"
+	"github.com/seppaleinen/infermesh/internal/wsutil"
 )
 
 // ErrMissingModelPath is returned when a worker is configured without a model
@@ -69,6 +69,11 @@ type RunConfig struct {
 	// Ollama, vLLM) surface without a restart. 0 uses the default (10s).
 	// The user is expected to raise this to 5min once the pool is stable.
 	ModelRefreshInterval time.Duration
+	// InferenceWindow is the rolling window for per-model inference
+	// throughput stats (tokens/sec) advertised in /capabilities so the
+	// router's scheduler can rank workers by speed. Values <= 0 fall back
+	// to DefaultInferenceWindow (10 minutes).
+	InferenceWindow time.Duration
 	// AllowedModels is a comma-separated whitelist of models this worker is
 	// WILLING to serve. When non-empty the router only schedules requests for
 	// models in this list on this worker. Empty means "serve all".
@@ -94,7 +99,7 @@ type RunConfig struct {
 	BackendTimeout time.Duration
 	// Threads is the llama-cpp thread count (default 4). Other backends
 	// ignore it (issue #139).
- Threads int
+	Threads int
 }
 
 // Handle represents a running worker: HTTP server, registration loop (or
@@ -192,6 +197,10 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 	// Create worker HTTP server
 	addr := ":" + strconv.Itoa(cfg.Port)
 	srv := NewServer(log, addr, secCfg)
+
+	// Configure the inference-stats rolling window before Start (startup-only
+	// setter; values <= 0 fall back to DefaultInferenceWindow).
+	srv.SetInferenceWindow(cfg.InferenceWindow)
 
 	// Set up backend adapter based on --backend flag
 	backendImpl, err := NewBackendFromName(cfg.Backend, cfg.ModelPath, cfg.BackendURL, cfg.BackendTimeout, cfg.MaxTokens, cfg.Threads)

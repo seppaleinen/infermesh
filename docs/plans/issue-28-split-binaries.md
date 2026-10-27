@@ -66,7 +66,7 @@ cmd/infermesh/     # DELETED (no shim, no launcher)
 - `pkg/router/server.go` — unchanged (hub, relay hub, server logic)
 - `pkg/worker/run.go` — unchanged (`RunConfig`, `RunWorker`)
 - `pkg/worker/server.go`, `pkg/worker/backend_integration.go`, `pkg/worker/register.go` — unchanged
-- `pkg/protocol/ws.go`, `pkg/router/ws_hub.go`, `pkg/router/worker_client.go`, `pkg/worker/ws_client.go`, `pkg/wsutil` — unchanged
+- `pkg/protocol/ws.go`, `pkg/router/ws_hub.go`, `pkg/router/worker_client.go`, `pkg/worker/ws_client.go`, `internal/wsutil` — unchanged
 
 ---
 
@@ -122,7 +122,7 @@ build-static:
 ## 4. Test plan
 
 ### Unit tests (existing, no change)
-- `pkg/worker`, `pkg/router`, `pkg/discovery`, `pkg/registry`, `pkg/scheduler`, `pkg/security`, `pkg/protocol`, `pkg/wsutil`, `pkg/capabilities` — all pass.
+- `pkg/worker`, `pkg/router`, `pkg/discovery`, `pkg/registry`, `pkg/scheduler`, `pkg/security`, `pkg/protocol`, `internal/wsutil`, `pkg/capabilities` — all pass.
 
 ### E2E tests (updated)
 1. **`tests/e2e/router_worker_test.go`** (renamed from `combined_test.go`): start `infermesh-router` + `infermesh-worker` as separate processes; verify `/v1/workers` lists the worker, `/v1/models` responds, SIGTERM on both exits cleanly.

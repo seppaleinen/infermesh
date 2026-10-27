@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/seppaleinen/infermesh/pkg/routeraddr"
+	"github.com/seppaleinen/infermesh/internal/routeraddr"
 )
 
 // default binary names — match the Makefile output layout

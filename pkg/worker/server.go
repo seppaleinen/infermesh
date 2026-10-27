@@ -70,14 +70,14 @@ func NewServer(log *slog.Logger, addr string, cfg security.Config) *Server {
 	agg := capabilities.NewAggregator(capabilities.Defaults(), log)
 	tracker := NewModelHealthTracker(cfg.EnableHealthChecks)
 	return &Server{
-		log:           log,
-		addr:          addr,
-		models:        []protocol.ModelInfo{},
-		chatHistory:   []protocol.ChatRequest{},
-		capabilities:  agg,
-		config:        cfg,
-		backend:       nil,
-		healthTracker: tracker,
+		log:            log,
+		addr:           addr,
+		models:         []protocol.ModelInfo{},
+		chatHistory:    []protocol.ChatRequest{},
+		capabilities:   agg,
+		config:         cfg,
+		backend:        nil,
+		healthTracker:  tracker,
 		inferenceStats: NewInferenceTracker(0),
 	}
 }
@@ -164,6 +164,14 @@ func (s *Server) SetModelFilters(allowed, excluded []string) {
 func (s *Server) ApplyModelFilters(caps *protocol.Capabilities) {
 	caps.AllowedModels = s.allowedModels
 	caps.ExcludedModels = s.excludedModels
+}
+
+// SetInferenceWindow replaces the inference-stats tracker with one using the
+// given rolling window. Startup-only: call before Start, matching the other
+// config setters. A value <= 0 falls back to DefaultInferenceWindow (10 min)
+// via NewInferenceTracker.
+func (s *Server) SetInferenceWindow(d time.Duration) {
+	s.inferenceStats = NewInferenceTracker(d)
 }
 
 // recordInference records a completed inference call for the given

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
-	"github.com/seppaleinen/infermesh/pkg/wsutil"
+	"github.com/seppaleinen/infermesh/internal/wsutil"
 )
 
 // TestWSHubMaxInFlightEnforcesCap tests that addPending enforces the per-worker

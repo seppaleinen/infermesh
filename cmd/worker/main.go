@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/seppaleinen/infermesh/pkg/routeraddr"
+	"github.com/seppaleinen/infermesh/internal/routeraddr"
 	"github.com/seppaleinen/infermesh/pkg/worker"
 )
 
@@ -38,7 +38,11 @@ type WorkerFlags struct {
 	// ModelRefreshInterval is the cadence for re-querying the backend's
 	// model catalogue (0 uses the default 10s).
 	ModelRefreshInterval time.Duration
-	APIKey               string
+	// InferenceWindow is the rolling window for per-model inference
+	// throughput stats (tokens/sec) reported in /capabilities. Default 6h;
+	// values <= 0 fall back to the built-in 10-minute window.
+	InferenceWindow time.Duration
+	APIKey          string
 	// BackendTimeout is the HTTP client timeout for backend requests
 	// (default 30s). Inference calls that exceed this duration are
 	// aborted by the worker's HTTP client to the backend.
@@ -48,7 +52,7 @@ type WorkerFlags struct {
 	MaxTokens int
 	// Threads is the llama-cpp thread count (default 4). Other backends
 	// ignore it (issue #139).
- Threads int
+	Threads int
 	// RelayAPIKey is the key presented to the router during relay registration.
 	// Distinct from APIKey: the router's --api-key gates client inference
 	// requests, while the relay registration key gates which workers the router
@@ -89,6 +93,10 @@ func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	fs.StringVar(&f.AllowedModels, "allowed-models", "", "comma-separated list of models this worker is WILLING to serve (whitelist); empty = all")
 	fs.StringVar(&f.ExcludedModels, "excluded-models", "", "comma-separated list of models this worker is NOT WILLING to serve (blacklist); applies only when --allowed-models is empty")
 	fs.DurationVar(&f.ModelRefreshInterval, "model-refresh-interval", 0, "cadence for re-querying the backend's model catalogue; 0 uses the default 10s")
+	// InferenceWindow: tokens/sec is a slow-moving machine characteristic —
+	// a long window smooths bursty usage while still adapting within a work
+	// session. Values <= 0 fall back to the built-in 10-minute window.
+	fs.DurationVar(&f.InferenceWindow, "inference-window", 6*time.Hour, "rolling window for per-model inference throughput stats (tokens/sec) reported in /capabilities; default 6h. tokens/sec is a slow-moving machine characteristic — 6h smooths bursty usage while adapting within a work session. Values <= 0 fall back to the built-in 10-minute window.")
 	fs.StringVar(&f.APIKey, "api-key", "", "API key for authenticating inference requests (dev and prod mode)")
 	// Idle timeout for streaming backends: abort if no SSE line arrives for this
 	// long. The timer resets on every line received, so active streaming is
@@ -196,6 +204,7 @@ func runWorker(args []string) int {
 		AllowedModels:        f.AllowedModels,
 		ExcludedModels:       f.ExcludedModels,
 		ModelRefreshInterval: f.ModelRefreshInterval,
+		InferenceWindow:      f.InferenceWindow,
 		APIKey:               f.APIKey,
 		BackendTimeout:       f.BackendTimeout,
 		Threads:              f.Threads,

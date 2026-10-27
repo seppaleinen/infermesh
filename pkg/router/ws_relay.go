@@ -11,7 +11,7 @@ import (
 	"golang.org/x/net/websocket"
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
-	"github.com/seppaleinen/infermesh/pkg/wsutil"
+	"github.com/seppaleinen/infermesh/internal/wsutil"
 )
 
 // errRelayDisconnected is returned when a relay worker request cannot be

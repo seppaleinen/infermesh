@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
-	"github.com/seppaleinen/infermesh/pkg/registry"
+	"github.com/seppaleinen/infermesh/internal/registry"
 	"github.com/seppaleinen/infermesh/pkg/scheduler"
 	"github.com/seppaleinen/infermesh/pkg/security"
 	"log/slog"
@@ -379,6 +379,12 @@ func (s *Server) SetScorerWeights(quantMatch, vramFree, gpuUtil, queueDepth, lat
 	}
 	if latency > 0 {
 		w.Latency = latency
+	}
+	if loadedModelBonus > 0 {
+		w.LoadedModelBonus = loadedModelBonus
+	}
+	if coldLoadPenalty > 0 {
+		w.ColdLoadPenalty = coldLoadPenalty
 	}
 	if maxQueueDepth > 0 {
 		w.MaxQueueDepth = maxQueueDepth

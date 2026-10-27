@@ -14,7 +14,7 @@ import (
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/pkg/router"
-	"github.com/seppaleinen/infermesh/pkg/routeraddr"
+	"github.com/seppaleinen/infermesh/internal/routeraddr"
 )
 
 // defaultRouterURL is the compile-time fallback base URL for the router.

@@ -106,6 +106,12 @@ linters:
       - path: 'pkg/registry/registry\.go'
         linters:
           - revive
+      - path: 'internal/registry/config\.go'
+        linters:
+          - revive
+      - path: 'internal/registry/registry\.go'
+        linters:
+          - revive
       - path: 'pkg/router/call_counter\.go'
         linters:
           - dupl
@@ -161,6 +167,9 @@ linters:
         linters:
           - revive
       - path: 'pkg/routeraddr/routeraddr\.go'
+        linters:
+          - revive
+      - path: 'internal/routeraddr/routeraddr\.go'
         linters:
           - revive
       - path: 'pkg/scheduler/scheduler\.go'
@@ -220,6 +229,9 @@ linters:
           - gocyclo
           - revive
       - path: 'pkg/wsutil/wsutil\.go'
+        linters:
+          - revive
+      - path: 'internal/wsutil/wsutil\.go'
         linters:
           - revive
 

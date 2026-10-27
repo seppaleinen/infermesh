@@ -71,7 +71,7 @@ Fail-fast validation (exit 2, clear message):
 - Shared logic moves into `pkg/worker/`:
   - `run.go` (new): `Handle` (worker runtime: server + register loop + cancel), `RunWorker(ctx, cfg)`, `NewBackendFromName(backend, modelPath)` (from `createBackend` in `cmd/worker/main.go`), `RouterBaseFromListenAddr(addr string) (string, error)`, `LocalIP()`, `Hostname()` (moved from cmd/worker helpers).
   - capabilities print: `PrintCapabilities(io.Writer)` — from `capabilitiesCmd()` in `cmd/worker/capabilities.go`.
-- Unchanged: `pkg/router/server.go`, `pkg/registry`, `pkg/discovery`, `pkg/scheduler`, `pkg/security`, `pkg/protocol`, `pkg/capabilities`, `pkg/platform`; `pkg/worker/server.go` and `pkg/worker/register.go` keep their signatures; `pkg/worker/backend_integration.go` keeps its constructors.
+- Unchanged: `pkg/router/server.go`, `internal/registry`, `pkg/discovery`, `pkg/scheduler`, `pkg/security`, `pkg/protocol`, `pkg/capabilities`, `pkg/platform`; `pkg/worker/server.go` and `pkg/worker/register.go` keep their signatures; `pkg/worker/backend_integration.go` keeps its constructors.
 - Test placement: unit tests live inside `pkg/worker` and `cmd/infermesh` (per repo convention: unit tests inside the package, table-driven).
 
 ## 4. Build and release

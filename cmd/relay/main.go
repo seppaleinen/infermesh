@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
-	"github.com/seppaleinen/infermesh/pkg/wsutil"
+	"github.com/seppaleinen/infermesh/internal/wsutil"
 	"golang.org/x/net/websocket"
 )
 

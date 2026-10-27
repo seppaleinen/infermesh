@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
-	"github.com/seppaleinen/infermesh/pkg/registry"
+	"github.com/seppaleinen/infermesh/internal/registry"
 	"github.com/seppaleinen/infermesh/pkg/security"
 	"testing"
 )

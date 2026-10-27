@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
-	"github.com/seppaleinen/infermesh/pkg/registry"
-	"github.com/seppaleinen/infermesh/pkg/wsutil"
+	"github.com/seppaleinen/infermesh/internal/registry"
+	"github.com/seppaleinen/infermesh/internal/wsutil"
 	"golang.org/x/net/websocket"
 )
 

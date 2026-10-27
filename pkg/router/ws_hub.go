@@ -12,8 +12,8 @@ import (
 	"golang.org/x/net/websocket"
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
-	"github.com/seppaleinen/infermesh/pkg/registry"
-	"github.com/seppaleinen/infermesh/pkg/wsutil"
+	"github.com/seppaleinen/infermesh/internal/registry"
+	"github.com/seppaleinen/infermesh/internal/wsutil"
 )
 
 // errRateLimited is returned when a worker is at its MaxInFlight cap. It is

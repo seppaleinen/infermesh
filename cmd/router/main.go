@@ -15,25 +15,25 @@ import (
 	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/discovery"
-	"github.com/seppaleinen/infermesh/pkg/registry"
+	"github.com/seppaleinen/infermesh/internal/registry"
 	"github.com/seppaleinen/infermesh/pkg/router"
-	"github.com/seppaleinen/infermesh/pkg/routeraddr"
+	"github.com/seppaleinen/infermesh/internal/routeraddr"
 	"github.com/seppaleinen/infermesh/pkg/security"
 )
 
 // RouterFlags holds the parsed flags for the router binary.
 type RouterFlags struct {
-	DevMode        bool
-	ProdMode       bool
-	MTLSCert       string
-	MTLSKey        string
-	CertDir        string
-	APIKey         string
-	TrustedCNs     string
-	Addr           string
-	RelayURL       string
-	MaxInFlight    int
-	MaxConnections int
+	DevMode           bool
+	ProdMode          bool
+	MTLSCert          string
+	MTLSKey           string
+	CertDir           string
+	APIKey            string
+	TrustedCNs        string
+	Addr              string
+	RelayURL          string
+	MaxInFlight       int
+	MaxConnections    int
 	WorkerMaxInFlight string
 
 	// Retry/failover settings for non-streaming requests.
@@ -47,14 +47,14 @@ type RouterFlags struct {
 	ModelLoadTimeout time.Duration
 
 	// Weighted scorer settings. Zero values keep the built-in defaults (no-op).
-	ScorerQuantMatch      float64
-	ScorerVRAMFree        float64
-	ScorerGPUUtil         float64
-	ScorerQueueDepth      float64
-	ScorerLatency         float64
-	ScorerMaxQueueDepth   int
-	ScorerLoadedBonus     float64
-	ScorerColdLoadPenalty float64
+	ScorerQuantMatch       float64
+	ScorerVRAMFree         float64
+	ScorerGPUUtil          float64
+	ScorerQueueDepth       float64
+	ScorerLatency          float64
+	ScorerMaxQueueDepth    int
+	ScorerLoadedBonus      float64
+	ScorerColdLoadPenalty  float64
 	ScorerThroughputWeight float64
 
 	// Auto routing: model="auto" alias maps prompt complexity to tiered
@@ -187,9 +187,9 @@ func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
 	fs.Float64Var(&f.ScorerQueueDepth, "scorer-queue-depth", 0, "weight for queue depth in weighted scoring (0 = keep default of 0.10)")
 	fs.Float64Var(&f.ScorerLatency, "scorer-latency", 0, "weight for latency in weighted scoring (0 = keep default of 0.10)")
 	fs.IntVar(&f.ScorerMaxQueueDepth, "scorer-max-queue-depth", 0, "queue depth treated as fully loaded when normalizing queue depth score (0 = keep default of 10)")
-	fs.Float64Var(&f.ScorerLoadedBonus, "scorer-loaded-bonus", 0, "bonus weight for workers with model already loaded in VRAM (0 = keep default, unloaded models rejected)")
-	fs.Float64Var(&f.ScorerColdLoadPenalty, "scorer-cold-load-penalty", 0, "penalty weight for cold-loading models (unloaded workers), compounded by busy ratio (0 = no penalty)")
-	fs.Float64Var(&f.ScorerThroughputWeight, "scorer-throughput-weight", 0, "weight for the worker's advertised tokens/sec in weighted scoring (0 = disabled, throughput not used in ranking)")
+	fs.Float64Var(&f.ScorerLoadedBonus, "scorer-loaded-bonus", 0.15, "bonus weight for workers with model already loaded in VRAM (default 0.15; 0 disables, unloaded models rejected)")
+	fs.Float64Var(&f.ScorerColdLoadPenalty, "scorer-cold-load-penalty", 0.10, "penalty weight for cold-loading models (unloaded workers), compounded by busy ratio (default 0.10; 0 disables)")
+	fs.Float64Var(&f.ScorerThroughputWeight, "scorer-throughput-weight", 0.10, "weight for the worker's advertised tokens/sec in weighted scoring (default 0.10; 0 disables)")
 
 	// Auto routing: model="auto" alias. Empty tier models disable the alias.
 	fs.StringVar(&f.AutoTierSimple, "auto-tier-simple", "", "model name to route simple prompts to when model=\"auto\" (empty = alias disabled)")

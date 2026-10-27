@@ -2,7 +2,7 @@
 
 > **Dev Team Lead** → **Architect** → **Contract**
 >
-> This contract defines the interfaces, data structures, and integration points for the pluggable mDNS service discovery system. It is consumed by `pkg/protocol`, `pkg/discovery`, and `pkg/registry` packages.
+> This contract defines the interfaces, data structures, and integration points for the pluggable mDNS service discovery system. It is consumed by `pkg/protocol`, `pkg/discovery`, and `internal/registry` packages.
 
 ## 1. Overview
 
@@ -550,11 +550,11 @@ func NewListener(backend BackendType, cfg Config, log *slog.Logger) (Listener, e
 
 ---
 
-## 4. Registry Package (`pkg/registry/`)
+## 4. Registry Package (`internal/registry/`)
 
 ### 4.1 Interface
 
-`pkg/registry/registry.go`
+`internal/registry/registry.go`
 
 ```go
 package registry
@@ -613,7 +613,7 @@ type Registry interface {
 
 ### 4.2 Configuration
 
-`pkg/registry/config.go`
+`internal/registry/config.go`
 
 ```go
 package registry
@@ -652,7 +652,7 @@ func (c Config) Validate() error {
 
 ### 4.3 In-Memory Implementation
 
-`pkg/registry/memory.go`
+`internal/registry/memory.go`
 
 ```go
 package registry
@@ -898,7 +898,7 @@ func (r *memoryRegistry) Stop() error {
 ```
 cmd/infermesh/router.go           (router subcommand of the unified binary)
   → pkg/router/server.go          (HTTP server, OpenAI API)
-    → pkg/registry.New()          (in-memory worker registry)
+    → internal/registry.New()          (in-memory worker registry)
     → pkg/discovery.NewListener() (mDNS listener)
     → registry.HandleEvent()      (called for each discovery event)
     → registry.Subscribe()        (router reacts to worker add/remove)
