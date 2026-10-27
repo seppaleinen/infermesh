@@ -14,11 +14,18 @@ import (
 	"github.com/seppaleinen/infermesh/pkg/scheduler"
 )
 
-// buildCandidates builds the list of candidate workers that have the
-// requested model loaded, attempting auto-load when no loaded candidate
-// is found. The returned slice is deterministically ordered by worker ID
-// (lowest ID first) and is safe to use outside the cache lock.
-// Caller must hold no lock; the function acquires the cache RLock internally.
+// buildCandidates builds the list of candidate workers for the requested
+// model, attempting auto-load when no loaded candidate is found. The
+// returned slice is deterministically ordered by worker ID (lowest ID first)
+// and is safe to use outside the cache lock. Caller must hold no lock; the
+// function acquires the cache RLock internally.
+//
+// When the loaded-model bonus or cold-load penalty scorer weight is enabled
+// (issue #176), workers that advertise the model but have it NOT loaded are
+// included as candidates alongside the loaded ones, so the scorer can rank
+// loaded vs. unloaded workers using the bonus/penalty spread instead of
+// silently discarding the unloaded advertisers. When both weights are 0
+// (backward compatible), only loaded workers are candidates.
 func (s *Server) buildCandidates(model string) []protocol.WorkerInfo {
 	if s.cache == nil {
 		return nil
@@ -26,23 +33,28 @@ func (s *Server) buildCandidates(model string) []protocol.WorkerInfo {
 	s.cache.mu.RLock()
 	defer s.cache.mu.RUnlock()
 
+	includeUnloaded := s.scorerWeightsEnabled()
+
 	var candidates []protocol.WorkerInfo
+	added := make(map[string]struct{})
+
+	// 1. Collect loaded workers.
 	for _, worker := range s.cache.cache {
 		for _, m := range worker.Capabilities.Models {
 			if m.Name == model && m.Loaded {
 				candidates = append(candidates, worker)
+				added[worker.ID] = struct{}{}
 				break
 			}
 		}
 	}
 
+	// 2. Auto-load path: when no loaded candidates, try to load on advertisers.
 	if len(candidates) == 0 {
-		// Try to auto-load the model on any worker that knows about it.
-		// The cache only refreshes on the next heartbeat, so a re-fetch would
-		// see the same stale state and recurse forever; instead we build a
-		// local deep copy of the freshly loaded worker without mutating the
-		// (read-locked) cache.
 		for _, worker := range s.cache.cache {
+			if _, seen := added[worker.ID]; seen {
+				continue
+			}
 			for _, m := range worker.Capabilities.Models {
 				if m.Name == model {
 					if s.loadModelOnWorker(worker, model) {
@@ -55,8 +67,25 @@ func (s *Server) buildCandidates(model string) []protocol.WorkerInfo {
 							}
 						}
 						candidates = append(candidates, loaded)
+						added[loaded.ID] = struct{}{}
 						break
 					}
+				}
+			}
+		}
+	}
+
+	// 3. When weights enabled, also include unloaded advertisers.
+	if includeUnloaded {
+		for _, worker := range s.cache.cache {
+			if _, seen := added[worker.ID]; seen {
+				continue
+			}
+			for _, m := range worker.Capabilities.Models {
+				if m.Name == model {
+					candidates = append(candidates, worker)
+					added[worker.ID] = struct{}{}
+					break
 				}
 			}
 		}
@@ -66,7 +95,6 @@ func (s *Server) buildCandidates(model string) []protocol.WorkerInfo {
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID < candidates[j].ID })
 	return candidates
 }
-
 // selectWorkerExcluding selects a worker for the given model, excluding any
 // workers whose IDs are in the provided set. This is used by the failover
 // loop to avoid retrying the same worker. The exclusion set is respected

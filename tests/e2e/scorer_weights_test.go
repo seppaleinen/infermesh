@@ -297,3 +297,106 @@ func mustJSON(v any) string {
 	}
 	return string(b)
 }
+
+// TestScorerUnloadedFallbackE2E verifies that when no loaded worker is
+// available, the router selects an unloaded advertiser when scorer weights
+// are enabled (issue #176). The test registers only an unloaded worker via
+// dev/register and verifies the router routes to it.
+//
+// Phase 1 has built-in defaults (bonus=0.15, penalty=0.10), so this test
+// exercises the "unloaded worker can be chosen when no loaded worker is
+// available" requirement without needing explicit CLI flags.
+func TestScorerUnloadedFallbackE2E(t *testing.T) {
+	routerBin := "../../bin/infermesh-router"
+	if _, err := os.Stat(routerBin); err != nil {
+		t.Skipf("skipping e2e: binary %s not found (run `make build` first): %v", routerBin, err)
+	}
+
+	const (
+		routerPort = 18123
+	)
+	routerBase := fmt.Sprintf("http://127.0.0.1:%d", routerPort)
+
+	var routerStderr bytes.Buffer
+	router := exec.Command(routerBin, "--dev-mode", "--addr", fmt.Sprintf("127.0.0.1:%d", routerPort))
+	router.Stderr = &routerStderr
+	if err := router.Start(); err != nil {
+		t.Fatalf("starting router process: %v", err)
+	}
+
+	defer func() {
+		_ = router.Process.Kill()
+		_, _ = router.Process.Wait()
+	}()
+
+	// Wait for router to be ready
+	waitForRouterReady(t, routerBase, 10*time.Second)
+
+	// Register only an unloaded worker (no loaded workers in the pool)
+	mock := startMarkerBackend(t, "test-model", "served-by-unloaded")
+	mockPort, err := portOf(mock.URL)
+	if err != nil {
+		t.Fatalf("parsing mock URL %q: %v", mock.URL, err)
+	}
+
+	unloadedWorker := protocol.WorkerInfo{
+		ID:       "unloaded-worker",
+		Hostname: "fake-host",
+		IP:       "127.0.0.1",
+		Port:     mockPort,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{{Name: "test-model", Size: 4660000000, Loaded: false}},
+		},
+	}
+	bBody, err := json.Marshal(unloadedWorker)
+	if err != nil {
+		t.Fatalf("marshalling worker registration: %v", err)
+	}
+	resp, err := http.Post(routerBase+"/v1/dev/register", "application/json", bytes.NewReader(bBody))
+	if err != nil {
+		t.Fatalf("registering worker: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("registering worker: unexpected status %d (router stderr: %s)",
+			resp.StatusCode, routerStderr.String())
+	}
+
+	// Wait for worker to be visible
+	waitForWorker(t, routerBase, mockPort, 15*time.Second)
+
+	// Verify the worker is registered as unloaded
+	body := waitForWorker(t, routerBase, mockPort, 15*time.Second)
+	var sawUnloaded bool
+	for _, w := range body.Workers {
+		if id, _ := w["id"].(string); id == "unloaded-worker" {
+			sawUnloaded = true
+			loadedModels := loadedModelNames(w)
+			if contains(loadedModels, "test-model") {
+				t.Fatalf("worker must advertise test-model as NOT loaded")
+			}
+		}
+	}
+	if !sawUnloaded {
+		t.Fatalf("expected unloaded worker in /v1/workers")
+	}
+
+	// Make a request — it should route to the unloaded worker (since it's the only candidate)
+	client := &http.Client{Timeout: 30 * time.Second}
+	reqBody := `{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":false}`
+	resp, err = client.Post(routerBase+"/v1/chat/completions", "application/json", strings.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("POST /v1/chat/completions: %v", err)
+	}
+	buf := new(bytes.Buffer)
+	_, _ = buf.ReadFrom(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d (body: %s)", resp.StatusCode, buf.String())
+	}
+	if !strings.Contains(buf.String(), "served-by-unloaded") {
+		t.Errorf("response not served by unloaded worker (body: %s)", buf.String())
+	}
+}

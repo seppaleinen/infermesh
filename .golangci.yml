@@ -212,11 +212,9 @@ linters:
           - revive
       - path: 'pkg/worker/run\.go'
         linters:
-          - dupl
           - funlen
           - gocyclo
           - nestif
-          - revive
       - path: 'pkg/worker/server\.go'
         linters:
           - funlen

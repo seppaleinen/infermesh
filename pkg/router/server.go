@@ -405,6 +405,16 @@ func (s *Server) ScorerWeights() schedulerWeights {
 	return s.scorerWeights
 }
 
+// scorerWeightsEnabled reports whether the loaded-model bonus or cold-load
+// penalty is active. When either is > 0, the scorer accepts unloaded workers
+// and ranks them with the bonus/penalty spread. When both are 0 (default),
+// the scorer rejects unloaded workers (backward compatible).
+func (s *Server) scorerWeightsEnabled() bool {
+	s.scorerWeightsMu.RLock()
+	defer s.scorerWeightsMu.RUnlock()
+	return s.scorerWeights.LoadedModelBonus > 0 || s.scorerWeights.ColdLoadPenalty > 0
+}
+
 // SetScorerThroughputWeight sets the weight for the worker's advertised
 // tokens/sec in the weighted scoring formula (issue #134). A value <= 0
 // keeps the current value, which defaults to 0.0 (throughput disabled,
