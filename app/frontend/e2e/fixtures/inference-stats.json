@@ -1,0 +1,1 @@
+{"workers": [{"worker_id": "w-1", "model": "llama-3-8b", "tokens_per_second": 45.2, "avg_ttft_ms": 342, "avg_prompt_tokens": 128, "avg_completion_tokens": 256, "samples": 42}]}

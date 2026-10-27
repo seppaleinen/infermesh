@@ -1,89 +1,50 @@
 // Simple Node HTTP server that mimics InferMesh router endpoints for E2E tests.
-// Serves canned JSON responses matching pkg/router types.
+// Serves canned JSON from app/frontend/e2e/fixtures/*.json, which mirror the
+// pkg/router response types (see #183). The fixtures are the single source of
+// truth: edit them, not this file, to change test data.
 
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 
-// Fixture data matching RouterClient expectations
+// Allow overriding the port via env (see #181). Defaults to 8081.
+const port = Number(process.env.MOCK_ROUTER_PORT) || 8081;
+
+// Optional per-request delay (ms) for the workers endpoint, read from a file
+// so tests can deterministically observe the loading state. The file lives in
+// the same config dir as settings.yml; absent or invalid => 0 delay.
+const delayFile = path.join(
+  process.env.PLAYWRIGHT_TEMP_HOME || '/tmp/infermesh-test-home',
+  '.config', 'infermesh', 'delay_ms'
+);
+
+function readDelayMs() {
+  try {
+    const n = parseInt(fs.readFileSync(delayFile, 'utf8').trim(), 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+const fixturesDir = path.join(__dirname, '..', 'frontend', 'e2e', 'fixtures');
+
+function loadFixture(name) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(fixturesDir, name), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
 const fixtures = {
-  workers: {
-    workers: [
-      {
-        id: 'w-1',
-        hostname: 'alpha',
-        ip: '10.0.0.2',
-        port: 8081,
-        status: 'available',
-        version: 'v1.0.0',
-        loaded_models: ['llama-3-8b'],
-        last_seen: new Date().toISOString(),
-        in_flight: 0,
-        max_in_flight: 5,
-      },
-      {
-        id: 'w-2',
-        ip: '10.0.0.3',
-        port: 8082,
-        status: 'busy',
-        version: 'v1.0.0',
-        loaded_models: [],
-        last_seen: new Date().toISOString(),
-        in_flight: 3,
-        max_in_flight: 5,
-      },
-    ],
-  },
-  popularModels: {
-    models: [
-      { model: 'llama-3-8b', worker_count: 2, loaded_worker_count: 1, call_count: 42 },
-      { model: 'gpt-oss-20b', worker_count: 1, loaded_worker_count: 1, call_count: 18 },
-      { model: 'phi-4-mini', worker_count: 3, loaded_worker_count: 0, call_count: 99 },
-    ],
-  },
-  inflightRequests: {
-    requests: [
-      {
-        request_id: 'req-1',
-        model: 'llama-3-8b',
-        worker_id: 'w-1',
-        worker_host: 'alpha',
-        kind: 'chat',
-        started_at: new Date(Date.now() - 5000).toISOString(),
-        status: 'inflight',
-      },
-      {
-        request_id: 'req-2',
-        model: 'gpt-oss-20b',
-        worker_id: 'w-2',
-        worker_host: 'beta',
-        kind: 'completion',
-        started_at: new Date(Date.now() - 2000).toISOString(),
-        finished_at: new Date().toISOString(),
-        status: 'success',
-        duration_ms: 1200,
-      },
-    ],
-  },
-  inferenceStats: {
-    workers: [
-      {
-        worker_id: 'w-1',
-        model: 'llama-3-8b',
-        tokens_per_second: 45.2,
-        avg_ttft_ms: 342,
-        avg_prompt_tokens: 128,
-        avg_completion_tokens: 256,
-        samples: 42,
-      },
-    ],
-  },
-  aliases: { aliases: { 'gpt-4': 'llama-3-8b' } },
-  autoRouting: {
-    enabled: true,
-    use_four_tier: true,
-    models: { simple: 'small-model', medium: 'medium-model' },
-    simple_max_tokens: 150,
-    medium_max_tokens: 500,
-  },
+  workers: loadFixture('workers.json'),
+  popularModels: loadFixture('models.json'),
+  inflightRequests: loadFixture('requests.json'),
+  inferenceStats: loadFixture('inference-stats.json'),
+  aliases: loadFixture('aliases.json'),
+  autoRouting: loadFixture('auto-routing.json'),
+  connections: loadFixture('connections.json'),
 };
 
 function sendJSON(res, data) {
@@ -91,10 +52,14 @@ function sendJSON(res, data) {
   res.end(JSON.stringify(data));
 }
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
 
+  // The workers endpoint honors a file-based delay so a spec can deterministically
+  // hold the first poll in flight and observe the loading card (no client sleeps).
   if (url.pathname === '/v1/workers') {
+    const ms = readDelayMs();
+    if (ms > 0) await new Promise((r) => setTimeout(r, ms));
     return sendJSON(res, fixtures.workers);
   }
   if (url.pathname === '/meta/models/popular') {
@@ -113,13 +78,21 @@ const server = http.createServer((req, res) => {
     return sendJSON(res, fixtures.autoRouting);
   }
   if (url.pathname === '/meta/connections/count') {
-    return sendJSON(res, { connections: 3 });
+    return sendJSON(res, fixtures.connections);
   }
 
   res.statusCode = 404;
   sendJSON(res, { error: 'not found' });
 });
 
-server.listen(8081, '127.0.0.1', () => {
-  console.log('Mock router listening on http://127.0.0.1:8081');
+server.listen(port, '127.0.0.1', () => {
+  console.log(`Mock router listening on http://127.0.0.1:${port}`);
+});
+
+// Fail loudly if the port is taken (e.g. a real InferMesh worker): otherwise
+// tests would silently run against the wrong backend and pass/fail for
+// reasons unrelated to the app under test.
+server.on('error', (err) => {
+  console.error(`Mock router failed to start on 127.0.0.1:${port}: ${err.message}`);
+  process.exit(1);
 });
