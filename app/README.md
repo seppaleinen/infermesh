@@ -4,7 +4,7 @@ Native manager window + system tray for the InferMesh inference pool: a
 Dashboard of pool status, Settings for the router/worker (secrets go to the OS
 keyring), a process supervisor that starts/stops the headless `router` and
 `worker` binaries, autostart (login item), and a tray with Open/Hide/Quit and
-live status. Built with [Wails v3](https://v3.wails.io/) (`v3.0.0-beta.34`).
+live status. Built with [Wails v3](https://v3.wails.io/) (`v3.0.0`).
 
 This is a **separate Go module** (`replace github.com/seppaleinen/infermesh => ../`
 in `app/go.mod`) — root `go test` / `make lint` do not descend into it.
@@ -23,7 +23,7 @@ in `app/go.mod`) — root `go test` / `make lint` do not descend into it.
 
 ## Commands
 
-Run from this directory with the `wails3` CLI (pinned `v3.0.0-beta.34`):
+Run from this directory with the `wails3` CLI (pinned `v3.0.0`):
 
 ```bash
 wails3 task build            # production host-OS binary -> bin/app
@@ -112,8 +112,8 @@ CI runs E2E tests on `ubuntu-latest` in parallel with app-frontend.
 - Go 1.27+
 - Node + npm (first build installs frontend deps)
 - CGO toolchain (Xcode CLT on macOS)
-- `wails3` at `v3.0.0-beta.34`:
+- `wails3` at `v3.0.0`:
 
 ```bash
-go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.34
+go install github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0
 ```

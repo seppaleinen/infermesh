@@ -201,7 +201,6 @@ test-app-smoke: build-app
 # E2E Playwright tests against Wails server build. Requires Node + Playwright.
 test-app-e2e:
 	$(require-wails3)
-	cd app && wails3 task build-server
 	cd app/frontend && npx playwright test
 
 # Unit tests (method-level, table-driven)
