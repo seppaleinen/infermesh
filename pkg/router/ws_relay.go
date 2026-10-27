@@ -69,26 +69,7 @@ func (h *WSHub) registerRelayCall(id string, respCh chan protocol.Message, errCh
 		hub:      h,
 		workerID: workerID,
 	}
-	pc.handle = func(msg protocol.Message) {
-		switch msg.Type {
-		case protocol.MsgInferenceResponse:
-			select {
-			case pc.respCh <- msg:
-			case <-pc.doneCh:
-			}
-			pc.completeCall()
-		case protocol.MsgModelLoadResponse:
-			select {
-			case pc.respCh <- msg:
-			case <-pc.doneCh:
-			}
-			pc.completeCall()
-		case protocol.MsgError:
-			var p protocol.ErrorPayload
-			_ = msg.DecodePayload(&p)
-			pc.fail(errors.New(p.Message))
-		}
-	}
+	pc.handle = callPendingHandler(pc)
 	h.relayPendingMu.Lock()
 	defer h.relayPendingMu.Unlock()
 	if h.relayInFlight[workerID] >= int64(h.maxInFlightFor(workerID)) {
@@ -114,47 +95,7 @@ func (h *WSHub) registerRelayStream(id string, chunkCh chan StreamEvent, errCh c
 		hub:      h,
 		workerID: workerID,
 	}
-	pc.handle = func(msg protocol.Message) {
-		switch msg.Type {
-		case protocol.MsgInferenceChunk:
-			var p protocol.InferenceChunkPayload
-			if err := msg.DecodePayload(&p); err != nil {
-				pc.fail(fmt.Errorf("bad chunk payload: %w", err))
-				return
-			}
-			framed := append([]byte("data: "), p.Chunk...)
-			framed = append(framed, '\n', '\n')
-			select {
-			case pc.chunkCh <- StreamEvent{Data: framed}:
-			case <-pc.doneCh:
-			}
-		case protocol.MsgInferenceResponse:
-			var p protocol.InferenceResponsePayload
-			if err := msg.DecodePayload(&p); err != nil {
-				pc.fail(fmt.Errorf("bad response payload: %w", err))
-				return
-			}
-			if p.Error != "" {
-				pc.fail(errors.New(p.Error))
-				return
-			}
-			if len(p.Response) > 0 {
-				framed := append([]byte("data: "), p.Response...)
-				framed = append(framed, '\n', '\n')
-				select {
-				case pc.chunkCh <- StreamEvent{Data: framed}:
-				case <-pc.doneCh:
-				}
-			}
-			if p.Done {
-				pc.completeStream()
-			}
-		case protocol.MsgError:
-			var p protocol.ErrorPayload
-			_ = msg.DecodePayload(&p)
-			pc.fail(errors.New(p.Message))
-		}
-	}
+	pc.handle = streamPendingHandler(pc)
 	h.relayPendingMu.Lock()
 	defer h.relayPendingMu.Unlock()
 	if h.relayInFlight[workerID] >= int64(h.maxInFlightFor(workerID)) {

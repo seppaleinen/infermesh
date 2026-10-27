@@ -306,47 +306,7 @@ func (c *wsConnection) registerStream(id string, chunkCh chan StreamEvent, errCh
 		errCh:   errCh,
 		doneCh:  make(chan struct{}),
 	}
-	pc.handle = func(msg protocol.Message) {
-		switch msg.Type {
-		case protocol.MsgInferenceChunk:
-			var p protocol.InferenceChunkPayload
-			if err := msg.DecodePayload(&p); err != nil {
-				pc.fail(fmt.Errorf("bad chunk payload: %w", err))
-				return
-			}
-			framed := append([]byte("data: "), p.Chunk...)
-			framed = append(framed, '\n', '\n')
-			select {
-			case pc.chunkCh <- StreamEvent{Data: framed}:
-			case <-pc.doneCh:
-			}
-		case protocol.MsgInferenceResponse:
-			var p protocol.InferenceResponsePayload
-			if err := msg.DecodePayload(&p); err != nil {
-				pc.fail(fmt.Errorf("bad response payload: %w", err))
-				return
-			}
-			if p.Error != "" {
-				pc.fail(errors.New(p.Error))
-				return
-			}
-			if len(p.Response) > 0 {
-				framed := append([]byte("data: "), p.Response...)
-				framed = append(framed, '\n', '\n')
-				select {
-				case pc.chunkCh <- StreamEvent{Data: framed}:
-				case <-pc.doneCh:
-				}
-			}
-			if p.Done {
-				pc.completeStream()
-			}
-		case protocol.MsgError:
-			var p protocol.ErrorPayload
-			_ = msg.DecodePayload(&p)
-			pc.fail(errors.New(p.Message))
-		}
-	}
+	pc.handle = streamPendingHandler(pc)
 	if err := c.addPending(pc); err != nil {
 		return nil, err
 	}
@@ -362,26 +322,7 @@ func (c *wsConnection) registerCall(id string, respCh chan protocol.Message, err
 		errCh:  errCh,
 		doneCh: make(chan struct{}),
 	}
-	pc.handle = func(msg protocol.Message) {
-		switch msg.Type {
-		case protocol.MsgInferenceResponse:
-			select {
-			case pc.respCh <- msg:
-			case <-pc.doneCh:
-			}
-			pc.completeCall()
-		case protocol.MsgModelLoadResponse:
-			select {
-			case pc.respCh <- msg:
-			case <-pc.doneCh:
-			}
-			pc.completeCall()
-		case protocol.MsgError:
-			var p protocol.ErrorPayload
-			_ = msg.DecodePayload(&p)
-			pc.fail(errors.New(p.Message))
-		}
-	}
+	pc.handle = callPendingHandler(pc)
 	if err := c.addPending(pc); err != nil {
 		return nil, err
 	}
