@@ -53,6 +53,44 @@ waits through a 15s boot window, runs advisory GUI probes, and tears the
 process down. Liveness is the pass criterion. Env overrides: `SKIP=1` /
 `INFERMESH_SMOKE_SKIP=1` skip; `INFERMESH_APP_BIN` points at the binary.
 
+### E2E Testing with Playwright
+
+Prerequisites:
+- Node 22
+- npm
+- Go 1.27+
+- wails3 v3.0.0
+
+How to run:
+
+```bash
+# Install Playwright browsers (first time)
+cd app/frontend
+npx playwright install --with-deps chromium
+
+# Run E2E tests (starts mock router + Wails server)
+npx playwright test
+
+# Run with UI
+npx playwright test --ui
+```
+
+Running locally with Wails server:
+The Playwright `webServer` command builds the app in server mode (`-tags server,production`) and injects router settings via a temporary `settings.yml` at `$PLAYWRIGHT_TEMP_HOME/.config/infermesh/settings.yml` with `router_addr: http://127.0.0.1:8081`. The mock router (`app/mock/mockRouter.js`) is started concurrently on port 8081 before the Wails server binds to 8080.
+
+What the tests cover:
+- `app-startup.spec.ts` — page loads, header renders, config loads in server mode
+- `router-connection.spec.ts` — unreachable router shows error card, reachable mock router shows "Router running" status
+- `worker-listing.spec.ts` — mock workers array renders cards with ID, hostname, loaded models, status, in-flight counts
+- `model-browsing.spec.ts` — `/meta/models/popular` list renders and filtering works
+- `request-monitoring.spec.ts` — in-flight requests table renders with status and duration
+- `settings.spec.ts` — settings form loads, validation shows error on invalid URL
+
+Notes:
+Playwright tests run against a Wails server build (`-tags server,production`) with a mock Node router on port 8081. The mock router serves canned responses matching `pkg/router` types for workers, models, requests, stats, aliases, and auto-routing. Tests verify UI rendering and basic workflows without real ML models.
+
+CI runs E2E tests on `ubuntu-latest` in parallel with app-frontend.
+
 ## Packaging notes
 
 - **macOS** — native (CGO/cocoa). `wails3 task package` produces `bin/InferMesh.app`

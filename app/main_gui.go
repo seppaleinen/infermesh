@@ -1,40 +1,16 @@
+//go:build !server
+
 package main
 
 import (
-	"embed"
 	"errors"
 	"log"
-	"os"
-	"path/filepath"
 	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
-
-//go:embed all:frontend/dist
-var assets embed.FS
-
-//go:embed assets/trayTemplate.png
-var trayIcon []byte
-
-// summarizePoolStatus reduces a SupervisorStatus snapshot to the short human
-// sentence shown on the tray status line and in the tray tooltip.
-func summarizePoolStatus(st SupervisorStatus) string {
-	routerUp := st.Router.State == StateRunning
-	workerUp := st.Worker.State == StateRunning
-	switch {
-	case routerUp && workerUp:
-		return "Router + worker running"
-	case routerUp:
-		return "Router running"
-	case workerUp:
-		return "Worker running"
-	default:
-		return "Stopped"
-	}
-}
 
 // closeToTrayWindow is the slice of *application.WebviewWindow that
 // registerCloseToTray needs. It exists so the hook wiring can be unit-tested
@@ -49,7 +25,7 @@ type closeToTrayWindow interface {
 // instead of destroying it (issue #49).
 //
 // RegisterHook runs synchronously BEFORE the default WindowClosing listeners
-// (wails v3.0.0-beta.34 webview_window.go:366 marks the window destroyed +
+// (wails v3.0.0 webview_window.go:366 marks the window destroyed +
 // closes it; after that Show() is a no-op and the tray can never re-show the
 // window). Calling e.Cancel() prevents those listeners from running, so the
 // window survives hidden and tray Open / click-to-toggle keep working.
@@ -87,76 +63,12 @@ func main() {
 	}
 	defer lock.release() //nolint:errcheck // keeps *os.File referenced + unlocks on main() return
 
-	settings, err := startupSettings()
-	if err != nil {
-		log.Fatalf("failed to load startup settings: %v", err)
-	}
+	_, settingsPath, supervisor, rc, autoStartSvc, _, _ := initApp()
 
-	settingsPath, err := settingsPath()
-	if err != nil {
-		log.Fatalf("failed to resolve settings path: %v", err)
-	}
+	services := makeServices(settingsPath, supervisor, rc, autoStartSvc)
+	opts := makeBaseOptions(services)
 
-	var exePath string
-	exePath, err = os.Executable()
-	if err != nil {
-		log.Printf("cannot resolve app executable path, auto-start registration will warn: %v", err)
-		exePath = ""
-	}
-
-	binaryDir := ""
-	if exePath != "" {
-		if root, err := filepath.Abs(filepath.Join(filepath.Dir(exePath), "..", "..", "..", "..", "..")); err == nil {
-			binaryDir = root
-		} else if root, err := filepath.Abs(filepath.Join(filepath.Dir(exePath), "..", "..", "..", "..")); err == nil {
-			binaryDir = root
-		} else if root, err := filepath.Abs(filepath.Join(filepath.Dir(exePath), "..", "..", "..")); err == nil {
-			binaryDir = root
-		}
-	}
-
-	// Build the Supervisor ONCE, before application.New: the same instance is
-	// registered as a Wails service AND used by OnShutdown, so StopAll() on
-	// shutdown actually sees the children that were started. (A second
-	// instance would own none of them and StopAll would be a no-op.)
-	supervisor := NewSupervisorService(newProdKeyring(), settingsPath, binaryDir, "")
-
-	// RouterClient is constructed once and handed to the Supervisor so the
-	// transport can be updated when the router starts/stops in prod mode.
-	// The client itself has zero knowledge of the Supervisor (issue #103 R1).
-	rc := NewRouterClient(settings.RouterAddr)
-	supervisor.SetRouterClient(rc)
-
-	// Auto-start backend registers this very binary as a login item. If the
-	// executable path cannot be resolved, fall back to an empty path — the
-	// backend then fails at registration time as a user-visible warning
-	// instead of crashing the app at startup.
-	autoStartSvc := NewAutoStartService(newPlatformAutostart(execRunner{}, exePath))
-
-	app := application.New(application.Options{
-		Name:        "InferMesh",
-		Description: "Visual manager for InferMesh pool",
-		Assets: application.AssetOptions{
-			Handler: application.AssetFileServerFS(assets),
-		},
-		// RouterClient exposes the /v1/workers HTTP projection to the Vue UI.
-		// Bound via application.NewService; methods are auto-discovered by
-		// reflect in pkg/application/bindings.go:getMethods.
-		// ConfigService provides access to persistent secrets via the OS keyring.
-		// Supervisor launches and manages the headless router/worker binaries.
-		// AutoStartService registers/removes the OS login item (issue #45); it
-		// must stay in this list so `wails3 generate bindings` discovers it.
-		Services: []application.Service{
-			application.NewService(rc),
-			application.NewService(func() *ConfigService {
-				c := NewConfigService(newProdKeyring(), settingsPath)
-				c.SetSupervisor(supervisor)
-				return c
-			}()),
-			application.NewService(supervisor),
-			application.NewService(autoStartSvc),
-		},
-	})
+	app := application.New(opts)
 
 	// Window setup
 	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
@@ -249,7 +161,7 @@ func main() {
 	// AttachWindow gives the tray its Wails smart defaults: left-click toggles
 	// the window (including the Windows close-state dance) and right-click
 	// opens the menu — no explicit OnClick handler needed. Verified against
-	// wails v3.0.0-beta.34 pkg/application/systemtray.go (applySmartDefaults).
+	// wails v3.0.0 pkg/application/systemtray.go (applySmartDefaults).
 	tray.AttachWindow(win)
 
 	menu := application.NewMenu()

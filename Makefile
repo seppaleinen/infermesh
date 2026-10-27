@@ -198,6 +198,12 @@ pkg-compose:
 test-app-smoke: build-app
 	cd app && go test -tags smoke -count=1 -v -run '^TestAppSmoke$$' .
 
+# E2E Playwright tests against Wails server build. Requires Node + Playwright.
+test-app-e2e:
+	$(require-wails3)
+	cd app && wails3 task build-server
+	cd app/frontend && npx playwright test
+
 # Unit tests (method-level, table-driven)
 test-unit:
 	go test ./pkg/...

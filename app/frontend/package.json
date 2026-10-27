@@ -7,13 +7,16 @@
     "dev": "vite",
     "build:dev": "vue-tsc && vite build --minify false --mode development",
     "build": "vue-tsc && vite build --mode production",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:e2e": "playwright test",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@wailsio/runtime": "latest",
     "vue": "^3.2.45"
   },
   "devDependencies": {
+    "@playwright/test": "^1.48.0",
     "@vitejs/plugin-vue": "^6.0.0",
     "typescript": "^4.9.3",
     "vite": "^8.0.5",
