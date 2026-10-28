@@ -18,13 +18,10 @@ import (
 	"github.com/seppaleinen/infermesh/pkg/security"
 )
 
-// ErrMissingModelPath is returned when a worker is configured without a model
-// path in production mode.
-var ErrMissingModelPath = errors.New("--model-path is required in production mode")
-
 // RunConfig holds all configuration needed to run a worker.
 type RunConfig struct {
-	// ModelPath is the declared model file path (required in prod mode).
+	// ModelPath is the declared model file path (optional; models can be
+	// discovered dynamically from the backend or declared via SetModels).
 	ModelPath string
 	// Backend selects the backend adapter (llama-cpp, ollama, vllm, lmstudio, custom).
 	Backend string
@@ -143,14 +140,6 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 		"backend", cfg.Backend,
 	)
 
-	// In production mode, a model path is required for backends that can't auto-discover
-	// models from the runtime. Currently only llama-cpp requires a declared model path
-	// (it needs a .gguf file); ollama, lmstudio, and vllm can discover models dynamically.
-	requireModelPath := !cfg.DevMode && cfg.Backend == "llama-cpp"
-	if requireModelPath && cfg.ModelPath == "" {
-		return fail(ErrMissingModelPath)
-	}
-
 	// Configure discovery
 	var dcfg discovery.Config
 	if cfg.DevMode {
@@ -212,17 +201,13 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 				"backend", cfg.Backend,
 				"count", len(models))
 		} else if err != nil {
-			log.Warn("failed to auto-discover models from backend, using model-path", "error", err)
-			// For backends that auto-discover models from the runtime (ollama,
-			// lmstudio, vllm), starting the worker without a model-path is OK —
-			// the next capability refresh cycle will retry discovery. Only
-			// llama-cpp requires a declared .gguf path, and only in prod mode:
-			// in dev mode a missing backend is normal (start it later or pass
-			// --model-path) and must not abort the worker.
-			requireModelPath := !cfg.DevMode && cfg.Backend == "llama-cpp"
-			if requireModelPath && cfg.ModelPath == "" {
-				return fail(ErrMissingModelPath)
-			}
+			log.Warn("failed to auto-discover models from backend", "error", err)
+			// Auto-discovery failed. For backends that auto-discover models from
+			// the runtime (ollama, lmstudio, vllm), starting the worker without a
+			// model-path is OK — the next capability refresh cycle will retry
+			// discovery. If a model-path is provided, fall back to manual model
+			// registration. Otherwise, start the worker with no models; they will
+			// be discovered on the next refresh cycle.
 			if cfg.ModelPath != "" {
 				// Fall back to manual model registration if model path provided
 				srv.SetModels([]protocol.ModelInfo{

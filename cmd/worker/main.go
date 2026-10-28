@@ -2,11 +2,8 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
-	"io"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -73,7 +70,6 @@ func parseWorkerFlags(args []string) (WorkerFlags, error) {
 }
 
 // registerWorkerFlags registers the worker flags on fs, binding values to f.
-// Shared by parseWorkerFlags and workerFlagUsage.
 func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	fs.BoolVar(&f.Capabilities, "capabilities", false, "print detected capabilities and exit")
 	fs.BoolVar(&f.DevMode, "dev-mode", false, "run in dev mode (no auth, loopback only)")
@@ -82,7 +78,7 @@ func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	fs.StringVar(&f.MTLSKey, "mtls-key", "", "path to mTLS key file")
 	fs.IntVar(&f.Port, "port", 8081, "listen port for the worker HTTP server")
 	fs.StringVar(&f.CertDir, "cert-dir", "", "path to certificate directory")
-	fs.StringVar(&f.ModelPath, "model-path", "", "path to the model file")
+	fs.StringVar(&f.ModelPath, "model-path", "", "path to the model file (optional; models can be discovered dynamically)")
 	fs.StringVar(&f.Backend, "backend", "llama-cpp", "backend adapter (llama-cpp, ollama, lmstudio, vllm, custom)")
 	fs.StringVar(&f.BackendURL, "backend-url", "", "backend adapter base URL (overrides the adapter's default endpoint)")
 	fs.StringVar(&f.Router, "router", "", "router base URL for HTTP registration (e.g. http://127.0.0.1:8080, dev-mode only)")
@@ -108,15 +104,6 @@ func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	fs.IntVar(&f.MaxTokens, "max-tokens", 4096, "default max_tokens to send to the backend when the incoming request omits it")
 	fs.IntVar(&f.Threads, "threads", 4, "number of threads for the llama-cpp backend (default 4); ignored by other backends")
 	fs.StringVar(&f.RelayAPIKey, "relay-api-key", "", "key presented to the router during relay registration; distinct from --api-key, which gates client inference requests")
-}
-
-// workerFlagUsage prints the worker flag help to w.
-func workerFlagUsage(w io.Writer) {
-	fs := flag.NewFlagSet("infermesh-worker", flag.ContinueOnError)
-	var f WorkerFlags
-	registerWorkerFlags(fs, &f)
-	fs.SetOutput(w)
-	fs.Usage()
 }
 
 func main() {
@@ -211,12 +198,6 @@ func runWorker(args []string) int {
 		RelayAPIKey:          f.RelayAPIKey,
 	})
 	if err != nil {
-		if errors.Is(err, worker.ErrMissingModelPath) {
-			// Match the original CLI output: error line on stdout, then usage.
-			slog.New(slog.NewTextHandler(os.Stdout, nil)).Error(err.Error())
-			workerFlagUsage(os.Stderr)
-			return 1
-		}
 		fmt.Fprintf(os.Stderr, "worker: %v\n", err)
 		return 1
 	}

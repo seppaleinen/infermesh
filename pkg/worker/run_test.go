@@ -3,7 +3,6 @@ package worker
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -207,17 +206,6 @@ func TestLocalIP(t *testing.T) {
 func TestHostname(t *testing.T) {
 	if h := Hostname(); h == "" {
 		t.Fatal("Hostname returned empty string")
-	}
-}
-
-func TestRunWorkerRequiresModelPathInProd(t *testing.T) {
-	_, err := RunWorker(context.Background(), RunConfig{
-		Backend: "llama-cpp",
-		Port:    8081,
-		DevMode: false,
-	})
-	if !errors.Is(err, ErrMissingModelPath) {
-		t.Fatalf("expected ErrMissingModelPath, got %v", err)
 	}
 }
 
