@@ -379,6 +379,18 @@ func runRouter(args []string) int {
 		// connection later drops.
 		go srv.RunRelay(ctx, relayURL)
 	}
+
+	// --api-key wins; INFERMESH_API_KEY is the env-var fallback so the
+	// API key can be injected via env without editing ROUTER_ARGS.
+	apiKey := f.APIKey
+	if apiKey == "" {
+		if env := os.Getenv("INFERMESH_API_KEY"); env != "" {
+			apiKey = env
+		}
+	}
+	if apiKey != "" {
+		srv.SetAPIKey(apiKey)
+	}
 	go func() {
 		if err := srv.Start(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("router server error", "error", err)

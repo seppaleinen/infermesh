@@ -175,6 +175,12 @@ func (s *Server) SetRelayURL(url string) {
 	s.hub.SetRelayURL(url)
 }
 
+// SetAPIKey sets the API key for inference endpoint authentication.
+// Overrides any key set at construction time.
+func (s *Server) SetAPIKey(key string) {
+	s.hub.SetAPIKey(key)
+}
+
 // SetMaxInFlight overrides the per-worker concurrent-call cap. A value <= 0
 // falls back to defaultMaxInFlight.
 func (s *Server) SetMaxInFlight(n int) {
