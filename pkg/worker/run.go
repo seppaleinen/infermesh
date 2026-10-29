@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -150,11 +149,14 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 	} else {
 		dcfg = discovery.Defaults()
 	}
-	// Ensure unique instance name for worker ID
-	// (math/rand is auto-seeded since Go 1.20, no explicit Seed needed)
+	// Ensure unique instance name for worker ID.
+	// Use stable hostname-based ID so restarts re-register the same ID
+	// and overwrite the old registry entry immediately (instead of leaving
+	// a stale entry until TTL cleanup). Multiple workers on the same host
+	// are differentiated by port.
 	if dcfg.InstanceName == "" {
-		instanceID := rand.Intn(10000)
-		dcfg.InstanceName = fmt.Sprintf("worker-%d", instanceID)
+		hostname := Hostname()
+		dcfg.InstanceName = fmt.Sprintf("worker-%s-%d", hostname, cfg.Port)
 	}
 
 	// Security configuration
