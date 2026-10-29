@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/capabilities"
@@ -16,6 +19,54 @@ import (
 	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/pkg/security"
 )
+
+// ValidateRunConfig checks the RunConfig for valid combinations of settings.
+// It catches common misconfigurations that would cause silent registration
+// failures or security issues:
+//   - Relay URL in prod mode (relay is dev-only)
+//   - RouterBase set with non-loopback IP in prod mode
+//   - Conflicting settings (relay URL + router base with both non-empty → relay takes precedence)
+func ValidateRunConfig(cfg RunConfig) error {
+	// Relay URL is dev-mode only.
+	if !cfg.DevMode && cfg.RelayURL != "" {
+		return fmt.Errorf("relay URL is only supported in dev mode (got --relay-url=%q in prod mode)", cfg.RelayURL)
+	}
+	// In prod mode, RouterBase must be loopback (the router's prod loopback
+	// check requires worker.IP == 127.0.0.1). A non-loopback RouterBase in
+	// prod mode would fail the router's registration check.
+	if !cfg.DevMode && cfg.RouterBase != "" {
+		if host, err := extractHost(cfg.RouterBase); err == nil && !isLoopback(host) {
+			return fmt.Errorf("prod mode router base must be loopback (got %q); use --prod-router for mTLS registration", cfg.RouterBase)
+		}
+	}
+	// Conflicting settings are allowed; relay takes precedence at runtime.
+	return nil
+}
+
+// extractHost parses a URL and returns its host component (host:port stripped).
+func extractHost(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	host := u.Hostname()
+	if host == "" {
+		return "", fmt.Errorf("no host in %q", rawURL)
+	}
+	return host, nil
+}
+
+// isLoopback reports whether host is a loopback address (127.0.0.1, ::1, or "localhost").
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
+}
 
 // RunConfig holds all configuration needed to run a worker.
 type RunConfig struct {
@@ -96,13 +147,63 @@ type RunConfig struct {
 	Threads int
 }
 
+// ReloadableConfig holds configuration values that can be re-read from
+// environment variables on SIGHUP. Empty values mean "keep the current
+// effective value".
+type ReloadableConfig struct {
+	RouterBase     string
+	RelayURL       string
+	RelayAPIKey    string
+	APIKey         string
+	AllowedModels  string
+	ExcludedModels string
+}
+
+// newReloadableConfig builds the initial ReloadableConfig snapshot from a
+// RunConfig. It is the single source for the three registration paths in
+// RunWorker (relay, mTLS, HTTP), which previously each re-typed the same
+// six-field literal.
+func newReloadableConfig(cfg RunConfig) ReloadableConfig {
+	return ReloadableConfig{
+		RouterBase:     cfg.RouterBase,
+		RelayURL:       cfg.RelayURL,
+		RelayAPIKey:    cfg.RelayAPIKey,
+		APIKey:         cfg.APIKey,
+		AllowedModels:  cfg.AllowedModels,
+		ExcludedModels: cfg.ExcludedModels,
+	}
+}
+
 // Handle represents a running worker: HTTP server, registration loop (or
 // mDNS announcer), and cancellation. Use Stop to shut it down.
 type Handle struct {
-	log       *slog.Logger
-	cancel    context.CancelFunc
-	announcer discovery.Announcer
-	done      chan struct{}
+	log         *slog.Logger
+	cancel      context.CancelFunc
+	announcer   discovery.Announcer
+	done        chan struct{}
+	regMu       sync.Mutex
+	regCancel   context.CancelFunc
+	regConfig   ReloadableConfig
+	regInfoBase protocol.WorkerInfo
+	regDevMode  bool
+	regCaps     protocol.Capabilities
+	srv         *Server
+	// mTLS registration parameters, captured at startup and replayed by
+	// ReloadConfig when the worker registered over mTLS. ReloadConfig must
+	// re-launch RegisterLoopWithRefreshMTLS with these stored values because
+	// launchRegistration only handles the HTTP/WS paths. SIGHUP cannot change
+	// the certs (out of scope), so they are static.
+	regUseMTLS    bool
+	regProdRouter string
+	regMTLSCert   string
+	regMTLSKey    string
+	regCertDir    string
+	// rootCtx is the worker's main context (wctx). Registration loops
+	// restarted by ReloadConfig derive from it so that Stop() (which cancels
+	// wctx) still reaches them. Deriving from context.Background() instead
+	// would orphan the post-reload loop: Stop() would log "shutting down"
+	// but the new heartbeat goroutine would keep running.
+	rootCtx context.Context
 }
 
 // Stop shuts the worker down: stops the announcer (if any), cancels the
@@ -120,6 +221,215 @@ func (h *Handle) Stop() {
 	}
 }
 
+// launchRegistration decides which registration path to take based on the
+// current regConfig and starts the registration loop. It returns a cancel
+// function that stops the loop. Thread-safe: uses regMu to protect
+// registration state.
+//
+// The caller must hold h.regMu before calling this function. On reload,
+// the caller cancels the previous loop first, then calls this to start a
+// new one with updated settings. In-flight inference requests are NOT
+// disrupted because only the registration loop is cancelled.
+//
+// The new loop derives its context from rootCtx (the worker's main
+// context), NOT from context.Background(): if it did, Stop() would cancel
+// wctx but the post-reload heartbeat goroutine would keep running, orphaned.
+func (h *Handle) launchRegistration(regConfig ReloadableConfig) context.CancelFunc {
+	// Stop any currently running registration loop
+	if h.regCancel != nil {
+		h.regCancel()
+		h.regCancel = nil
+	}
+
+	h.regConfig = regConfig
+
+	// Select registration path based on config priority:
+	// 1. Relay WebSocket (dev mode only, takes precedence)
+	// 2. HTTP registration (dev mode or prod loopback fallback)
+	// 3. mDNS discovery (default - no loop needed)
+	if regConfig.RelayURL != "" {
+		// WebSocket registration via relay (dev mode only).
+		// Re-probe reachability so a reload to a dead broker degrades to
+		// HTTP instead of spinning forever, matching startup behavior.
+		if regConfig.RouterBase != "" && !relayReachable(h.rootCtx, regConfig.RelayURL) {
+			h.log.Warn("relay unreachable after reload; falling back to HTTP registration",
+				"relay", regConfig.RelayURL, "router", regConfig.RouterBase)
+			return h.startHTTPRegistration(regConfig)
+		}
+		regCtx, regCancel := context.WithCancel(h.rootCtx)
+		h.regCancel = regCancel
+		go WSRegisterLoop(regCtx, WSConfig{RouterURL: regConfig.RelayURL}, func() protocol.WorkerInfo {
+			return h.buildRegistrationInfo(regConfig)
+		}, h.srv, h.log)
+		return regCancel
+	}
+	if regConfig.RouterBase != "" {
+		// HTTP registration
+		return h.startHTTPRegistration(regConfig)
+	}
+	// mDNS discovery - no registration loop needed
+	return func() {}
+}
+
+// startHTTPRegistration starts the HTTP registration loop for the given
+// config. Extracted so the HTTP path is shared by launchRegistration and the
+// relay→HTTP fallback instead of being duplicated inline.
+func (h *Handle) startHTTPRegistration(regConfig ReloadableConfig) context.CancelFunc {
+	regCtx, regCancel := context.WithCancel(h.rootCtx)
+	h.regCancel = regCancel
+	go RegisterLoopWithRefresh(regCtx, regConfig.RouterBase, func() protocol.WorkerInfo {
+		return h.buildRegistrationInfo(regConfig)
+	}, DefaultRegisterInterval, h.log)
+	return regCancel
+}
+
+// launchMTLSRegistration (re)starts the prod-mode mTLS registration loop with
+// the stored static cert parameters and the current ReloadableConfig. It is
+// called by ReloadConfig for workers that registered over mTLS, because
+// launchRegistration only handles the HTTP/WS paths. SIGHUP cannot change
+// mTLS certs (out of scope), so the cert parameters are static and stored on
+// the Handle at startup.
+func (h *Handle) launchMTLSRegistration(regConfig ReloadableConfig) context.CancelFunc {
+	if h.regCancel != nil {
+		h.regCancel()
+		h.regCancel = nil
+	}
+	h.regConfig = regConfig
+	caCertPath := filepath.Join(h.regCertDir, "ca.crt")
+	regCtx, regCancel := context.WithCancel(h.rootCtx)
+	h.regCancel = regCancel
+	go RegisterLoopWithRefreshMTLS(regCtx, h.regProdRouter, func() protocol.WorkerInfo {
+		return h.buildRegistrationInfo(regConfig)
+	}, DefaultRegisterInterval, h.regMTLSCert, h.regMTLSKey, caCertPath, h.log)
+	return regCancel
+}
+
+// buildRegistrationInfo constructs a WorkerInfo for the current registration
+// path. It reads fresh models from the server and applies model filters.
+func (h *Handle) buildRegistrationInfo(regConfig ReloadableConfig) protocol.WorkerInfo {
+	info := h.regInfoBase
+	info.Capabilities = h.regCaps
+	models := h.srv.GetModels()
+	if h.regDevMode {
+		for i := range models {
+			if models[i].Name != "" {
+				models[i].Loaded = true
+			}
+		}
+	}
+	info.Capabilities.Models = models
+	h.srv.ApplyModelFilters(&info.Capabilities)
+	info.APIKey = regConfig.RelayAPIKey
+	// Relay path uses WebSocket transport; HTTP path uses default (empty/HTTP).
+	if regConfig.RelayURL != "" {
+		info.Transport = protocol.TransportWS
+	}
+	return info
+}
+
+// ReloadConfig re-reads configuration from environment variables and swaps
+// the registration loop with the new values. Empty env var values preserve
+// the current effective value. Thread-safe: can be called concurrently with
+// in-flight requests. Only the registration heartbeat loop is restarted;
+// in-flight inference requests are NOT disrupted.
+//
+// Lock ordering (to prevent deadlock): filtersMu → apiKeyMu → regMu.
+// This function acquires them in that order: SetModelFilters (filtersMu),
+// SetAPIKey (apiKeyMu), then regMu.Lock(). No other path reverses this order.
+func (h *Handle) ReloadConfig() error {
+	// Snapshot the current config under regMu so effectiveReloadConfig's
+	// read of h.regConfig is race-free (it runs before the lock is taken).
+	h.regMu.Lock()
+	current := h.regConfig
+	h.regMu.Unlock()
+
+	// Re-read env vars, keeping current values if env var is empty
+	newConfig := h.effectiveReloadConfig(current)
+
+	// Validate the new config (mode is static, so use the stored DevMode)
+	if err := ValidateRunConfig(RunConfig{
+		DevMode:     h.regDevMode,
+		RouterBase:  newConfig.RouterBase,
+		RelayURL:    newConfig.RelayURL,
+		RelayAPIKey: newConfig.RelayAPIKey,
+		APIKey:      newConfig.APIKey,
+	}); err != nil {
+		h.log.Error("failed to validate reloaded config", "error", err)
+		return err
+	}
+
+	// Update Server model filters and API key so new heartbeats carry them
+	// and subsequent inference requests enforce the new key.
+	if h.srv != nil {
+		h.srv.SetModelFilters(splitModelList(newConfig.AllowedModels), splitModelList(newConfig.ExcludedModels))
+		h.srv.SetAPIKey(newConfig.APIKey)
+	}
+
+	// Swap the registration loop: stop the old one, start a new one
+	// with the updated settings. In-flight inference is untouched.
+	h.regMu.Lock()
+	defer h.regMu.Unlock()
+
+	// mTLS workers re-launch RegisterLoopWithRefreshMTLS with the stored
+	// static certs; launchRegistration only handles HTTP/WS paths.
+	if h.regUseMTLS {
+		h.launchMTLSRegistration(newConfig)
+	} else {
+		h.launchRegistration(newConfig)
+	}
+
+	h.log.Info("registration config reloaded via SIGHUP",
+		"router", newConfig.RouterBase,
+		"relay", newConfig.RelayURL,
+		"api_key_set", newConfig.APIKey != "",
+		"allowed_models", newConfig.AllowedModels,
+		"excluded_models", newConfig.ExcludedModels)
+	return nil
+}
+
+// effectiveReloadConfig reads environment variables and returns a
+// ReloadableConfig, preserving current values when env vars are empty.
+// The `current` argument is the caller's snapshot of h.regConfig (taken
+// under regMu) so this function never reads h.regConfig directly — it is
+// safe to call without holding the lock.
+func (h *Handle) effectiveReloadConfig(current ReloadableConfig) ReloadableConfig {
+	cfg := ReloadableConfig{}
+
+	// Read env vars, preserving current values when empty
+	if newVal := os.Getenv("INFERMESH_ROUTER_URL"); newVal != "" {
+		cfg.RouterBase = newVal
+	} else {
+		cfg.RouterBase = current.RouterBase
+	}
+	if newVal := os.Getenv("INFERMESH_RELAY_URL"); newVal != "" {
+		cfg.RelayURL = newVal
+	} else {
+		cfg.RelayURL = current.RelayURL
+	}
+	if newVal := os.Getenv("INFERMESH_RELAY_API_KEY"); newVal != "" {
+		cfg.RelayAPIKey = newVal
+	} else {
+		cfg.RelayAPIKey = current.RelayAPIKey
+	}
+	if newVal := os.Getenv("INFERMESH_API_KEY"); newVal != "" {
+		cfg.APIKey = newVal
+	} else {
+		cfg.APIKey = current.APIKey
+	}
+	if newVal := os.Getenv("INFERMESH_ALLOWED_MODELS"); newVal != "" {
+		cfg.AllowedModels = newVal
+	} else {
+		cfg.AllowedModels = current.AllowedModels
+	}
+	if newVal := os.Getenv("INFERMESH_EXCLUDED_MODELS"); newVal != "" {
+		cfg.ExcludedModels = newVal
+	} else {
+		cfg.ExcludedModels = current.ExcludedModels
+	}
+
+	return cfg
+}
+
 // RunWorker starts a worker (capability detection, backend, HTTP server, and
 // registration) from cfg and returns a Handle used to shut it down. The
 // passed ctx bounds the worker's lifetime; Stop cancels the derived context.
@@ -128,9 +438,10 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 
 	wctx, cancel := context.WithCancel(ctx)
 	h := &Handle{
-		log:    log,
-		cancel: cancel,
-		done:   make(chan struct{}),
+		log:     log,
+		cancel:  cancel,
+		done:    make(chan struct{}),
+		rootCtx: wctx,
 	}
 	fail := func(err error) (*Handle, error) {
 		cancel()
@@ -278,6 +589,21 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 	// the relay key on the WorkerInfo so the register payload carries it.
 	info.APIKey = cfg.RelayAPIKey
 
+	// Store the base info on the Handle so ReloadConfig can rebuild it.
+	h.srv = srv
+	h.regInfoBase = info
+	h.regDevMode = cfg.DevMode
+	h.regCaps = caps
+	// mTLS registration parameters are static (SIGHUP cannot change certs,
+	// out of scope for issue #188) but must be replayed by ReloadConfig,
+	// which re-dispatches via launchMTLSRegistration for mTLS workers.
+	h.regUseMTLS = cfg.ProdRouter != "" && !cfg.DevMode
+	h.regProdRouter = cfg.ProdRouter
+	h.regMTLSCert = cfg.MTLSCert
+	h.regMTLSKey = cfg.MTLSKey
+	h.regCertDir = cfg.CertDir
+	h.rootCtx = wctx
+
 	// Relay WebSocket registration (dev mode only) - takes precedence over RouterBase.
 	//
 	// When the relay is unreachable but a direct router URL is also configured
@@ -292,22 +618,9 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 		} else if relayReachable(wctx, cfg.RelayURL) || cfg.RouterBase == "" {
 			log.Info("registering with relay via websocket", "relay", cfg.RelayURL)
 			info.Transport = protocol.TransportWS
-			baseInfo := info
-			go WSRegisterLoop(wctx, WSConfig{RouterURL: cfg.RelayURL}, func() protocol.WorkerInfo {
-				current := baseInfo
-				current.Capabilities = caps
-				models := srv.GetModels()
-				if cfg.DevMode {
-					for i := range models {
-						if models[i].Name != "" {
-							models[i].Loaded = true
-						}
-					}
-				}
-				current.Capabilities.Models = models
-				srv.ApplyModelFilters(&current.Capabilities)
-				return current
-			}, srv, log)
+			h.regInfoBase = info
+			h.regConfig = newReloadableConfig(cfg)
+			h.launchRegistration(h.regConfig)
 			return h, nil
 		} else {
 			log.Warn("relay unreachable; falling back to HTTP registration", "relay", cfg.RelayURL, "router", cfg.RouterBase)
@@ -322,15 +635,12 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 		log.Info("prod-mode: registering with router via mTLS", "router", cfg.ProdRouter)
 		prodInfo := info
 		prodInfo.IP = "127.0.0.1" // satisfies router's prod loopback check
-		baseInfo := prodInfo
-		caCertPath := filepath.Join(cfg.CertDir, "ca.crt")
-		go RegisterLoopWithRefreshMTLS(wctx, cfg.ProdRouter, func() protocol.WorkerInfo {
-			current := baseInfo
-			current.Capabilities = caps
-			current.Capabilities.Models = srv.GetModels()
-			srv.ApplyModelFilters(&current.Capabilities)
-			return current
-		}, DefaultRegisterInterval, cfg.MTLSCert, cfg.MTLSKey, caCertPath, log)
+		h.regInfoBase = prodInfo
+		h.regConfig = newReloadableConfig(cfg)
+		// mTLS path uses RegisterLoopWithRefreshMTLS directly (launchRegistration
+		// only handles HTTP/WS paths). ReloadConfig re-dispatches via
+		// launchMTLSRegistration with the stored static certs.
+		h.launchMTLSRegistration(h.regConfig)
 		return h, nil
 	}
 
@@ -354,24 +664,9 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 			// worker.IP == "127.0.0.1" in prod mode.
 			regInfo.IP = "127.0.0.1"
 		}
-		baseInfo := regInfo
-		go RegisterLoopWithRefresh(wctx, cfg.RouterBase, func() protocol.WorkerInfo {
-			current := baseInfo
-			current.Capabilities = caps
-			models := srv.GetModels()
-			if cfg.DevMode {
-				for i := range models {
-					// Dev backends (LM Studio etc.) serve whatever they list;
-					// treat catalogue entries as routable.
-					if models[i].Name != "" {
-						models[i].Loaded = true
-					}
-				}
-			}
-			current.Capabilities.Models = models
-			srv.ApplyModelFilters(&current.Capabilities)
-			return current
-		}, DefaultRegisterInterval, log)
+		h.regInfoBase = regInfo
+		h.regConfig = newReloadableConfig(cfg)
+		h.launchRegistration(h.regConfig)
 		return h, nil
 	}
 

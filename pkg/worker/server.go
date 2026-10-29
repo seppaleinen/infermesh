@@ -63,10 +63,42 @@ type Server struct {
 	// allowedModels is a whitelist of models this worker is WILLING to serve.
 	// When non-empty, the router only schedules requests for models in this
 	// list on this worker. Empty means "serve all".
-	allowedModels []string
-	// excludedModels is a blacklist of models this worker is NOT WILLING to
-	// serve. Applies only when allowedModels is empty.
+	//
+	// filtersMu protects allowedModels/excludedModels, which are written by
+	// SetModelFilters (startup and SIGHUP reload) and read by ApplyModelFilters
+	// (registration heartbeat closure AND the HTTP /capabilities handler), so
+	// concurrent access is a real race.
+	filtersMu      sync.Mutex
+	allowedModels  []string
 	excludedModels []string
+
+	// apiKeyMu protects apiKey, which is dynamic: it is initialised from
+	// config.APIKey at construction and can be changed at runtime via
+	// SetAPIKey (SIGHUP hot-reload, issue #188). The inference-auth
+	// middleware reads it per request (via currentAPIKey) so key changes
+	// apply to subsequent requests without restarting the HTTP server.
+	apiKeyMu sync.RWMutex
+	apiKey   string
+}
+
+// SetAPIKey replaces the worker's inference API key at runtime. It is called
+// by Handle.ReloadConfig on SIGHUP so the INFERMESH_API_KEY env var takes
+// effect for subsequent inference requests without restarting the HTTP
+// server. Thread-safe.
+func (s *Server) SetAPIKey(key string) {
+	s.apiKeyMu.Lock()
+	defer s.apiKeyMu.Unlock()
+	s.apiKey = key
+}
+
+// currentAPIKey returns the currently configured inference API key.
+// Thread-safe. When empty, inference endpoints are unauthenticated
+// (dev mode). Callers must not retain the returned slice/string across
+// other goroutine mutations — it is a snapshot.
+func (s *Server) currentAPIKey() string {
+	s.apiKeyMu.RLock()
+	defer s.apiKeyMu.RUnlock()
+	return s.apiKey
 }
 
 // Wire-protocol types (ChatRequest, ChatMessage, Choice, ChatChunk,
@@ -88,6 +120,7 @@ func NewServer(log *slog.Logger, addr string, cfg security.Config) *Server {
 		backend:        nil,
 		healthTracker:  tracker,
 		inferenceStats: NewInferenceTracker(0),
+		apiKey:         cfg.APIKey,
 	}
 }
 
@@ -162,6 +195,8 @@ func (s *Server) GetModels() []protocol.ModelInfo {
 // models in this list. Both are stored as-is (nil when empty) so the JSON
 // encoder omits them when unset.
 func (s *Server) SetModelFilters(allowed, excluded []string) {
+	s.filtersMu.Lock()
+	defer s.filtersMu.Unlock()
 	s.allowedModels = allowed
 	s.excludedModels = excluded
 }
@@ -171,6 +206,8 @@ func (s *Server) SetModelFilters(allowed, excluded []string) {
 // caps.AllowedModels/caps.ExcludedModels so the flags survive refresh closures
 // that rebuild the Capabilities value (e.g. reassigning caps.Models).
 func (s *Server) ApplyModelFilters(caps *protocol.Capabilities) {
+	s.filtersMu.Lock()
+	defer s.filtersMu.Unlock()
 	caps.AllowedModels = s.allowedModels
 	caps.ExcludedModels = s.excludedModels
 }
@@ -226,11 +263,11 @@ func (s *Server) Start(ctx context.Context) error {
 	var handler http.Handler = mux
 
 	// Per-endpoint API key check on inference endpoints (dev and prod).
-	// Mirrors the router's wrapInferenceEndpoints: the middleware is a
-	// no-op when APIKey is empty, so we can apply it unconditionally.
-	if s.config.APIKey != "" {
-		handler = s.wrapInferenceEndpoints(handler, s.config.APIKey)
-	}
+	// Mirrors the router's wrapInferenceEndpoints. Applied unconditionally:
+	// the middleware is a no-op pass-through while the key is empty, but a
+	// key set later via SIGHUP (SetAPIKey, issue #188) must be enforced
+	// without re-wrapping the handler chain.
+	handler = s.wrapInferenceEndpoints(handler)
 
 	if !security.IsDevMode(s.config) {
 		// Prod mode: check if we can fall back to plain HTTP on loopback.
@@ -375,14 +412,21 @@ func (s *Server) Addr() string {
 
 // wrapInferenceEndpoints wraps the given handler so that inference endpoints
 // (/v1/chat/completions, /v1/completions) require a valid API key while
-// other endpoints pass through unchanged. When apiKey is empty the
-// middleware is a no-op pass-through (dev mode).
-func (s *Server) wrapInferenceEndpoints(next http.Handler, apiKey string) http.Handler {
-	apiKeyMW := security.NewAPIKeyMiddleware(apiKey, apiKey != "")
+// other endpoints pass through unchanged. The key is read from the dynamic
+// s.apiKey per request, so a key change via SetAPIKey (SIGHUP hot-reload,
+// issue #188) takes effect on the next request without restarting the HTTP
+// server. When the key is empty the middleware is a no-op pass-through
+// (dev mode).
+func (s *Server) wrapInferenceEndpoints(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/chat/completions", "/v1/completions":
-			apiKeyMW(next).ServeHTTP(w, r)
+			key := s.currentAPIKey()
+			// Rebuild the middleware per request so the freshly-read key
+			// (and its empty/non-empty requirement) is enforced. The
+			// factory is cheap; the per-request allocation is negligible
+			// next to the inference call it guards.
+			security.NewAPIKeyMiddleware(key, key != "")(next).ServeHTTP(w, r)
 		default:
 			next.ServeHTTP(w, r)
 		}

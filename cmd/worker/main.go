@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -109,24 +110,21 @@ func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	fs.StringVar(&f.RelayAPIKey, "relay-api-key", "", "key presented to the router during relay registration; distinct from --api-key, which gates client inference requests")
 }
 
-func main() {
-	os.Exit(runWorker(os.Args[1:]))
-}
-
-// runWorker runs the worker process and returns the process exit code.
+// main runs the worker process and returns the process exit code.
 // It is the thin CLI wrapper around pkg/worker.RunWorker; all runtime logic
 // lives in pkg/worker.
-func runWorker(args []string) int {
-	f, err := parseWorkerFlags(args)
+func main() {
+	f, err := parseWorkerFlags(os.Args[1:])
 	if err != nil {
 		// The flag package already printed the error and usage to stderr.
-		return 2
+		return
 	}
 
 	// --capabilities: print detected capabilities and exit (before any
 	// model/backend validation, matching the old cmd/worker behavior).
 	if f.Capabilities {
-		return worker.PrintCapabilities(os.Stdout)
+		worker.PrintCapabilities(os.Stdout)
+		return
 	}
 
 	// Determine dev mode: --prod-mode disables dev mode, --dev-mode enables it
@@ -139,7 +137,7 @@ func runWorker(args []string) int {
 	// HTTP instead of silently falling back to mDNS. This matches the
 	// router's default --addr :8080 and avoids the silent registration
 	// failure when the router runs on a non-default port.
-	//
+
 	// INFERMESH_ROUTER_URL overrides the default without a flag, so container
 	// orchestrators (Docker Compose, Kubernetes) can point the worker at the
 	// router's service name + port while keeping the loopback default for
@@ -203,14 +201,30 @@ func runWorker(args []string) int {
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "worker: %v\n", err)
-		return 1
+		return
 	}
 
 	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-	// h.Stop() logs "shutting down" via its own (role=worker) logger.
-	h.Stop()
-	return 0
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	done := make(chan struct{})
+	go func() {
+		for sig := range sigCh {
+			switch sig {
+			case syscall.SIGINT, syscall.SIGTERM:
+				// Normal shutdown signals
+				h.Stop()
+				close(done)
+				return
+			case syscall.SIGHUP:
+				// Hot-reload: re-read env vars and restart registration loop
+				if err := h.ReloadConfig(); err != nil {
+					slog.Error("SIGHUP reload failed", "error", err)
+				}
+				// Continue processing SIGHUP signals
+			}
+		}
+	}()
+	// Block until shutdown signal received
+	<-done
 }

@@ -65,6 +65,28 @@ docker run -d -p 8080:8080 \
   ghcr.io/seppaleinen/infermesh/router:latest
 ```
 
+**SIGHUP hot-reload:** The worker listens for SIGHUP signals to re-read environment
+variables without restarting. This allows changing registration settings (router URL,
+relay URL, API keys, model filters) on-the-fly. The registration loop is gracefully
+stopped and restarted with the new values. In-flight inference requests are not
+disrupted.
+
+Environment variables re-read on SIGHUP:
+- `INFERMESH_ROUTER_URL` - router base URL for HTTP registration
+- `INFERMESH_RELAY_URL` - relay WebSocket URL for dev-mode registration
+- `INFERMESH_RELAY_API_KEY` - key for relay registration identity
+- `INFERMESH_API_KEY` - API key for inference request authentication
+- `INFERMESH_ALLOWED_MODELS` - comma-separated whitelist of models
+- `INFERMESH_EXCLUDED_MODELS` - comma-separated blacklist of models
+
+Production mode requires a full restart for non-network config changes (mTLS certs,
+keys, router URL).
+
+```bash
+# Example: change router URL without restart
+kill -SIGHUP $(pgrep infermesh-worker)
+```
+
 **Build locally:**
 
 ```bash

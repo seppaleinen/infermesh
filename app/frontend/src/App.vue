@@ -198,6 +198,11 @@ async function handleRestartWorker() {
 async function handleStartRouter() {
   try {
     await supervisor.startRouter()
+    // The router's prod-mode API key is synced into the desktop
+    // RouterClient by the Supervisor (issue #119). Re-read it so the
+    // sidebar indicator reflects the new auth state instead of the
+    // stale pre-start value (issue #190).
+    await routerAuth.fetch()
   } catch (e) {
     console.error('start router failed', e)
   }
@@ -206,6 +211,10 @@ async function handleStartRouter() {
 async function handleStopRouter() {
   try {
     await supervisor.stopRouter()
+    // StopRouter clears the RouterClient's transport and API key
+    // (issue #103 R1). Re-read so the indicator shows "No API key"
+    // rather than the stale pre-stop value (issue #190).
+    await routerAuth.fetch()
   } catch (e) {
     console.error('stop router failed', e)
   }
@@ -214,6 +223,10 @@ async function handleStopRouter() {
 async function handleRestartRouter() {
   try {
     await supervisor.restartRouter()
+    // RestartRouter = StopRouter + StartRouter, both of which update
+    // the RouterClient's API key. Re-read so the indicator reflects
+    // the post-restart auth state (issue #190).
+    await routerAuth.fetch()
   } catch (e) {
     console.error('restart router failed', e)
   }
