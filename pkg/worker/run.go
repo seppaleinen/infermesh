@@ -61,6 +61,9 @@ type RunConfig struct {
 	// Ollama, vLLM) surface without a restart. 0 uses the default (10s).
 	// The user is expected to raise this to 5min once the pool is stable.
 	ModelRefreshInterval time.Duration
+	// HealthCheckInterval is the cadence for backend health checks.
+	// 0 uses the default (30s).
+	HealthCheckInterval time.Duration
 	// InferenceWindow is the rolling window for per-model inference
 	// throughput stats (tokens/sec) advertised in /capabilities so the
 	// router's scheduler can rank workers by speed. Values <= 0 fall back
@@ -230,8 +233,8 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 			}
 		}
 
-		// Start the health check loop (uses DefaultHealthCheckInterval)
-		go srv.StartHealthCheckLoop(wctx, DefaultHealthCheckInterval)
+		// Start the health check loop
+		go srv.StartHealthCheckLoop(wctx, effectiveHealthCheckInterval(cfg.HealthCheckInterval))
 
 		// Periodically re-query the backend for its model catalogue. The
 		// initial discovery above is one-shot: a backend (LM Studio, Ollama,

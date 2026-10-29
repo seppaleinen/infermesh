@@ -351,6 +351,7 @@ The worker binary accepts the following flags:
 | `--excluded-models <list>` | Comma-separated list of models this worker is NOT WILLING to serve (blacklist; applies only when `--allowed-models` is empty) |
 | `--model-refresh-interval <duration>` | Cadence for re-querying the backend's model catalogue; 0 uses the default 10s |
 | `--enable-health-checks` | Enable periodic backend health checks (default on) |
+| `--health-check-interval <duration>` | Cadence for backend health checks; 0 uses the default 30s |
 | `--capabilities` | Print detected capabilities and exit |
 
 ## Worker Protocol

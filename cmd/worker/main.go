@@ -35,6 +35,8 @@ type WorkerFlags struct {
 	// ModelRefreshInterval is the cadence for re-querying the backend's
 	// model catalogue (0 uses the default 10s).
 	ModelRefreshInterval time.Duration
+	// HealthCheckInterval is the cadence for backend health checks (0 uses the default 30s).
+	HealthCheckInterval time.Duration
 	// InferenceWindow is the rolling window for per-model inference
 	// throughput stats (tokens/sec) reported in /capabilities. Default 6h;
 	// values <= 0 fall back to the built-in 10-minute window.
@@ -89,6 +91,7 @@ func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	fs.StringVar(&f.AllowedModels, "allowed-models", "", "comma-separated list of models this worker is WILLING to serve (whitelist); empty = all")
 	fs.StringVar(&f.ExcludedModels, "excluded-models", "", "comma-separated list of models this worker is NOT WILLING to serve (blacklist); applies only when --allowed-models is empty")
 	fs.DurationVar(&f.ModelRefreshInterval, "model-refresh-interval", 0, "cadence for re-querying the backend's model catalogue; 0 uses the default 10s")
+	fs.DurationVar(&f.HealthCheckInterval, "health-check-interval", 0, "cadence for backend health checks; 0 uses the default 30s")
 	// InferenceWindow: tokens/sec is a slow-moving machine characteristic —
 	// a long window smooths bursty usage while still adapting within a work
 	// session. Values <= 0 fall back to the built-in 10-minute window.
@@ -191,6 +194,7 @@ func runWorker(args []string) int {
 		AllowedModels:        f.AllowedModels,
 		ExcludedModels:       f.ExcludedModels,
 		ModelRefreshInterval: f.ModelRefreshInterval,
+		HealthCheckInterval:  f.HealthCheckInterval,
 		InferenceWindow:      f.InferenceWindow,
 		APIKey:               f.APIKey,
 		BackendTimeout:       f.BackendTimeout,

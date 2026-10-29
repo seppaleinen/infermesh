@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Worker: `--health-check-interval` flag for tuning the backend health check cadence (default 30s, mirrors `--model-refresh-interval`)
 - Dashboard enrichment in the Wails desktop app (Issue #79 v1):
   - Router health indicator (reachable/unreachable) in Dashboard header
   - Worker count badge showing number of connected workers

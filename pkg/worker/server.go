@@ -22,6 +22,15 @@ import (
 // DefaultHealthCheckInterval is the default interval for health check loops.
 const DefaultHealthCheckInterval = 30 * time.Second
 
+// effectiveHealthCheckInterval resolves the configured health check interval,
+// falling back to DefaultHealthCheckInterval when zero or negative.
+func effectiveHealthCheckInterval(d time.Duration) time.Duration {
+	if d <= 0 {
+		return DefaultHealthCheckInterval
+	}
+	return d
+}
+
 // Server is the HTTP server for the worker.
 type Server struct {
 	log           *slog.Logger
