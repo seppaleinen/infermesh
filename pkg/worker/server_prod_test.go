@@ -16,23 +16,67 @@ import (
 
 func TestServer_ProdModeRejectsInvalidTLS(t *testing.T) {
 	tests := []struct {
-		name string
-		cfg  security.Config
+		name           string
+		cfg            security.Config
+		addr           string
+		expectError    bool
+		errorContains  string
 	}{
-		{"missing cert", security.Config{DevMode: false, MTLSCert: "", MTLSKey: "", CertDir: ""}},
-		{"missing key", security.Config{DevMode: false, MTLSCert: "/nonexistent/cert.pem", MTLSKey: "", CertDir: ""}},
-		{"missing CA", security.Config{DevMode: false, MTLSCert: "/nonexistent/cert.pem", MTLSKey: "/nonexistent/key.pem", CertDir: "/nonexistent"}},
+		// Fallback cases: all three mTLS fields empty -> plain HTTP on loopback
+		{"missing cert on loopback - fallback to plain HTTP", security.Config{DevMode: false, MTLSCert: "", MTLSKey: "", CertDir: ""}, "127.0.0.1:0", false, ""},
+		{"missing key on loopback - fallback to plain HTTP", security.Config{DevMode: false, MTLSCert: "", MTLSKey: "", CertDir: ""}, "127.0.0.1:0", false, ""},
+		{"missing CA on loopback - fallback to plain HTTP", security.Config{DevMode: false, MTLSCert: "", MTLSKey: "", CertDir: ""}, "127.0.0.1:0", false, ""},
+		// Partial configs (some fields set) should fail validation even on loopback
+		{"partial config (cert only) on loopback", security.Config{DevMode: false, MTLSCert: "/nonexistent/cert.pem", MTLSKey: "", CertDir: ""}, "127.0.0.1:0", true, "invalid TLS configuration"},
+		{"partial config (cert+key) on loopback", security.Config{DevMode: false, MTLSCert: "/nonexistent/cert.pem", MTLSKey: "/nonexistent/key.pem", CertDir: ""}, "127.0.0.1:0", true, "invalid TLS configuration"},
+		{"partial config (cert+key+bad CA) on loopback", security.Config{DevMode: false, MTLSCert: "/nonexistent/cert.pem", MTLSKey: "/nonexistent/key.pem", CertDir: "/nonexistent"}, "127.0.0.1:0", true, "invalid TLS configuration"},
+		// Non-loopback addresses should still reject invalid TLS config
+		{"missing cert on non-loopback", security.Config{DevMode: false, MTLSCert: "", MTLSKey: "", CertDir: ""}, "0.0.0.0:0", true, "invalid TLS configuration"},
+		{"partial config (cert only) on non-loopback", security.Config{DevMode: false, MTLSCert: "/nonexistent/cert.pem", MTLSKey: "", CertDir: ""}, "0.0.0.0:0", true, "invalid TLS configuration"},
+		{"partial config (cert+key+bad CA) on non-loopback", security.Config{DevMode: false, MTLSCert: "/nonexistent/cert.pem", MTLSKey: "/nonexistent/key.pem", CertDir: "/nonexistent"}, "0.0.0.0:0", true, "invalid TLS configuration"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			server := NewServer(testLogger(), "127.0.0.1:0", tt.cfg)
-			err := server.Start(context.Background())
-			if err == nil {
-				t.Fatal("expected Start() to fail with invalid TLS config")
-			}
-			if !strings.Contains(err.Error(), "invalid TLS configuration") {
-				t.Errorf("expected error to contain 'invalid TLS configuration', got: %v", err)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			server := NewServer(testLogger(), tt.addr, tt.cfg)
+			errChan := make(chan error, 1)
+			go func() {
+				errChan <- server.Start(ctx)
+			}()
+
+			// Give the server a moment to start or fail
+			select {
+			case err := <-errChan:
+				if tt.expectError {
+					if err == nil {
+						t.Fatal("expected Start() to fail with invalid TLS config")
+					}
+					if !strings.Contains(err.Error(), tt.errorContains) {
+						t.Errorf("expected error to contain %q, got: %v", tt.errorContains, err)
+					}
+				} else {
+					if err != nil {
+						t.Fatalf("expected Start() to succeed (loopback fallback), got error: %v", err)
+					}
+				}
+			case <-time.After(2 * time.Second):
+				// Server started successfully (loopback fallback) - clean up
+				if !tt.expectError {
+					cancel()
+					// Wait for server to shut down
+					select {
+					case err := <-errChan:
+						if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, http.ErrServerClosed) {
+							t.Errorf("server returned error on shutdown: %v", err)
+						}
+					case <-time.After(1 * time.Second):
+						t.Log("server shutdown timed out")
+					}
+				} else {
+					t.Fatal("expected Start() to fail quickly, but it's still running")
+				}
 			}
 		})
 	}

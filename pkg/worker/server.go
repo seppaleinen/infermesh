@@ -224,10 +224,52 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	if !security.IsDevMode(s.config) {
-		// Prod mode: validate the TLS configuration before starting so we
-		// fail fast with a clear error instead of crashing inside
-		// ListenAndServeTLS with empty cert paths.
+		// Prod mode: check if we can fall back to plain HTTP on loopback.
+		// Fallback ONLY when NO mTLS config is provided (all three fields empty).
+		// If ANY mTLS field is set, require full mTLS config and fail if incomplete.
 		caCertPath := filepath.Join(s.config.CertDir, "ca.crt")
+		hasAnyMTLSConfig := s.config.MTLSCert != "" || s.config.MTLSKey != "" || s.config.CertDir != ""
+		hasFullMTLSConfig := s.config.MTLSCert != "" && s.config.MTLSKey != "" && s.config.CertDir != ""
+		isLoopback := security.IsLoopbackAddr(s.addr)
+
+		if !hasAnyMTLSConfig && isLoopback {
+			// Prod mode loopback fallback: no mTLS config at all, binding to loopback.
+			// Serve plain HTTP without mTLS middleware.
+			s.log.Info("prod mode loopback fallback: serving plain HTTP (no mTLS config)", "addr", s.addr)
+
+			s.server = &http.Server{
+				Addr:    s.addr,
+				Handler: handler,
+			}
+
+			s.log.Info("worker server starting", "addr", s.addr, "dev_mode", security.IsDevMode(s.config), "tls", "disabled (loopback fallback)")
+
+			// Bind explicitly on tcp4 BEFORE serving (see prod branch above for
+			// the dual-stack / port-collision rationale).
+			listener, err := net.Listen("tcp4", s.addr)
+			if err != nil {
+				return fmt.Errorf("worker failed to bind %s: %w (port held by another process?)", s.addr, err)
+			}
+
+			go func() {
+				<-ctx.Done()
+				_ = s.server.Shutdown(context.Background())
+			}()
+
+			if s.concurrencyEstimator != nil {
+				go s.concurrencyEstimator.Start(ctx)
+			}
+
+			return s.server.Serve(listener)
+		}
+
+		// Prod mode with mTLS: require full mTLS config.
+		if !hasFullMTLSConfig {
+			return fmt.Errorf("invalid TLS configuration: mtls-cert, mtls-key, and cert-dir are all required in production mode")
+		}
+
+		// Validate the TLS configuration before starting so we fail fast with a
+		// clear error instead of crashing inside ListenAndServeTLS with empty cert paths.
 		if err := security.ValidateTLSConfig(s.config.MTLSCert, s.config.MTLSKey, caCertPath); err != nil {
 			return fmt.Errorf("invalid TLS configuration: %w", err)
 		}

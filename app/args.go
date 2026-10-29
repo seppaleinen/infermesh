@@ -138,30 +138,45 @@ func (s *Supervisor) buildWorkerArgs(settings Settings) ([]string, error) {
 	if settings.WorkerMaxTokens > 0 {
 		args = append(args, "--max-tokens", strconv.Itoa(settings.WorkerMaxTokens))
 	}
-	if modeFromSettings(settings).IsDev() {
+
+	if !modeFromSettings(settings).IsDev() {
+		// Prod mode: check if mTLS secrets are provisioned.
+		cert, key, err := s.writeMTLSFiles()
+		if err != nil {
+			return nil, err
+		}
+
+		if cert != "" && key != "" {
+			// mTLS secrets present: use --prod-router with mTLS flags + --cert-dir
+			args = append(args, "--prod-router", routerURLForWorker(settings.RouterAddr))
+			if cert != "" {
+				args = append(args, "--mtls-cert", cert)
+			}
+			if key != "" {
+				args = append(args, "--mtls-key", key)
+			}
+			// Write CA cert to a temp dir so the worker can verify the router's cert.
+			certDir, err := s.writeCertDir()
+			if err != nil {
+				return nil, err
+			}
+			if certDir != "" {
+				args = append(args, "--cert-dir", certDir)
+			}
+		} else {
+			// No mTLS secrets: fall back to --router (plain HTTP) instead of --prod-router
+			args = append(args, "--router", routerURLForWorker(settings.RouterAddr))
+		}
+	} else {
 		// dev-mode HTTP registration against the local router (skips mDNS).
 		args = append(args, "--router", routerURLForWorker(settings.RouterAddr))
-	} else {
-		// prod-mode mTLS registration (bypasses mDNS).
-		args = append(args, "--prod-router", routerURLForWorker(settings.RouterAddr))
 	}
+
 	if settings.RelayURL != "" {
 		args = append(args, "--relay-url", settings.RelayURL)
 	}
 	if settings.WorkerEnableHealthChecks != nil {
 		args = append(args, "--enable-health-checks", strconv.FormatBool(*settings.WorkerEnableHealthChecks))
-	}
-	if !modeFromSettings(settings).IsDev() {
-		cert, key, err := s.writeMTLSFiles()
-		if err != nil {
-			return nil, err
-		}
-		if cert != "" {
-			args = append(args, "--mtls-cert", cert)
-		}
-		if key != "" {
-			args = append(args, "--mtls-key", key)
-		}
 	}
 	return args, nil
 }

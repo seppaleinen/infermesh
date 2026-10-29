@@ -460,6 +460,91 @@ func (s *Server) RunRelay(ctx context.Context, url string) {
 	s.hub.runRelay(ctx, url)
 }
 
+// buildServer constructs the http.Server for the given handler, address, and
+// security config. It handles prod-mode mTLS setup and loopback fallback.
+// Returns the possibly-wrapped handler (mTLS middleware applied in prod mode).
+func (s *Server) buildServer(handler http.Handler) (http.Handler, error) {
+	if !security.IsDevMode(s.cfg) {
+		return s.buildProdServer(handler)
+	}
+	// Dev mode: no mTLS.
+	s.server = &http.Server{
+		Addr:    s.addr,
+		Handler: handler,
+	}
+	return handler, nil
+}
+
+// buildProdServer constructs the http.Server for production mode.
+// Handles mTLS setup and loopback fallback.
+func (s *Server) buildProdServer(handler http.Handler) (http.Handler, error) {
+	// Prod mode: check if we can fall back to plain HTTP on loopback.
+	// Fallback ONLY when NO mTLS config is provided (all three fields empty).
+	// If ANY mTLS field is set, require full mTLS config and fail if incomplete.
+	caCertPath := filepath.Join(s.cfg.CertDir, "ca.crt")
+	hasAnyMTLSConfig := s.cfg.MTLSCert != "" || s.cfg.MTLSKey != "" || s.cfg.CertDir != ""
+	hasFullMTLSConfig := s.cfg.MTLSCert != "" && s.cfg.MTLSKey != "" && s.cfg.CertDir != ""
+	isLoopback := security.IsLoopbackAddr(s.addr)
+
+	if !hasAnyMTLSConfig && isLoopback {
+		// Prod mode loopback fallback: no mTLS config at all, binding to loopback.
+		// Serve plain HTTP without mTLS middleware.
+		s.log.Info("prod mode loopback fallback: serving plain HTTP (no mTLS config)", "addr", s.addr)
+		s.server = &http.Server{
+			Addr:    s.addr,
+			Handler: handler,
+		}
+		return handler, nil
+	}
+
+	// Prod mode with mTLS: require full mTLS config.
+	if !hasFullMTLSConfig {
+		return handler, fmt.Errorf("invalid TLS configuration: mtls-cert, mtls-key, and cert-dir are all required in production mode")
+	}
+	// Validate the TLS configuration before starting so we fail fast with a
+	// clear error instead of crashing inside ListenAndServe with an invalid TLS config.
+	if err := security.ValidateTLSConfig(s.cfg.MTLSCert, s.cfg.MTLSKey, caCertPath); err != nil {
+		return handler, fmt.Errorf("invalid TLS configuration: %w", err)
+	}
+
+	// Load the CA cert pool for client-certificate verification.
+	caCertPool := security.LoadCACertPool(caCertPath)
+
+	// Wrap the handler with the mTLS middleware so the router enforces
+	// client-certificate verification and CN restriction at the HTTP
+	// layer. This replaces the raw tls.Config that was never enforced.
+	// The mTLS middleware handles worker-facing endpoints; the API key
+	// middleware (applied after this block) handles external clients.
+	mtlsMW := security.NewMTLSMiddleware(caCertPool, true, security.SplitCNs(s.cfg.TrustedCNs)...)
+	handler = mtlsMW(handler)
+
+	// Load the router's certificate for serving HTTPS.
+	cert, err := security.LoadTLSCertFromFile(s.cfg.MTLSCert, s.cfg.MTLSKey)
+	if err != nil {
+		return handler, fmt.Errorf("failed to load router TLS certificate: %w", err)
+	}
+
+	// Cache the cert + CA pool so the router→worker dial-back client can
+	// present the router's cert and verify worker certs over mTLS.
+	s.routerClientCert = cert
+	s.workerCAPool = caCertPool
+
+	// TLS config is needed for the server; build it now.
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{*cert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    caCertPool,
+	}
+
+	// Build the server (TLS or plain) after handler is fully wrapped.
+	s.server = &http.Server{
+		Addr:      s.addr,
+		Handler:   handler,
+		TLSConfig: tlsConfig,
+	}
+	return handler, nil
+}
+
 // Start runs the HTTP server.
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -506,56 +591,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	var handler http.Handler = mux
 
-	if !security.IsDevMode(s.cfg) {
-		// Prod mode: validate the TLS configuration before starting so we
-		// fail fast with a clear error instead of crashing inside
-		// ListenAndServe with an invalid TLS config.
-		caCertPath := filepath.Join(s.cfg.CertDir, "ca.crt")
-		if err := security.ValidateTLSConfig(s.cfg.MTLSCert, s.cfg.MTLSKey, caCertPath); err != nil {
-			return fmt.Errorf("invalid TLS configuration: %w", err)
-		}
-
-		// Load the CA cert pool for client-certificate verification.
-		caCertPool := security.LoadCACertPool(caCertPath)
-
-		// Wrap the handler with the mTLS middleware so the router enforces
-		// client-certificate verification and CN restriction at the HTTP
-		// layer. This replaces the raw tls.Config that was never enforced.
-		// The mTLS middleware handles worker-facing endpoints; the API key
-		// middleware (applied after this block) handles external clients.
-		mtlsMW := security.NewMTLSMiddleware(caCertPool, true, security.SplitCNs(s.cfg.TrustedCNs)...)
-		handler = mtlsMW(mux)
-
-		// Load the router's certificate for serving HTTPS.
-		cert, err := security.LoadTLSCertFromFile(s.cfg.MTLSCert, s.cfg.MTLSKey)
-		if err != nil {
-			return fmt.Errorf("failed to load router TLS certificate: %w", err)
-		}
-
-		// Cache the cert + CA pool so the router→worker dial-back client can
-		// present the router's cert and verify worker certs over mTLS.
-		s.routerClientCert = cert
-		s.workerCAPool = caCertPool
-
-		// TLS config is needed for the server; build it now.
-		tlsConfig := &tls.Config{
-			Certificates: []tls.Certificate{*cert},
-			ClientAuth:   tls.RequireAndVerifyClientCert,
-			ClientCAs:    caCertPool,
-		}
-
-		// Build the server (TLS or plain) after handler is fully wrapped.
-		s.server = &http.Server{
-			Addr:      s.addr,
-			Handler:   handler,
-			TLSConfig: tlsConfig,
-		}
-	} else {
-		// Dev mode: no mTLS.
-		s.server = &http.Server{
-			Addr:    s.addr,
-			Handler: handler,
-		}
+	handler, err := s.buildServer(handler)
+	if err != nil {
+		return err
 	}
 
 	// Per-endpoint API key check on inference endpoints (dev and prod).
@@ -594,8 +632,14 @@ func (s *Server) Start(ctx context.Context) error {
 	// the http.Server.TLSConfig (RequireAndVerifyClientCert + CA pool) so
 	// the mTLS middleware actually sees r.TLS. Without this the server
 	// served plain HTTP and every request was rejected with 403.
+	// Exception: prod mode loopback fallback (no mTLS config + loopback addr)
+	// uses plain HTTP ListenAndServe.
 	if !security.IsDevMode(s.cfg) {
-		return s.server.ListenAndServeTLS(s.cfg.MTLSCert, s.cfg.MTLSKey)
+		hasAnyMTLSConfig := s.cfg.MTLSCert != "" || s.cfg.MTLSKey != "" || s.cfg.CertDir != ""
+		isLoopback := security.IsLoopbackAddr(s.addr)
+		if hasAnyMTLSConfig || !isLoopback {
+			return s.server.ListenAndServeTLS(s.cfg.MTLSCert, s.cfg.MTLSKey)
+		}
 	}
 	return s.server.ListenAndServe()
 }

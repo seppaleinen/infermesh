@@ -329,36 +329,45 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 		return h, nil
 	}
 
-	// Dev-mode HTTP registration (bypasses mDNS)
+	// HTTP registration (dev mode OR prod mode loopback fallback).
+	// In prod mode loopback fallback, --router is used instead of --prod-router
+	// when no mTLS secrets are provisioned. The router's prod loopback check
+	// still requires worker.IP == 127.0.0.1.
 	if cfg.RouterBase != "" {
 		if cfg.DevMode {
 			log.Info("dev-mode: registering with router via HTTP", "router", cfg.RouterBase)
-			// Send fresh capabilities/models on every heartbeat: the startup
-			// snapshot (info) predates dynamic backend discovery (SetModels),
-			// so without refresh the router sees zero models and selection
-			// fails with no_workers even though the worker logs success.
-			baseInfo := info
-			go RegisterLoopWithRefresh(wctx, cfg.RouterBase, func() protocol.WorkerInfo {
-				current := baseInfo
-				current.Capabilities = caps
-				models := srv.GetModels()
-				if cfg.DevMode {
-					for i := range models {
-						// Dev backends (LM Studio etc.) serve whatever they list;
-						// treat catalogue entries as routable.
-						if models[i].Name != "" {
-							models[i].Loaded = true
-						}
+		} else {
+			log.Info("prod-mode loopback fallback: registering with router via HTTP", "router", cfg.RouterBase)
+		}
+		// Send fresh capabilities/models on every heartbeat: the startup
+		// snapshot (info) predates dynamic backend discovery (SetModels),
+		// so without refresh the router sees zero models and selection
+		// fails with no_workers even though the worker logs success.
+		regInfo := info
+		if !cfg.DevMode {
+			// Prod mode loopback fallback: router's handleDevRegister requires
+			// worker.IP == "127.0.0.1" in prod mode.
+			regInfo.IP = "127.0.0.1"
+		}
+		baseInfo := regInfo
+		go RegisterLoopWithRefresh(wctx, cfg.RouterBase, func() protocol.WorkerInfo {
+			current := baseInfo
+			current.Capabilities = caps
+			models := srv.GetModels()
+			if cfg.DevMode {
+				for i := range models {
+					// Dev backends (LM Studio etc.) serve whatever they list;
+					// treat catalogue entries as routable.
+					if models[i].Name != "" {
+						models[i].Loaded = true
 					}
 				}
-				current.Capabilities.Models = models
-				srv.ApplyModelFilters(&current.Capabilities)
-				return current
-			}, DefaultRegisterInterval, log)
-			return h, nil
-		}
-		// Prod mode with --router: warn and fall through to mDNS
-		log.Warn("--router flag is ignored in production mode; use --prod-router for mTLS registration", "router", cfg.RouterBase)
+			}
+			current.Capabilities.Models = models
+			srv.ApplyModelFilters(&current.Capabilities)
+			return current
+		}, DefaultRegisterInterval, log)
+		return h, nil
 	}
 
 	// mDNS discovery path (original behavior)
