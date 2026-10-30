@@ -60,7 +60,7 @@ func writeRateLimitError(w http.ResponseWriter) {
 }
 
 // wrapInferenceEndpoints wraps the given handler so that inference endpoints
-// (/v1/chat/completions, /v1/completions) require a valid API key while
+// and sensitive admin/meta endpoints require a valid API key while
 // other endpoints pass through unchanged.
 func (s *Server) wrapInferenceEndpoints(next http.Handler, apiKey string) http.Handler {
 	// required mirrors the worker's wrapInferenceEndpoints: a key is only
@@ -69,7 +69,15 @@ func (s *Server) wrapInferenceEndpoints(next http.Handler, apiKey string) http.H
 	apiKeyMW := security.NewAPIKeyMiddleware(apiKey, apiKey != "")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/v1/chat/completions", "/v1/completions":
+		case "/v1/chat/completions", "/v1/completions",
+			"/v1/dev/register",
+			"/meta/aliases",
+			"/meta/auto-routing",
+			"/meta/models/popular",
+			"/meta/connections/count",
+			"/meta/requests/inflight",
+			"/v1/queue/stats",
+			"/v1/inference-stats":
 			apiKeyMW(next).ServeHTTP(w, r)
 		default:
 			next.ServeHTTP(w, r)
