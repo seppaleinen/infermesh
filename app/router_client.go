@@ -611,10 +611,10 @@ func (c *RouterClient) connectionCountPath() string {
 	return c.baseURL + "/meta/connections/count"
 }
 
-// GetConnectionCount fetches the number of currently active HTTP connections
-// to the router from /meta/connections/count. It returns 0 when the router is
-// reachable but idle, and a typed error when the router is unreachable or
-// returns a bad body. Mirrors GetWorkers / GetPopularModels.
+// GetConnectionCount fetches the number of connected/available workers
+// from /meta/connections/count. It returns 0 when the router is
+// reachable but has no workers, and a typed error when the router is
+// unreachable or returns a bad body. Mirrors GetWorkers / GetPopularModels.
 func (c *RouterClient) GetConnectionCount(ctx context.Context) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.connectionCountPath(), nil)
 	if err != nil {
@@ -641,17 +641,17 @@ func (c *RouterClient) GetConnectionCount(ctx context.Context) (int, error) {
 	return parseConnectionCountResponse(body)
 }
 
-// parseConnectionCountResponse decodes the {"connections": int} envelope returned
+// parseConnectionCountResponse decodes the {"workers": int} envelope returned
 // by /meta/connections/count. It is exported (and pure) so the unit tests can
 // feed canned JSON without a live router.
 func parseConnectionCountResponse(body []byte) (int, error) {
 	var resp struct {
-		Connections int `json:"connections"`
+		Workers int `json:"workers"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return 0, fmt.Errorf("decode client count response: %w (body snippet: %q)", err, truncateBody(body))
 	}
-	return resp.Connections, nil
+	return resp.Workers, nil
 }
 
 // AutoRoutingConfigRequest is the JSON DTO for GET/POST /meta/auto-routing.

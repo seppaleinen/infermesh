@@ -361,7 +361,7 @@ func TestRouterClientConnectionCountParse(t *testing.T) {
 	})
 
 	t.Run("positive count", func(t *testing.T) {
-		count, err := parseConnectionCountResponse([]byte(`{"connections":7}`))
+		count, err := parseConnectionCountResponse([]byte(`{"workers":7}`))
 		if err != nil {
 			t.Fatalf("parse failed: %v", err)
 		}
@@ -378,7 +378,7 @@ func TestRouterClientConnectionCountParse(t *testing.T) {
 	})
 
 	t.Run("unknown extra fields ignored", func(t *testing.T) {
-		count, err := parseConnectionCountResponse([]byte(`{"connections":3,"extra":true}`))
+		count, err := parseConnectionCountResponse([]byte(`{"workers":3,"extra":true}`))
 		if err != nil {
 			t.Fatalf("parse failed: %v", err)
 		}

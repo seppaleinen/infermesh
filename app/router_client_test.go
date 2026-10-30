@@ -332,7 +332,7 @@ func TestRouterClientSendsAPIKey(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"connections":0}`))
+		_, _ = w.Write([]byte(`{"workers":0}`))
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()

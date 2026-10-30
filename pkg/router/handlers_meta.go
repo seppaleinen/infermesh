@@ -437,11 +437,22 @@ func (s *Server) handleInflightRequests(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// workerCount returns the number of connected/available workers.
+// It prefers the capability cache (which has hydrated capabilities) and
+// falls back to the registry's available workers when the cache is empty or nil.
+func (s *Server) workerCount() int {
+	var cached []protocol.WorkerInfo
+	if s.cache != nil {
+		cached = s.cache.List()
+	}
+	if len(cached) == 0 && s.reg != nil {
+		cached = s.reg.ListAvailable()
+	}
+	return len(cached)
+}
+
 // handleConnectionCount handles the /meta/connections/count HTTP endpoint. It reports
-// the number of currently active HTTP connections to the router — the count
-// of open TCP sockets, NOT a distinct-client count. A single client issuing
-// many requests over one keep-alive connection holds one connection; a
-// client behind a connection pool or proxy may hold several.
+// the number of connected/available workers in the pool.
 func (s *Server) handleConnectionCount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeErrorResponse(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error", "method_not_allowed")
@@ -449,10 +460,10 @@ func (s *Server) handleConnectionCount(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	resp := struct {
-		Connections int `json:"connections"`
-	}{Connections: int(s.connections.Load())}
+		Workers int `json:"workers"`
+	}{Workers: s.workerCount()}
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		s.log.Error("failed to encode client count", "error", err)
+		s.log.Error("failed to encode worker count", "error", err)
 	}
 }
 

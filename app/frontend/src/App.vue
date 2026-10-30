@@ -8,7 +8,7 @@ import RequestsTable from './components/RequestsTable.vue'
 import AliasModal from './components/AliasModal.vue'
 import { useWorkers, relativeLastSeen, formatAbsolute } from './composables/useWorkers'
 import { usePopularModels } from './composables/usePopularModels'
-import { useConnectionCount } from './composables/useConnectionCount'
+import { useWorkerCount } from './composables/useWorkerCount'
 import { useInflightRequests } from './composables/useInflightRequests'
 import { useSettings } from './composables/useSettings'
 import { useSupervisor } from './composables/useSupervisor'
@@ -50,10 +50,10 @@ const workers = useWorkers()
 // and first-load timeout, so the table stays in step with the worker list.
 const popular = usePopularModels()
 
-// Live client count (issue #79 v3 R1). Mirrors useWorkers — same poll cadence
-// and first-load timeout, so the connection count stays in step with the
+// Live worker count (issue #192). Mirrors useWorkers — same poll cadence
+// and first-load timeout, so the worker count stays in step with the
 // worker list. Surface next to the "router online · X workers" badge.
-const connectionCount = useConnectionCount()
+const workerCountComposable = useWorkerCount()
 
 // In-flight + recent request trace (issue #156). Mirrors useWorkers — same
 // poll cadence and first-load timeout, so the trace stays in step with the
@@ -241,7 +241,7 @@ onMounted(async () => {
   })
   workers.start()
   popular.start()
-  connectionCount.start()
+  workerCountComposable.start()
   requests.start()
   await settings.load()
   // Detect own hostname for local-worker identification (issue #90)
@@ -261,7 +261,7 @@ onBeforeUnmount(() => {
   if (staleTimer !== undefined) clearTimeout(staleTimer)
   workers.stop()
   popular.stop()
-  connectionCount.stop()
+  workerCountComposable.stop()
   requests.stop()
 })
 
@@ -385,8 +385,8 @@ function prevModelPage() {
           <div class="sidebar-block router-block" v-if="workers.state.value.kind !== 'loading'">
             <div class="router-label">router</div>
             <div class="router-url mono">{{ workers.state.value.routerURL || '—' }}</div>
-            <div v-if="connectionCount.state.value.kind === 'ready'" class="router-connections">
-              {{ connectionCount.state.value.data }} connection<span v-if="connectionCount.state.value.data !== 1">s</span>
+            <div v-if="workerCountComposable.state.value.kind === 'ready'" class="router-connections">
+              {{ workerCountComposable.state.value.data }} worker<span v-if="workerCountComposable.state.value.data !== 1">s</span> connected
             </div>
             <div class="router-auth" :class="{ 'auth-on': routerAuth.apiKey.value !== '' }">
               <span class="router-auth-dot" aria-hidden="true"></span>

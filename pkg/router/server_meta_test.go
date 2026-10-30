@@ -722,3 +722,158 @@ func TestQueueStatsEndpointMethodNotAllowed(t *testing.T) {
 		t.Errorf("expected status %d, got %d", http.StatusMethodNotAllowed, w.Code)
 	}
 }
+
+// TestHandleConnectionCount_ReturnsWorkerCount verifies the /meta/connections/count
+// endpoint returns the worker count from the capability cache.
+func TestHandleConnectionCount_ReturnsWorkerCount(t *testing.T) {
+	workers := []protocol.WorkerInfo{
+		{
+			ID:       "worker-1",
+			Hostname: "worker-1",
+			IP:       "127.0.0.1",
+			Port:     8081,
+			Status:   protocol.StatusAvailable,
+			Version:  "v1",
+			LastSeen: time.Now(),
+			Capabilities: protocol.Capabilities{
+				Models: []protocol.ModelInfo{
+					{Name: "model-a", Quantization: "Q4_K_M", Loaded: true},
+				},
+			},
+		},
+		{
+			ID:       "worker-2",
+			Hostname: "worker-2",
+			IP:       "127.0.0.1",
+			Port:     8082,
+			Status:   protocol.StatusAvailable,
+			Version:  "v1",
+			LastSeen: time.Now(),
+			Capabilities: protocol.Capabilities{
+				Models: []protocol.ModelInfo{
+					{Name: "model-b", Quantization: "Q4_K_M", Loaded: true},
+				},
+			},
+		},
+	}
+
+	tr := testRegistry(t, workers)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+	server := tr.Server()
+
+	// Populate the capability cache
+	server.cache = NewCapabilityCache(tr.reg, testLogger())
+	server.cache.Start(tr.ctx)
+	server.cache.mu.Lock()
+	for _, w := range workers {
+		server.cache.cache[w.ID] = w
+	}
+	server.cache.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/meta/connections/count", nil)
+	w := httptest.NewRecorder()
+	server.handleConnectionCount(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d, body: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Workers int `json:"workers"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Workers != 2 {
+		t.Errorf("expected 2 workers, got %d", resp.Workers)
+	}
+}
+
+// TestWorkerCount_CacheAndRegistryFallback verifies the WorkerCount() method
+// works with both cache and registry fallback.
+func TestWorkerCount_CacheAndRegistryFallback(t *testing.T) {
+	workers := []protocol.WorkerInfo{
+		{
+			ID:       "worker-1",
+			Hostname: "worker-1",
+			IP:       "127.0.0.1",
+			Port:     8081,
+			Status:   protocol.StatusAvailable,
+			Version:  "v1",
+			LastSeen: time.Now(),
+		},
+		{
+			ID:       "worker-2",
+			Hostname: "worker-2",
+			IP:       "127.0.0.1",
+			Port:     8082,
+			Status:   protocol.StatusAvailable,
+			Version:  "v1",
+			LastSeen: time.Now(),
+		},
+	}
+
+	t.Run("cache_populated_returns_cache_count", func(t *testing.T) {
+		tr := testRegistry(t, workers)
+		defer tr.cancel()
+		defer func() { _ = tr.reg.Stop() }()
+		server := tr.Server()
+
+		// Populate the capability cache
+		server.cache = NewCapabilityCache(tr.reg, testLogger())
+		server.cache.Start(tr.ctx)
+		server.cache.mu.Lock()
+		for _, w := range workers {
+			server.cache.cache[w.ID] = w
+		}
+		server.cache.mu.Unlock()
+
+		// Cache has 2 workers, registry has 2 workers
+		if server.WorkerCount() != 2 {
+			t.Errorf("expected 2 workers from cache, got %d", server.WorkerCount())
+		}
+	})
+
+	t.Run("cache_empty_falls_back_to_registry", func(t *testing.T) {
+		tr := testRegistry(t, workers)
+		defer tr.cancel()
+		defer func() { _ = tr.reg.Stop() }()
+		server := tr.Server()
+
+		// Create cache but don't populate it (empty)
+		server.cache = NewCapabilityCache(tr.reg, testLogger())
+		server.cache.Start(tr.ctx)
+
+		// Cache is empty, should fall back to registry (which has 2 workers)
+		if server.WorkerCount() != 2 {
+			t.Errorf("expected 2 workers from registry fallback, got %d", server.WorkerCount())
+		}
+	})
+
+	t.Run("cache_nil_falls_back_to_registry", func(t *testing.T) {
+		tr := testRegistry(t, workers)
+		defer tr.cancel()
+		defer func() { _ = tr.reg.Stop() }()
+		server := tr.Server()
+
+		// cache is nil, should fall back to registry
+		server.cache = nil
+
+		if server.WorkerCount() != 2 {
+			t.Errorf("expected 2 workers from registry fallback (cache=nil), got %d", server.WorkerCount())
+		}
+	})
+
+	t.Run("no_workers_returns_zero", func(t *testing.T) {
+		tr := testRegistry(t, nil)
+		defer tr.cancel()
+		defer func() { _ = tr.reg.Stop() }()
+		server := tr.Server()
+
+		if server.WorkerCount() != 0 {
+			t.Errorf("expected 0 workers, got %d", server.WorkerCount())
+		}
+	})
+}

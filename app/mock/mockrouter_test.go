@@ -270,10 +270,10 @@ func validateConnections(t *testing.T, path string) {
 		t.Fatalf("read fixture: %v", err)
 	}
 
-	// Connections fixture is {"connections": int}, mirroring the
+	// Connections fixture is {"workers": int}, mirroring the
 	// anonymous struct the router encodes in handleConnectionCount.
 	var resp struct {
-		Connections int `json:"connections"`
+		Workers int `json:"workers"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -282,7 +282,7 @@ func validateConnections(t *testing.T, path string) {
 		t.Logf("body snippet: %.200s", string(data))
 	}
 
-	if resp.Connections < 0 {
-		t.Error("connections.json: connections count cannot be negative")
+	if resp.Workers < 0 {
+		t.Error("connections.json: workers count cannot be negative")
 	}
 }

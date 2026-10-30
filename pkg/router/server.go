@@ -652,4 +652,12 @@ func (s *Server) Addr() string {
 	return s.addr
 }
 
+// WorkerCount returns the number of connected/available workers.
+// It prefers the capability cache (which has hydrated capabilities) and
+// falls back to the registry's available workers when the cache is empty or nil.
+// Exposed for testability.
+func (s *Server) WorkerCount() int {
+	return s.workerCount()
+}
+
 // hubLoadSnapshot returns a per-worker queue-load snapshot from the hub, taken

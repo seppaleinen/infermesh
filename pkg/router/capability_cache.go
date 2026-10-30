@@ -102,7 +102,17 @@ func (c *CapabilityCache) Update(worker protocol.WorkerInfo) error {
 }
 
 // fetchCapabilities fetches capabilities from a worker's HTTP endpoint.
+// For WebSocket workers (transport == "ws"), capabilities are already
+// hydrated via the WebSocket MsgCapabilities message, so we return them
+// directly without HTTP dial-back.
 func (c *CapabilityCache) fetchCapabilities(worker protocol.WorkerInfo) (protocol.Capabilities, error) {
+	// WebSocket workers don't have cluster-accessible HTTP endpoints.
+	// Their capabilities are pushed via MsgCapabilities over the WebSocket
+	// connection and are already present in worker.Capabilities.
+	if worker.Transport == protocol.TransportWS {
+		return worker.Capabilities, nil
+	}
+
 	url := fmt.Sprintf("http://%s:%d/capabilities", worker.IP, worker.Port)
 
 	client := &http.Client{

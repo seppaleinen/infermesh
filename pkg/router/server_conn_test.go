@@ -97,17 +97,36 @@ func TestConnectionCountEndpointIntegration(t *testing.T) {
 	addr := ln.Addr().String()
 	url := "http://" + addr + "/meta/connections/count"
 
-	if got := server.connections.Load(); got != 0 {
-		t.Errorf("expected initial connection count 0, got %d", got)
+	// Register two workers in the registry so the endpoint has workers to count.
+	// In production, workers register via mDNS or dev-mode HTTP.
+	worker1 := protocol.WorkerInfo{
+		ID:       "worker-1",
+		Hostname: "worker-1",
+		IP:       "127.0.0.1",
+		Port:     8081,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
 	}
+	worker2 := protocol.WorkerInfo{
+		ID:       "worker-2",
+		Hostname: "worker-2",
+		IP:       "127.0.0.1",
+		Port:     8082,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+	}
+	_ = server.reg.HandleEvent(protocol.DiscoveryEvent{Type: protocol.EventAdded, Worker: worker1})
+	_ = server.reg.HandleEvent(protocol.DiscoveryEvent{Type: protocol.EventAdded, Worker: worker2})
 
-	// GET should return 200 with JSON payload "clients": >=0.
+	// GET should return 200 with JSON payload "workers": count.
 	resp, err := http.Get(url)
 	if err != nil {
 		t.Fatalf("GET /meta/connections/count: %v", err)
 	}
 	var body struct {
-		Connections int `json:"connections"`
+		Workers int `json:"workers"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -117,13 +136,8 @@ func TestConnectionCountEndpointIntegration(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("expected status 200, got %d", resp.StatusCode)
 	}
-	if body.Connections < 0 {
-		t.Errorf("expected connections >= 0, got %d", body.Connections)
-	}
-
-	// After a request with keep-alive the server should have an idle connection.
-	if got := server.connections.Load(); got != 1 {
-		t.Errorf("expected connection count 1 after request (keep-alive), got %d", got)
+	if body.Workers != 2 {
+		t.Errorf("expected 2 workers, got %d", body.Workers)
 	}
 
 	// POST method must be rejected with 405 Method Not Allowed.
