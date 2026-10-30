@@ -289,13 +289,22 @@ func runRouter(args []string) int {
 		}
 	}()
 
+	// Resolve API key: --api-key wins; INFERMESH_API_KEY is the env-var fallback
+	// so the API key can be injected via env without editing ROUTER_ARGS.
+	apiKey := f.APIKey
+	if apiKey == "" {
+		if env := os.Getenv("INFERMESH_API_KEY"); env != "" {
+			apiKey = env
+		}
+	}
+
 	// Security configuration
 	secCfg := security.Config{
 		DevMode:    mode.IsDev(),
 		MTLSCert:   f.MTLSCert,
 		MTLSKey:    f.MTLSKey,
 		CertDir:    f.CertDir,
-		APIKey:     f.APIKey,
+		APIKey:     apiKey,
 		TrustedCNs: f.TrustedCNs,
 	}
 
@@ -380,14 +389,9 @@ func runRouter(args []string) int {
 		go srv.RunRelay(ctx, relayURL)
 	}
 
-	// --api-key wins; INFERMESH_API_KEY is the env-var fallback so the
-	// API key can be injected via env without editing ROUTER_ARGS.
-	apiKey := f.APIKey
-	if apiKey == "" {
-		if env := os.Getenv("INFERMESH_API_KEY"); env != "" {
-			apiKey = env
-		}
-	}
+	// Set API key for worker registration (hub). The key was already resolved
+	// earlier and passed to secCfg for middleware installation in NewServer.
+	// This call ensures the hub also has the key for worker-facing auth.
 	if apiKey != "" {
 		srv.SetAPIKey(apiKey)
 	}
