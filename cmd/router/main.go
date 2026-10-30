@@ -170,7 +170,7 @@ func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
 	fs.StringVar(&f.APIKey, "api-key", "", "API key for authenticating inference requests (dev and prod mode)")
 	fs.StringVar(&f.TrustedCNs, "trusted-cn", "", "comma-separated list of trusted client certificate CNs for mTLS (empty = any)")
 	fs.StringVar(&f.Addr, "addr", ":8080", "listen address (host:port) for the router HTTP server")
-	fs.StringVar(&f.RelayURL, "relay-url", "", "relay URL for outbound-only WebSocket connectivity (dev mode only)")
+	fs.StringVar(&f.RelayURL, "relay-url", "", "relay base URL for outbound-only WebSocket connectivity (dev mode only); accepts ws://host:port or ws://host:port/v1/connect — the /v1/connect suffix is optional and stripped before dialing")
 	fs.IntVar(&f.MaxInFlight, "max-in-flight", 0, "max concurrent in-flight calls per worker (0 = default of 4); rejects excess with HTTP 429")
 	fs.IntVar(&f.MaxConnections, "max-connections", 0, "max concurrent worker WebSocket connections (0 = default of 256); rejects excess with a protocol error frame")
 	fs.StringVar(&f.WorkerMaxInFlight, "worker-max-in-flight", "", "comma-separated worker max-in-flight overrides (id=cap,id=cap; empty = none)")

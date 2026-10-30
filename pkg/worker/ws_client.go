@@ -95,10 +95,16 @@ func WSRegisterLoop(ctx context.Context, cfg WSConfig, infoFn func() protocol.Wo
 	}
 }
 
+// canonicalConnectPath is the WebSocket endpoint the router mounts for
+// worker registration (see pkg/router/ws_hub.go Handler and
+// cmd/relay/main.go startWSServer).
+const canonicalConnectPath = "/v1/connect"
+
 // normalizeConnectURL converts a router base URL (possibly http://-style, as
 // accepted by --router) into a WebSocket URL targeting /v1/connect. A bare
-// host/port gets the path appended; an explicit path is kept as-is so callers
-// can point at custom endpoints.
+// host/port gets the path appended; a user-supplied /v1/connect is stripped
+// first so both "ws://host:port" and "ws://host:port/v1/connect" normalize
+// to the same canonical URL (issue #191).
 func normalizeConnectURL(raw string) (string, error) {
 	s := strings.TrimSpace(raw)
 	switch {
@@ -113,8 +119,15 @@ func normalizeConnectURL(raw string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid router url %q: %w", raw, err)
 	}
+	// Strip a user-supplied /v1/connect (or a trailing-slash variant) so the
+	// canonical path is always appended exactly once. Paths other than the
+	// canonical connect endpoint are preserved verbatim, so callers can still
+	// point at custom endpoints.
+	if u.Path == canonicalConnectPath || u.Path == canonicalConnectPath+"/" {
+		u.Path = ""
+	}
 	if u.Path == "" || u.Path == "/" {
-		u.Path = "/v1/connect"
+		u.Path = canonicalConnectPath
 	}
 	u.RawQuery = ""
 	u.Fragment = ""

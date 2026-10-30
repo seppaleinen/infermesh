@@ -86,7 +86,7 @@ func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	fs.StringVar(&f.BackendURL, "backend-url", "", "backend adapter base URL (overrides the adapter's default endpoint)")
 	fs.StringVar(&f.Router, "router", "", "router base URL for HTTP registration (e.g. http://127.0.0.1:8080, dev-mode only)")
 	fs.StringVar(&f.ProdRouter, "prod-router", "", "router base URL for mTLS registration in production mode (e.g. https://127.0.0.1:8080); bypasses mDNS")
-	fs.StringVar(&f.RelayURL, "relay-url", "", "relay URL for outbound-only WebSocket connectivity (dev mode only)")
+	fs.StringVar(&f.RelayURL, "relay-url", "", "relay base URL for outbound-only WebSocket connectivity (dev mode only); accepts ws://host:port or ws://host:port/v1/connect — the /v1/connect suffix is optional and stripped before dialing")
 	fs.StringVar(&f.TrustedCNs, "trusted-cn", "", "comma-separated list of trusted client certificate CNs for mTLS (empty = any)")
 	fs.BoolVar(&f.EnableHealthChecks, "enable-health-checks", true, "enable periodic backend health checks")
 	fs.StringVar(&f.AllowedModels, "allowed-models", "", "comma-separated list of models this worker is WILLING to serve (whitelist); empty = all")

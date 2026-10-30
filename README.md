@@ -244,6 +244,10 @@ make relay
   --relay-url ws://192.168.1.216:8090
 ```
 
+Both `--relay-url` forms are accepted: `ws://host:port` (bare) or
+`ws://host:port/v1/connect` (explicit). The canonical `/v1/connect` suffix is
+always appended after normalization, so either form dials the same endpoint.
+
 **On the worker machine** (firewalled, can only dial outbound):
 
 ```bash
@@ -327,7 +331,7 @@ The router binary accepts the following flags:
 | `--api-key <key>` | API key for authenticating inference requests (dev and prod mode)
 | `--trusted-cn <list>` | Comma-separated list of trusted client certificate CNs for mTLS (empty = any)
 | `--addr <address>` | Listen address (host:port) for the router HTTP server (default `:8080`)
-| `--relay-url <url>` | Relay URL for outbound-only WebSocket connectivity (dev mode only)
+| `--relay-url <url>` | Relay base URL for outbound-only WebSocket connectivity (dev mode only); accepts `ws://host:port` or `ws://host:port/v1/connect` — the `/v1/connect` suffix is optional and stripped before dialing |
 | `--max-in-flight <N>` | Max concurrent in-flight calls per worker (0 = default of 4); rejects excess with HTTP 429
 | `--max-connections <N>` | Max concurrent worker WebSocket connections (0 = default of 256); rejects excess with a protocol error frame
 | `--max-attempts <N>` | Max dispatch attempts per non-streaming request (1 disables failover)
@@ -363,7 +367,7 @@ The worker binary accepts the following flags:
 | `--model-path <path>` | Path to the model file (required in production mode for `llama-cpp`) |
 | `--router <url>` | Router base URL for HTTP registration in dev mode (e.g. `http://127.0.0.1:8080`) |
 | `--prod-router <url>` | Router base URL for mTLS registration in production mode (e.g. `https://127.0.0.1:8080`) |
-| `--relay-url <url>` | Relay URL for outbound-only WebSocket connectivity (dev mode only) |
+| `--relay-url <url>` | Relay base URL for outbound-only WebSocket connectivity (dev mode only); accepts `ws://host:port` or `ws://host:port/v1/connect` — the `/v1/connect` suffix is optional and stripped before dialing |
 | `--mtls-cert <path>` | Path to mTLS certificate file |
 | `--mtls-key <path>` | Path to mTLS key file |
 | `--cert-dir <path>` | Path to certificate directory |

@@ -18,10 +18,17 @@ import (
 // sent because the relay connection is down.
 var errRelayDisconnected = errors.New("relay connection unavailable")
 
+// canonicalConnectPath is the WebSocket endpoint the relay mounts for
+// worker and router connections (see cmd/relay/main.go startWSServer). It is
+// the same path the router's own /v1/connect handler serves, so both sides of
+// a relay link target the canonical endpoint.
+const canonicalConnectPath = "/v1/connect"
+
 // normalizeRelayURL converts a relay WebSocket URL (possibly http://-style, as
 // accepted by --relay-url) into a WebSocket URL targeting /v1/connect. A bare
-// host/port gets the path appended; an explicit path is kept as-is so callers
-// can point at custom endpoints.
+// host/port gets the path appended; a user-supplied /v1/connect is stripped
+// first so both "ws://host:port" and "ws://host:port/v1/connect" normalize
+// to the same canonical URL (issue #191).
 func normalizeRelayURL(raw string) (string, error) {
 	s := strings.TrimSpace(raw)
 	switch {
@@ -36,8 +43,14 @@ func normalizeRelayURL(raw string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid relay url %q: %w", raw, err)
 	}
+	// Strip a user-supplied /v1/connect (or trailing-slash variant) so the
+	// canonical path is always appended exactly once. Other paths are kept
+	// verbatim, so callers can still point at custom endpoints.
+	if u.Path == canonicalConnectPath || u.Path == canonicalConnectPath+"/" {
+		u.Path = ""
+	}
 	if u.Path == "" || u.Path == "/" {
-		u.Path = "/v1/connect"
+		u.Path = canonicalConnectPath
 	}
 	u.RawQuery = ""
 	u.Fragment = ""

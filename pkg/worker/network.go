@@ -56,10 +56,18 @@ func isLoopbackHost(host string) bool {
 //
 // The dial is fire-and-forget: the returned connection is closed immediately
 // after a successful handshake so the real WSRegisterLoop can own the socket.
+//
+// The raw URL is normalized through normalizeConnectURL before dialing, so a
+// bare "ws://host:port" (the documented form) probes the canonical
+// /v1/connect endpoint instead of failing on a pathless URL (issue #191).
 func relayReachable(ctx context.Context, relayURL string) bool {
+	normalized, err := normalizeConnectURL(relayURL)
+	if err != nil {
+		return false
+	}
 	dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	conn, err := wsutil.Dial(dialCtx, relayURL, "")
+	conn, err := wsutil.Dial(dialCtx, normalized, "")
 	if err != nil {
 		return false
 	}
