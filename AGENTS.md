@@ -187,6 +187,90 @@ worker count and call count over a rolling 10-minute window.
 - Call count: inferences dispatched in last 10 minutes
 - Counter implementation: `pkg/router/call_counter.go` (in-memory, stdlib only)
 
+## Agent Pipeline
+
+This project uses a structured agent pipeline for development work, following the **opencode agent conventions**. The pipeline ensures proper verification, security review, and documentation of all changes.
+
+### Pipeline Overview
+
+| Stage | Agent | Purpose |
+|-------|-------|---------|
+| 1 | `dev-team-lead` | Coordinates dev pipeline: architecture → implementation → testing → review → security |
+| 2 | `devops-team-lead` | Coordinates infra pipeline: design → GitOps → verification → security |
+| 3 | `test-engineer` | Implements tests and verifies test coverage |
+| 4 | `code-reviewer` | Performs quality gate review |
+| 5 | `ai-security-auditor` | Security vulnerability analysis |
+| 6 | `devops-cleanup` | Post-verification: closes issues, cleans branches |
+| 7 | `post-mortem-analyst` | Analyzes workflow, proposes improvements |
+
+### Pipeline Routing
+
+**Dev work** — Application code, features, bug fixes, tests, API changes
+```
+team-lead → dev-team-lead → [architect →] [engineer] → test-engineer → code-reviewer → ai-security-auditor → docs → devops-cleanup → post-mortem-analyst
+```
+
+**DevOps work** — Infrastructure, GitOps, Kubernetes, Helm, cluster changes
+```
+team-lead → devops-team-lead → [devops-architect →] devops-engineer → devops-verificator → ai-security-auditor → docs → devops-cleanup → post-mortem-analyst
+```
+
+**Mixed tasks** — Dispatch both leads in parallel with their respective responsibilities.
+
+### Delegation Contract
+
+When dispatching agents, follow the subagent-only pattern:
+- Pass: Research Brief + clear prompt with constraints
+- Do NOT pass: Full conversation history, raw tool outputs
+
+All pipeline leads are dispatched via `subagent()`. Depth is capped at 2 (team-lead → lead → worker → return).
+
+### Tool Usage Rules
+
+| Tool | Use For | NOT For |
+|------|---------|---------|
+| `execute` | Pure JS: `JSON.parse()`, `data.map()`, `fetch()`, math, string manipulation | Shell commands, `require()`, `process`, `fs`, `Buffer`, `child_process`, git, file I/O |
+| `shell` | CLI commands: `git`, `find`, `grep`, `kubectl`, `flux`, `curl`, `node -e`, `npm` | Pure JS computation, file reads/writes |
+| `read` / `write` / `edit` | File operations in the workspace | Shell redirections (`cat >`, `tee`), inline file creation |
+
+### Post-Dispatch Gate
+
+After any pipeline lead returns `[SUCCESS]`, verify the handover before proceeding:
+
+1. **Handover integrity:** Must contain `STATUS`, `TRACE`, and `PIPELINE STAGE` fields
+2. **Mandatory stages:** `dev-team-lead` requires: architect/design OR Fast Path → engineer(s) → test-engineer **or** code-reviewer → security
+3. **Working tree:** Must be clean or have committed changes (record `LAST_COMMIT` in handover)
+
+Gate failures return `[BLOCK]` with the specific issue.
+
+### Work-Tree Audit
+
+Immediately after receiving a task, run:
+```
+git status --short
+git diff --stat
+git log --oneline -5
+```
+
+This informs the pipeline stages and helps detect if work is already in progress (`WORK_PRESENT` signal) or needs to start fresh (`WORK_ABSENT`).
+
+### Rework Handling
+
+- Tasks resume via `task_id` (from REWORK handler)
+- Maximum 2 retries before user escalation
+- `[REWORK]` → re-dispatch with error context
+- `[BLOCK]` → present to user with full context
+
+Include `REWORK_COUNT: N` in handover outputs.
+
+### Provider/Transport Diagnostic
+
+When subagent dispatch fails with provider/transport error:
+1. `dig +short litellm.labb.site` — DNS check
+2. `curl -sSf https://litellm.labb.site/v1/models` — HTTP endpoint check
+3. If both pass → likely transient, retry counts toward max-2
+4. If either fails → **do not retry**, escalate with diagnostic output
+
 ## Post-mortem / Opencode notes
 
 - Opencode session export command path: `opencode session export <sessionID>`
@@ -194,7 +278,7 @@ worker count and call count over a rolling 10-minute window.
 
 ---
 
-*Last updated: 2026-09-21*
+*Last updated: 2026-10-31*
 
 ## Registry event-drop risk under high churn (Issue #152)
 

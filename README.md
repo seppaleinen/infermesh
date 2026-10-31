@@ -446,26 +446,75 @@ The project uses an **agent pipeline** for development:
 2. **devops-team-lead** → handles infrastructure, cluster, and deployment pipelines
 3. Each issue is tracked on [GitHub Issues](https://github.com/seppaleinen/infermesh/issues)
 
+### Agent Pipeline
+
+The pipeline ensures proper verification, security review, and documentation of all changes:
+
+| Stage | Agent | Purpose |
+|-------|-------|---------|
+| 1 | `dev-team-lead` | Coordinates dev pipeline: architecture → implementation → testing → review → security |
+| 2 | `devops-team-lead` | Coordinates infra pipeline: design → GitOps → verification → security |
+| 3 | `test-engineer` | Implements tests and verifies test coverage |
+| 4 | `code-reviewer` | Performs quality gate review |
+| 5 | `ai-security-auditor` | Security vulnerability analysis |
+| 6 | `devops-cleanup` | Post-verification: closes issues, cleans branches |
+| 7 | `post-mortem-analyst` | Analyzes workflow, proposes improvements |
+
+**Pipeline Routing:**
+- **Dev work** — Application code, features, bug fixes, tests, API changes
+- **DevOps work** — Infrastructure, GitOps, Kubernetes, Helm, cluster changes
+- **Mixed tasks** — Both leads dispatched in parallel
+
+See [AGENTS.md](AGENTS.md) for detailed pipeline rules, tool usage guidelines, and handoff protocol.
+
 ### Build Commands
 
 ```bash
-make build        # Build the unified infermesh binary
-make test         # Run unit tests
-make test-integration  # Run integration tests
-make test-e2e     # Run end-to-end tests
-make lint         # Run linter (golangci-lint)
-make tidy         # go mod tidy
+make build            # Build the unified infermesh binary
+make test             # Run unit tests
+make test-integration # Run integration tests
+make test-e2e         # Run end-to-end tests
+make test-security    # Run security tests
+make lint             # Run linter (golangci-lint)
+make tidy             # go mod tidy
+make coverage         # Generate coverage report
 ```
 
 ### Testing Strategy
 
 | Level | Location | Description |
 |-------|----------|-------------|
-| Unit | `pkg/*/` | Method-level, table-driven, complex logic |
+| Unit | `pkg/*/` | Method-level, table-driven tests for complex logic |
 | Integration | `tests/integration/` | Router↔worker interaction, mDNS discovery, heartbeat behavior |
 | E2E | `tests/e2e/` | Full flow: start router, start workers, send request, streaming response |
+| Security | `tests/integration_security/` | Security-focused integration tests |
+| Coverage | 80% target | Minimum coverage on `pkg/` packages |
 
-**Coverage target**: 80% on `pkg/` packages.
+**Test Commands:**
+```bash
+make test              # Unit tests: `go test ./pkg/...`
+make test-integration  # Integration tests
+make test-e2e          # End-to-end tests
+make test-security     # Security tests
+make coverage          # Coverage report: `go tool funccover` (Go 1.27+)
+```
+
+**Running specific tests:**
+```bash
+go test ./pkg/discovery/...    # Single package
+./hack/test_platforms.sh     # Cross-platform verification
+```
+
+### Security Review Process
+
+Security is reviewed via the `ai-security-auditor` agent which follows [Avanza Technical Security Requirements]([ref: security-guidelines]). High-confidence vulnerabilities are reported with severity and remediation guidance.
+
+For code security reviews, run:
+```bash
+make test-security  # Run security-focused tests
+```
+
+The security review is a mandatory gate in the agent pipeline — all changes must pass security review before merging.
 
 ## Current Issues
 
