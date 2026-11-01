@@ -547,12 +547,40 @@ func TestSupervisorProdModeSyncsAPIKey(t *testing.T) {
 	}
 }
 
-// TestSupervisorDevModeDoesNotSyncAPIKey verifies that in dev mode the
-// desktop RouterClient carries no API key (the router only enforces when a
-// key is actually configured, so dev mode must send no header).
-func TestSupervisorDevModeDoesNotSyncAPIKey(t *testing.T) {
+// TestSupervisorDevModeSyncsAPIKey verifies that in dev mode with a key
+// provisioned in the keyring, the desktop RouterClient carries it (issue
+// #195): the router enforces the key regardless of mode, so the desktop
+// must send it. StopRouter clears the key.
+func TestSupervisorDevModeSyncsAPIKey(t *testing.T) {
 	fx := newTestSupervisor(t)
-	fx.save(t)
+
+	const apiKey = "dev-router-key"
+	fx.kr.Set(secretRefRouterAPIKey, apiKey)
+	fx.save(t) // DefaultSettings: dev mode
+
+	rc := NewRouterClient("http://127.0.0.1:8080")
+	fx.s.SetRouterClient(rc)
+
+	if err := fx.s.StartRouter(); err != nil {
+		t.Fatalf("StartRouter: %v", err)
+	}
+	if got := rc.GetAPIKey(); got != apiKey {
+		t.Errorf("RouterClient API key in dev mode = %q, want %q", got, apiKey)
+	}
+
+	fx.builder.last().finish(nil)
+	_ = fx.s.StopRouter()
+	if got := rc.GetAPIKey(); got != "" {
+		t.Errorf("RouterClient API key after StopRouter in dev mode = %q, want empty", got)
+	}
+}
+
+// TestSupervisorDevModeNoKeyNoHeader verifies that in dev mode with no key
+// provisioned, the desktop RouterClient carries no API key (the router only
+// enforces when a key is actually configured, so dev mode must send no header).
+func TestSupervisorDevModeNoKeyNoHeader(t *testing.T) {
+	fx := newTestSupervisor(t)
+	fx.save(t) // DefaultSettings: dev mode, no key provisioned
 
 	rc := NewRouterClient("http://127.0.0.1:8080")
 	fx.s.SetRouterClient(rc)
@@ -561,7 +589,7 @@ func TestSupervisorDevModeDoesNotSyncAPIKey(t *testing.T) {
 		t.Fatalf("StartRouter: %v", err)
 	}
 	if got := rc.GetAPIKey(); got != "" {
-		t.Errorf("RouterClient API key in dev mode = %q, want empty", got)
+		t.Errorf("RouterClient API key in dev mode with no key = %q, want empty", got)
 	}
 
 	fx.builder.last().finish(nil)

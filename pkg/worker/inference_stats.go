@@ -15,12 +15,12 @@ const DefaultInferenceWindow = 10 * time.Minute
 
 // inferenceSample is a single completed inference call for one model.
 type inferenceSample struct {
-	model              string
-	promptTokens       int
-	completionTokens   int
-	ttft               time.Duration
-	total              time.Duration
-	when               time.Time
+	model            string
+	promptTokens     int
+	completionTokens int
+	ttft             time.Duration
+	total            time.Duration
+	when             time.Time
 }
 
 // InferenceTracker records completed inference calls per model over a

@@ -89,7 +89,7 @@ func TestRelayReachable_NormalizesFirst(t *testing.T) {
 	host := strings.TrimPrefix(server.URL, "http://")
 
 	// Bare URL: normalization must append /v1/connect before dialing.
-	if !relayReachable(context.Background(), "ws://" + host) {
+	if !relayReachable(context.Background(), "ws://"+host) {
 		t.Fatal("relayReachable returned false for a live relay with bare URL; " +
 			"expected normalization to append /v1/connect before dialing (issue #191)")
 	}
@@ -101,7 +101,7 @@ func TestRelayReachable_NormalizesFirst(t *testing.T) {
 	}
 
 	// Both URL forms must probe the same canonical endpoint.
-	if !relayReachable(context.Background(), "ws://" + host + "/v1/connect") {
+	if !relayReachable(context.Background(), "ws://"+host+"/v1/connect") {
 		t.Fatal("relayReachable returned false for the explicit-suffix URL")
 	}
 

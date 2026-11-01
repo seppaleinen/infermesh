@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
-	
+
 	"github.com/seppaleinen/infermesh/pkg/capabilities"
 	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/pkg/security"
@@ -152,9 +152,9 @@ func TestSetBackend_SeesConcurrencyEstimatorWithThreads(t *testing.T) {
 	_ = os.Remove(persistPath)
 
 	tests := []struct {
-		name     string
-		threads  int
-		wantCap  int
+		name    string
+		threads int
+		wantCap int
 	}{
 		{"llama-cpp with 8 threads", 8, 8},
 		{"llama-cpp with 1 thread", 1, 1},

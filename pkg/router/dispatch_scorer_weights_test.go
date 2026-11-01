@@ -13,9 +13,9 @@ import (
 func TestBuildCandidatesWeightsEnabled(t *testing.T) {
 	workers := []protocol.WorkerInfo{
 		{
-			ID:    "worker-loaded",
-			IP:    "127.0.0.1",
-			Port:  8081,
+			ID:       "worker-loaded",
+			IP:       "127.0.0.1",
+			Port:     8081,
 			LastSeen: time.Now(),
 			Capabilities: protocol.Capabilities{
 				Models: []protocol.ModelInfo{
@@ -24,9 +24,9 @@ func TestBuildCandidatesWeightsEnabled(t *testing.T) {
 			},
 		},
 		{
-			ID:    "worker-unloaded",
-			IP:    "127.0.0.1",
-			Port:  8082,
+			ID:       "worker-unloaded",
+			IP:       "127.0.0.1",
+			Port:     8082,
 			LastSeen: time.Now(),
 			Capabilities: protocol.Capabilities{
 				Models: []protocol.ModelInfo{
@@ -79,9 +79,9 @@ func TestBuildCandidatesWeightsEnabled(t *testing.T) {
 func TestBuildCandidatesWeightsDisabled(t *testing.T) {
 	workers := []protocol.WorkerInfo{
 		{
-			ID:    "worker-loaded",
-			IP:    "127.0.0.1",
-			Port:  8081,
+			ID:       "worker-loaded",
+			IP:       "127.0.0.1",
+			Port:     8081,
 			LastSeen: time.Now(),
 			Capabilities: protocol.Capabilities{
 				Models: []protocol.ModelInfo{
@@ -90,9 +90,9 @@ func TestBuildCandidatesWeightsDisabled(t *testing.T) {
 			},
 		},
 		{
-			ID:    "worker-unloaded",
-			IP:    "127.0.0.1",
-			Port:  8082,
+			ID:       "worker-unloaded",
+			IP:       "127.0.0.1",
+			Port:     8082,
 			LastSeen: time.Now(),
 			Capabilities: protocol.Capabilities{
 				Models: []protocol.ModelInfo{
@@ -134,9 +134,9 @@ func TestBuildCandidatesWeightsDisabled(t *testing.T) {
 // enabled.
 func TestBuildCandidatesAutoLoadPreserved(t *testing.T) {
 	worker := protocol.WorkerInfo{
-		ID:    "worker-advertiser",
-		IP:    "127.0.0.1",
-		Port:  8081,
+		ID:       "worker-advertiser",
+		IP:       "127.0.0.1",
+		Port:     8081,
 		LastSeen: time.Now(),
 		Capabilities: protocol.Capabilities{
 			Models: []protocol.ModelInfo{

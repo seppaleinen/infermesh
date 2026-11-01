@@ -104,10 +104,33 @@ func TestRouterWorkerE2E(t *testing.T) {
 
 	var routerStderr, workerStdout, workerStderr bytes.Buffer
 	router := exec.Command(routerBin, "--dev-mode", "--addr", "127.0.0.1:8082")
+	router.Stdout = &routerStderr
 	router.Stderr = &routerStderr
 	if err := router.Start(); err != nil {
 		_ = router.Process.Kill()
 		t.Fatalf("starting router process: %v", err)
+	}
+
+	// Wait for router to be ready before starting the worker.
+	// The router takes a few seconds to fully start and register routes.
+	// Give it an initial grace period before polling.
+	time.Sleep(3 * time.Second)
+	client := &http.Client{Timeout: 2 * time.Second}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			_ = router.Process.Kill()
+			t.Fatalf("router not ready after 15s (stderr: %s)", routerStderr.String())
+		}
+		resp, err := client.Get(routerBase + "/v1/workers")
+		if err == nil && resp.StatusCode == http.StatusOK {
+			_ = resp.Body.Close()
+			break
+		}
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	// Start the in-process mock backend before the worker so that, under

@@ -11,9 +11,9 @@ import (
 
 	"golang.org/x/net/websocket"
 
-	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/internal/registry"
 	"github.com/seppaleinen/infermesh/internal/wsutil"
+	"github.com/seppaleinen/infermesh/pkg/protocol"
 )
 
 // errRateLimited is returned when a worker is at its MaxInFlight cap. It is
@@ -87,6 +87,7 @@ type WSHub struct {
 	// which lazily initialises it from the default).
 	connSem chan struct{}
 }
+
 // defaultMaxInFlight is the per-worker concurrent-call cap applied when the
 // router is started without --max-in-flight. A slow/stalled HTTP client can
 // fill chunkCh and freeze the reader loop (heartbeats, pings and all other
@@ -103,6 +104,7 @@ const defaultMaxConnections = 256
 // before rejecting the handshake. Kept short so a slow accept queue does not
 // hold the HTTP server's goroutine pool hostage.
 const connAcquireTimeout = 2 * time.Second
+
 // acquireConn acquires a connection slot, returning the slot handle that
 // identifies it for release. It returns nil when the cap is disabled (no
 // semaphore was ever created) — callers that want to release must treat
@@ -118,6 +120,7 @@ func (h *WSHub) acquireConn(ctx context.Context) (chan struct{}, error) {
 		return nil, errConnLimit
 	}
 }
+
 // NewWSHub creates a hub bridging WebSocket worker connections into the
 // registry. reg may be nil (events are then dropped).
 func NewWSHub(reg registry.Registry, log *slog.Logger) *WSHub {
@@ -139,6 +142,7 @@ func NewWSHub(reg registry.Registry, log *slog.Logger) *WSHub {
 		workerMaxInFlight: make(map[string]int),
 	}
 }
+
 // SetMaxInFlight overrides the per-worker concurrent-call cap. A value <= 0
 // falls back to defaultMaxInFlight.
 func (h *WSHub) SetMaxInFlight(n int) {
@@ -182,6 +186,7 @@ func (h *WSHub) maxInFlightFor(workerID string) int {
 func (h *WSHub) MaxInFlight() int {
 	return h.maxInFlightFor("")
 }
+
 // SetMaxConnections overrides the total worker WebSocket connection cap. A
 // value <= 0 falls back to defaultMaxConnections. The semaphore is created
 // lazily on first use so NewWSHub stays allocation-free when the cap is never
@@ -206,6 +211,7 @@ func (h *WSHub) connSemFor() chan struct{} {
 	}
 	return h.connSem
 }
+
 // SetAPIKey sets the API key used to validate worker registrations.
 func (h *WSHub) SetAPIKey(key string) {
 	h.apiKey = key
@@ -217,6 +223,7 @@ func (h *WSHub) SetAPIKey(key string) {
 func (h *WSHub) SetRelayURL(url string) {
 	h.relayURL = url
 }
+
 // Handler returns the /v1/connect upgrade handler.
 func (h *WSHub) Handler() http.Handler {
 	if h.relayURL != "" {
@@ -224,6 +231,7 @@ func (h *WSHub) Handler() http.Handler {
 	}
 	return wsutil.Server(h.handleConn)
 }
+
 // Start launches the idle ping loop that keeps liveness traffic flowing on
 // otherwise quiet connections.
 func (h *WSHub) Start(ctx context.Context) {
@@ -252,6 +260,7 @@ func (h *WSHub) Start(ctx context.Context) {
 		}
 	}()
 }
+
 // Client returns a WorkerClient bound to the active WebSocket connection for
 // id, or nil if the worker is not connected over WebSocket.
 func (h *WSHub) Client(id string) WorkerClient {
@@ -263,6 +272,7 @@ func (h *WSHub) Client(id string) WorkerClient {
 	}
 	return &wsWorkerClient{conn: c, log: h.log}
 }
+
 // handleConn is invoked once per upgraded connection. The first frame must be
 // a register message; afterwards the worker's heartbeats, capabilities pushes
 // and inference responses are dispatched until the connection dies.
@@ -429,6 +439,7 @@ func (h *WSHub) handleConn(ws *websocket.Conn) {
 	// parked here for the life of the connection.
 	conn.readerLoop()
 }
+
 // bridge forwards a discovery event into the registry, which in turn feeds
 // the capability cache and /v1/workers.
 func (h *WSHub) bridge(event protocol.DiscoveryEvent) {
@@ -451,6 +462,7 @@ func (h *WSHub) HandleRegistryEvent(event protocol.DiscoveryEvent) {
 	defer h.mu.Unlock()
 	delete(h.workerMaxInFlight, event.Worker.ID)
 }
+
 // sendErrorRaw writes an error message on a not-yet-registered connection.
 func sendErrorRaw(ws *websocket.Conn, message string) error {
 	msg, err := protocol.NewMessage(protocol.MsgError, protocol.ErrorPayload{Message: message})
@@ -459,6 +471,7 @@ func sendErrorRaw(ws *websocket.Conn, message string) error {
 	}
 	return wsutil.SendJSON(ws, msg)
 }
+
 // dispatch routes an inbound message for a registered connection.
 func (h *WSHub) dispatch(c *wsConnection, msg protocol.Message) {
 	switch msg.Type {
@@ -535,6 +548,7 @@ type pendingCall struct {
 	closeOnce  sync.Once
 	removeOnce sync.Once
 }
+
 // completeStream terminates a streaming call: it emits the [DONE] sentinel
 // (best effort — dropped if the consumer stopped draining) and closes the
 // channels exactly once.
@@ -547,12 +561,14 @@ func (pc *pendingCall) completeStream() {
 		pc.finish()
 	})
 }
+
 // completeCall terminates a single-response call.
 func (pc *pendingCall) completeCall() {
 	pc.closeOnce.Do(func() {
 		pc.finish()
 	})
 }
+
 // fail terminates the call with err, delivered on errCh.
 func (pc *pendingCall) fail(err error) {
 	pc.closeOnce.Do(func() {

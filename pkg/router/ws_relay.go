@@ -10,8 +10,8 @@ import (
 
 	"golang.org/x/net/websocket"
 
-	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/internal/wsutil"
+	"github.com/seppaleinen/infermesh/pkg/protocol"
 )
 
 // errRelayDisconnected is returned when a relay worker request cannot be
@@ -56,12 +56,14 @@ func normalizeRelayURL(raw string) (string, error) {
 	u.Fragment = ""
 	return u.String(), nil
 }
+
 // relayConnected returns true if the relay connection is active.
 func (h *WSHub) relayConnected() bool {
 	h.relayMu.RLock()
 	defer h.relayMu.RUnlock()
 	return h.relayConn != nil
 }
+
 // relayConnSnapshot returns the current relay connection, or nil when the
 // relay is not connected. Callers must treat a nil result as "relay down".
 func (h *WSHub) relayConnSnapshot() *websocket.Conn {
@@ -69,6 +71,7 @@ func (h *WSHub) relayConnSnapshot() *websocket.Conn {
 	defer h.relayMu.RUnlock()
 	return h.relayConn
 }
+
 // registerRelayCall registers a pending call on the relay connection,
 // keyed by message ID. Returns the pendingCall or an error if a duplicate
 // ID already exists or the worker is at its MaxInFlight cap.
@@ -97,6 +100,7 @@ func (h *WSHub) registerRelayCall(id string, respCh chan protocol.Message, errCh
 	h.relayPending[id] = pc
 	return pc, nil
 }
+
 // registerRelayStream registers a streaming call on the relay connection.
 func (h *WSHub) registerRelayStream(id string, chunkCh chan StreamEvent, errCh chan error, workerID string) (*pendingCall, error) {
 	pc := &pendingCall{
@@ -123,6 +127,7 @@ func (h *WSHub) registerRelayStream(id string, chunkCh chan StreamEvent, errCh c
 	h.relayPending[id] = pc
 	return pc, nil
 }
+
 // routeRelayResponse routes a response message (from the relay) to the
 // pending call identified by msg.ID. Returns true if a pending call was
 // found and the message was consumed; false otherwise.
@@ -136,6 +141,7 @@ func (h *WSHub) routeRelayResponse(msg protocol.Message) bool {
 	pc.handle(msg)
 	return true
 }
+
 // DialRelay dials the relay WebSocket connection, sends router_ready
 // as the first frame, and starts reader/writer loops that bridge the
 // relay connection into the hub's existing dispatch and connection maps.
@@ -172,12 +178,14 @@ func (h *WSHub) DialRelay(ctx context.Context, url string) error {
 	go h.relayWriterLoop(ctx, done)
 	return nil
 }
+
 // relayRetry bounds the exponential backoff applied when re-dialing the
 // relay after a failed or dropped connection.
 const (
 	relayRetryInitial = 2 * time.Second
 	relayRetryMax     = 30 * time.Second
 )
+
 // runRelay maintains the outbound relay connection until ctx is cancelled:
 // it dials immediately, then re-dials with exponential backoff whenever the
 // link drops. The router's HTTP server is unaffected — only the relay link
@@ -211,6 +219,7 @@ func (h *WSHub) runRelay(ctx context.Context, url string) {
 		}
 	}
 }
+
 // sleepCtx sleeps for d or until ctx is cancelled; reports whether the full
 // duration elapsed.
 func sleepCtx(ctx context.Context, d time.Duration) bool {
@@ -221,6 +230,7 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 		return true
 	}
 }
+
 // relayWriterLoop sends messages from the relaySendCh to the relay connection.
 // It captures the connection it owns once at startup (DialRelay publishes
 // relayConn before spawning this loop) and only ever writes to that captured
@@ -268,6 +278,7 @@ func (h *WSHub) relayWriterLoop(ctx context.Context, done chan struct{}) {
 		}
 	}
 }
+
 // relayReaderLoop reads messages from the relay and dispatches them
 // to the appropriate worker connection based on WorkerID. On exit it nils
 // the relayConn field (under relayMu) and closes `done` so runRelay can
@@ -375,6 +386,7 @@ func (h *WSHub) relayReaderLoop(ctx context.Context, done chan struct{}) {
 		}
 	}
 }
+
 // cleanupRelayMetrics removes zero-value entries from relay metric maps
 // to prevent accumulation of stale worker IDs when the relay connection drops.
 func (h *WSHub) handleRelayRegister(msg protocol.Message) {

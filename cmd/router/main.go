@@ -14,10 +14,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/seppaleinen/infermesh/pkg/discovery"
 	"github.com/seppaleinen/infermesh/internal/registry"
-	"github.com/seppaleinen/infermesh/pkg/router"
 	"github.com/seppaleinen/infermesh/internal/routeraddr"
+	"github.com/seppaleinen/infermesh/pkg/discovery"
+	"github.com/seppaleinen/infermesh/pkg/router"
 	"github.com/seppaleinen/infermesh/pkg/security"
 )
 

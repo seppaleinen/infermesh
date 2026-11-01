@@ -1,9 +1,9 @@
 package worker
 
 import (
-	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"context"
 	"encoding/json"
+	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"net/http"
 	"net/http/httptest"
 	"strings"

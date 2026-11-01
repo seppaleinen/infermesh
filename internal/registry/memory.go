@@ -39,9 +39,9 @@ func New(cfg Config, log *slog.Logger) (Registry, error) {
 		return nil, fmt.Errorf("registry config: %w", err)
 	}
 	return &memoryRegistry{
-		cfg:     cfg,
-		log:     log,
-		workers: make(map[string]*workerState),
+		cfg:         cfg,
+		log:         log,
+		workers:     make(map[string]*workerState),
 		subFailures: make(map[chan Event]int),
 	}, nil
 }
@@ -75,7 +75,7 @@ func (r *memoryRegistry) sweepLoop() {
 // A channel is considered dead if it fails to receive a probe for maxSubFailures consecutive attempts.
 func (r *memoryRegistry) pruneSubs() {
 	const maxSubFailures = 12 // ~1 minute at 5s interval
-	probeEvent := Event{} // zero-value event is safe; consumers ignore unknown types
+	probeEvent := Event{}     // zero-value event is safe; consumers ignore unknown types
 
 	r.subMu.Lock()
 	defer r.subMu.Unlock()

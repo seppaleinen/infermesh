@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/seppaleinen/infermesh/internal/routeraddr"
 	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/pkg/router"
-	"github.com/seppaleinen/infermesh/internal/routeraddr"
 )
 
 // defaultRouterURL is the compile-time fallback base URL for the router.
@@ -265,17 +265,17 @@ func toWorkerView(w router.WorkerInfo) WorkerView {
 	}
 
 	return WorkerView{
-		ID:             w.ID,
-		Hostname:       w.Hostname,
-		IP:             w.IP,
-		Port:           w.Port,
-		Status:         status,
-		Version:        w.Version,
-		LoadedModels:   loaded,
-		LastSeen:       w.LastSeen,
-		Address:        address,
-		InFlight:       w.InFlight,
-		MaxInFlight:    w.MaxInFlight,
+		ID:              w.ID,
+		Hostname:        w.Hostname,
+		IP:              w.IP,
+		Port:            w.Port,
+		Status:          status,
+		Version:         w.Version,
+		LoadedModels:    loaded,
+		LastSeen:        w.LastSeen,
+		Address:         address,
+		InFlight:        w.InFlight,
+		MaxInFlight:     w.MaxInFlight,
 		TokensPerSecond: w.TokensPerSecond,
 	}
 }

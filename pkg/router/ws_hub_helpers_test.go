@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/internal/registry"
 	"github.com/seppaleinen/infermesh/internal/wsutil"
+	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"golang.org/x/net/websocket"
 )
 

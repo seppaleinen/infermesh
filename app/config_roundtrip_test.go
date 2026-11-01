@@ -281,9 +281,11 @@ func TestConfigNoModelAliasesOmitsFlag(t *testing.T) {
 	}
 }
 
-// TestConfigAPIKeyBuildRouterArg verifies that in prod mode the router is
-// launched with --api-key resolved from the keyring (router/apikey secret), and
-// that dev mode never carries an --api-key flag.
+// TestConfigAPIKeyBuildRouterArg verifies that the router is launched with
+// --api-key resolved from the keyring (router/apikey secret) in both dev and
+// prod modes whenever a key is configured (issue #195). The router enforces
+// the key regardless of mode, so the desktop must pass it on the CLI and
+// carry it on every HTTP request.
 func TestConfigAPIKeyBuildRouterArg(t *testing.T) {
 	const apiKey = "roundtrip-api-key"
 
@@ -307,7 +309,7 @@ func TestConfigAPIKeyBuildRouterArg(t *testing.T) {
 		}
 	})
 
-	t.Run("dev mode omits api key", func(t *testing.T) {
+	t.Run("dev mode includes api key when configured", func(t *testing.T) {
 		fx := newTestSupervisor(t)
 		fx.kr.Set(secretRefRouterAPIKey, apiKey)
 		fx.save(t) // DefaultSettings: dev mode
@@ -319,8 +321,8 @@ func TestConfigAPIKeyBuildRouterArg(t *testing.T) {
 		if configArgsContain(args, "--dev-mode") != true {
 			t.Errorf("dev-mode args missing --dev-mode: %q", args)
 		}
-		if configArgsContain(args, "--api-key") {
-			t.Errorf("dev-mode args must not contain --api-key: %q", args)
+		if got := configArgPair(args, "--api-key"); got != apiKey {
+			t.Errorf("--api-key = %q, want %q (args %q)", got, apiKey, args)
 		}
 	})
 }

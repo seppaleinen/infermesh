@@ -22,16 +22,16 @@ func (s *Supervisor) defaultRouterProbe() func(ctx context.Context, st Settings)
 	return func(ctx context.Context, st Settings) ([]WorkerView, error) {
 		if s.routerClient == nil {
 			// Fallback for tests that build a Supervisor without main.go.
-			// Mirrors updateRouterClientTransport: the transport alone is not
-			// enough in prod mode — the router also enforces X-API-Key (issue
-			// #119), so sync the key when a client cert is minted.
+			// Mirrors updateRouterClientTransport: always resolve the API
+			// key from the keyring (issue #195). The router enforces the
+			// key whenever one is configured, regardless of transport.
 			rc := NewRouterClient(routerBaseURL(st.RouterAddr))
 			if client := s.buildTLSClient(); client != nil {
 				rc.SetTransport(client)
-				key, err := s.resolveSecret(secretRefRouterAPIKey)
-				if err == nil && key != "" {
-					rc.SetAPIKey(key)
-				}
+			}
+			key, err := s.resolveSecret(secretRefRouterAPIKey)
+			if err == nil && key != "" {
+				rc.SetAPIKey(key)
 			}
 			return rc.GetWorkers(ctx)
 		}

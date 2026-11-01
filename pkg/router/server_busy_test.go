@@ -11,6 +11,7 @@ import (
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
 )
+
 func TestBusyStatus(t *testing.T) {
 	tests := []struct {
 		name   string

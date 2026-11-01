@@ -501,5 +501,3 @@ func (c *AutoRoutingConfig) ResolveModel(tier ComplexityTier) (string, bool) {
 	model, ok := c.Models[tier]
 	return model, ok && model != ""
 }
-
-
