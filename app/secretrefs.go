@@ -13,6 +13,7 @@ const (
 	secretRefMTLSCAKey        = "mtls/ca-key"
 	secretRefRelayCreds       = "relay/creds"
 	envWorkerCustomAuth       = "INFERMESH_WORKER_CUSTOM_AUTH"
+	envWorkerRelayAPIKey      = "INFERMESH_RELAY_API_KEY"
 )
 
 // SecretRefs is the single source of truth for keyring secret-reference keys.

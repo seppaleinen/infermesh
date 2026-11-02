@@ -192,5 +192,17 @@ func (s *Supervisor) buildEnv(settings Settings) ([]string, error) {
 	} else if auth != "" {
 		env = append(env, envWorkerCustomAuth+"="+auth)
 	}
+	// Surface the router API key as the worker's relay-registration key so a
+	// fleet that enforces INFERMESH_API_KEY accepts this worker over the relay
+	// path. The router rejects a relay registration whose presented key differs
+	// (pkg/router/ws_relay.go); here the worker presents its RelayAPIKey during
+	// relay registration (pkg/worker/run.go). Resolved from the keyring and
+	// never logged, mirroring buildRouterArgs (--api-key) above. Empty resolves
+	// to nothing wired — dev mode has no router key by design.
+	if apiKey, err := s.resolveSecret(secretRefRouterAPIKey); err != nil {
+		return nil, err
+	} else if apiKey != "" {
+		env = append(env, envWorkerRelayAPIKey+"="+apiKey)
+	}
 	return env, nil
 }

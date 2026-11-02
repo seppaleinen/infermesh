@@ -494,3 +494,60 @@ func TestConfigWorkerCustomAuthBuildEnv(t *testing.T) {
 		t.Errorf("worker env missing %s=worker-auth-token", envWorkerCustomAuth)
 	}
 }
+
+// TestConfigWorkerRelayAPIKeyBuildEnv verifies the router API key resolves from
+// the keyring and surfaces as INFERMESH_RELAY_API_KEY (not a CLI flag) on the
+// worker child environment — in both dev and prod mode. The env var is the
+// documented fallback the worker reads into RelayAPIKey (cmd/worker/main.go),
+// which it presents during relay registration (pkg/worker/run.go). This closes
+// the bug where an unkeyed worker was rejected over the relay path by a fleet
+// that enforces INFERMESH_API_KEY.
+func TestConfigWorkerRelayAPIKeyBuildEnv(t *testing.T) {
+	const apiKey = "relay-route-key"
+
+	for _, dev := range []bool{true, false} {
+		fx := newTestSupervisor(t)
+		fx.kr.Set(secretRefRouterAPIKey, apiKey)
+		devMode := dev
+		fx.settings.DevMode = &devMode
+		fx.save(t)
+
+		if err := fx.s.StartWorker(); err != nil {
+			t.Fatalf("StartWorker (dev=%v): %v", dev, err)
+		}
+
+		env := fx.builder.last().Env()
+		found := false
+		for _, kv := range env {
+			if kv == envWorkerRelayAPIKey+"="+apiKey {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("worker env (dev=%v) missing %s=%q", dev, envWorkerRelayAPIKey, apiKey)
+		}
+		fx.builder.last().finish(nil)
+	}
+}
+
+// TestConfigWorkerNoRouterKeyDoesNotWireRelayEnv verifies that when the router
+// API key resolves empty (dev mode with no provisioned key), nothing is wired —
+// preserving dev-mode behaviour and never leaking a secret.
+func TestConfigWorkerNoRouterKeyDoesNotWireRelayEnv(t *testing.T) {
+	fx := newTestSupervisor(t)
+	// No secretRefRouterAPIKey provisioned → resolveSecret yields "".
+	devMode := true
+	fx.settings.DevMode = &devMode
+	fx.save(t)
+
+	if err := fx.s.StartWorker(); err != nil {
+		t.Fatalf("StartWorker: %v", err)
+	}
+	for _, kv := range fx.builder.last().Env() {
+		if strings.HasPrefix(kv, envWorkerRelayAPIKey+"=") {
+			t.Errorf("worker env should not wire %s when router key is empty (got %q)", envWorkerRelayAPIKey, kv)
+		}
+	}
+	fx.builder.last().finish(nil)
+}
