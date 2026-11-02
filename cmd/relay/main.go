@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -126,6 +128,44 @@ func (r *Relay) handleWS(ws *websocket.Conn) {
 	}
 }
 
+// routableIP extracts the real client source IP from a relay's accepted
+// WebSocket connection. A worker behind NAT advertises its private IP (see
+// pkg/worker/host.go LocalIP); the relay knows the actual dialer address and
+// must rewrite it so the fleet router can route back to the worker. Returns ""
+// when no source is determinable — the caller then keeps the worker's
+// advertised IP unchanged.
+func routableIP(ws *websocket.Conn) string {
+	if ws == nil {
+		return ""
+	}
+	req := ws.Request()
+	if req == nil || req.RemoteAddr == "" {
+		return ""
+	}
+	return ipFromRemote(req.RemoteAddr)
+}
+
+// ipFromRemote parses a net.Addr string (host or host:port, IPv4 or IPv6) into
+// a routable IP string. Prefers an IPv4 — workers advertise IPv4, and this
+// unwraps a v4-in-v6 mapped form into a clean dotted-quad — falling back to the
+// address as-is for IPv6-only input. Returns "" on any parse failure so callers
+// keep the worker's advertised IP unchanged.
+func ipFromRemote(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		// RemoteAddr without a port (rare); parse directly.
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return ""
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4.String()
+	}
+	return ip.String() // IPv6-only fallback
+}
+
 // handleWorker registers a worker connection and starts relay loops.
 func (r *Relay) handleWorker(ws *websocket.Conn, msg protocol.Message) {
 	var reg protocol.RegisterPayload
@@ -139,6 +179,20 @@ func (r *Relay) handleWorker(ws *websocket.Conn, msg protocol.Message) {
 		r.log.Warn("worker register without ID")
 		_ = ws.Close()
 		return
+	}
+
+	// NAT reachability fix: a worker behind NAT advertises its private IP (see
+	// pkg/worker/host.go LocalIP). The relay knows the real client source and
+	// rewrites the advertised IP so the fleet router can route back to it. All
+	// other Worker fields are preserved by re-marshalling the whole payload;
+	// when no routable source is determinable we keep the original IP as-is.
+	if routable := routableIP(ws); routable != "" {
+		reg.Worker.IP = routable
+		if data, err := json.Marshal(reg); err == nil {
+			msg.Payload = json.RawMessage(data)
+		} else {
+			r.log.Warn("failed to re-marshal rewritten register; keeping original payload", "worker_id", workerID, "error", err)
+		}
 	}
 
 	r.mu.Lock()
