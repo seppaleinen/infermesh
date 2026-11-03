@@ -56,7 +56,7 @@ jobs:
       run: go vet ./...
 
     - name: Build binaries
-      run: make build
+      run: make build relay
 
     - name: Run tests
       run: go test ./... -v -cover -race
