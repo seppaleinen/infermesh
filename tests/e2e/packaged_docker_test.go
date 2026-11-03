@@ -36,10 +36,27 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 )
+
+// dockerPlatform returns the platform string for the current host (e.g.
+// "linux/amd64" or "darwin/arm64").
+func dockerPlatform() string {
+	return "linux/" + runtime.GOARCH
+}
+
+// goos returns the GOOS for the current host.
+func goos() string {
+	return runtime.GOOS
+}
+
+// goarch returns the GOARCH for the current host.
+func goarch() string {
+	return runtime.GOARCH
+}
 
 const (
 	dockerRouterImage = "ghcr.io/seppaleinen/infermesh/router:latest"
@@ -47,6 +64,25 @@ const (
 
 	dockerRouterHostPort = 8480 // host-side mapped port for the router
 )
+
+// dockerImageArch returns the architecture of a Docker image's :latest tag.
+// Returns an error if the architecture cannot be determined.
+func dockerImageArch(image string) (string, error) {
+	out, err := exec.Command("docker", "inspect", image).Output()
+	if err != nil {
+		return "", fmt.Errorf("docker inspect %s: %w", image, err)
+	}
+	var result []struct {
+		Architecture string `json:"Architecture"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		return "", fmt.Errorf("parsing docker inspect output: %w", err)
+	}
+	if len(result) == 0 {
+		return "", fmt.Errorf("no image info found")
+	}
+	return result[0].Architecture, nil
+}
 
 // dockerAvailable returns nil when the docker CLI and a reachable daemon are
 // both present.
@@ -198,6 +234,16 @@ func TestRouterWorkerDockerE2E(t *testing.T) {
 		if err := dockerEnsureImage(img); err != nil {
 			t.Skipf("skipping docker e2e: %v", err)
 		}
+	}
+
+	// The repo publishes multi-arch images under versioned tags
+	// (v0.1.0, v0.1.1, etc.) but :latest resolves to a single architecture.
+	// Check that the available image architecture matches the host.
+	routerArch, err := dockerImageArch(dockerRouterImage)
+	if err != nil {
+		t.Logf("warning: could not determine router image architecture: %v", err)
+	} else if routerArch != runtime.GOARCH {
+		t.Skipf("skipping docker e2e: router image is %s/%s but host is %s/%s", dockerPlatform(), routerArch, goos(), goarch())
 	}
 
 	mockScript := "mock_backend.py"
