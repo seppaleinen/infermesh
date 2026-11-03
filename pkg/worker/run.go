@@ -300,7 +300,7 @@ func (h *Handle) launchMTLSRegistration(regConfig ReloadableConfig) context.Canc
 	h.regCancel = regCancel
 	go RegisterLoopWithRefreshMTLS(regCtx, h.regProdRouter, func() protocol.WorkerInfo {
 		return h.buildRegistrationInfo(regConfig)
-	}, DefaultRegisterInterval, h.regMTLSCert, h.regMTLSKey, caCertPath, regConfig.APIKey, h.log)
+	}, DefaultRegisterInterval, h.regMTLSCert, h.regMTLSKey, caCertPath, regConfig.RelayAPIKey, h.log)
 	return regCancel
 }
 

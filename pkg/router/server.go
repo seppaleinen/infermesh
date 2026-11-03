@@ -532,6 +532,23 @@ func (s *Server) buildProdServer(handler http.Handler) (http.Handler, error) {
 	s.routerClientCert = cert
 	s.workerCAPool = caCertPool
 
+	// Also configure the capability cache to use mTLS when fetching
+	// capabilities from mTLS workers. Set this before returning so
+	// any immediate registry events can use it.
+	if s.cache != nil {
+		mTLSClient := &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					Certificates: []tls.Certificate{*cert},
+					RootCAs:      caCertPool,
+					ServerName:   "localhost",
+					MinVersion:   tls.VersionTLS12,
+				},
+			},
+		}
+		s.cache.SetMTLSClient(mTLSClient)
+	}
+
 	// TLS config is needed for the server; build it now.
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{*cert},
@@ -576,6 +593,8 @@ func (s *Server) Start(ctx context.Context) error {
 	// the cache that /v1/models, /v1/workers and worker selection read from.
 	// Without this, dev HTTP registrations land in the registry but the
 	// cache stays empty → empty workers list, null models, no_workers.
+	// The mTLS client (if configured) is set by buildServer in buildProdServer,
+	// before this starts the event loop.
 	if s.cache != nil && s.reg != nil {
 		s.cache.Start(ctx)
 	}

@@ -23,6 +23,10 @@ type CapabilityCache struct {
 	mu    sync.RWMutex
 	cache map[string]protocol.WorkerInfo
 
+	// mTLS client for fetching capabilities from mTLS workers.
+	// Nil in dev mode; set in Start() when mTLS is configured.
+	mTLSClient *http.Client
+
 	// inferenceStats holds the per-worker per-model throughput snapshot
 	// advertised by workers in their Capabilities payload (issue #134).
 	// It is separate from the cache map so reads of the worker map never
@@ -52,6 +56,12 @@ func NewCapabilityCache(reg registry.Registry, log *slog.Logger) *CapabilityCach
 		cache:          make(map[string]protocol.WorkerInfo),
 		inferenceStats: make(map[string]map[string]WorkerInferenceStats),
 	}
+}
+
+// SetMTLSClient sets the mTLS HTTP client for fetching capabilities from
+// mTLS-enabled workers. Called from Server.Start() when mTLS is configured.
+func (c *CapabilityCache) SetMTLSClient(client *http.Client) {
+	c.mTLSClient = client
 }
 
 // Get returns the cached capabilities for a worker.
@@ -113,11 +123,18 @@ func (c *CapabilityCache) fetchCapabilities(worker protocol.WorkerInfo) (protoco
 		return worker.Capabilities, nil
 	}
 
-	url := fmt.Sprintf("http://%s:%d/capabilities", worker.IP, worker.Port)
-
-	client := &http.Client{
-		Timeout: 5 * time.Second,
+	// Choose client: use mTLS if configured (prod mode with certs), otherwise plain HTTP
+	client := c.mTLSClient
+	if client == nil {
+		client = &http.Client{Timeout: 5 * time.Second}
 	}
+
+	// Build URL with appropriate scheme: https for mTLS, http otherwise
+	scheme := "http"
+	if c.mTLSClient != nil {
+		scheme = "https"
+	}
+	url := fmt.Sprintf("%s://%s:%d/capabilities", scheme, worker.IP, worker.Port)
 
 	resp, err := client.Get(url)
 	if err != nil {
