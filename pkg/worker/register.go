@@ -103,12 +103,16 @@ func postRegister(ctx context.Context, routerBase string, info protocol.WorkerIn
 	log.Info("worker registered via dev endpoint", "worker_id", info.ID, "url", url)
 }
 
-// postRegisterMTLS sends a single registration POST to the router over mTLS.
+// postRegisterMTLS sends a single registration POST to therouter over mTLS.
 // The worker presents its client certificate (signed by the shared CA) and
 // verifies the router's server certificate against the CA pool. This is the
 // prod-mode counterpart of postRegister: the router's /v1/dev/register endpoint
 // is wrapped by the mTLS middleware, so plain HTTP is rejected with 403.
-func postRegisterMTLS(ctx context.Context, routerBase string, info protocol.WorkerInfo, certFile, keyFile, caCertFile string, log *slog.Logger) {
+//
+// routerAPIKey is the key the router expects on /v1/dev/register (the same
+// --api-key the router was started with). When non-empty, the worker sends
+// X-API-Key so the router's API-key middleware admits the registration.
+func postRegisterMTLS(ctx context.Context, routerBase string, info protocol.WorkerInfo, certFile, keyFile, caCertFile, routerAPIKey string, log *slog.Logger) {
 	// See postRegister: the select in RegisterLoopWithRefreshMTLS can dequeue
 	// a ticker.C after ctx was cancelled, so an in-flight POST is possible at
 	// cancel time. Short-circuit to keep the "no calls after cancel"
@@ -129,6 +133,9 @@ func postRegisterMTLS(ctx context.Context, routerBase string, info protocol.Work
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if routerAPIKey != "" {
+		req.Header.Set("X-API-Key", routerAPIKey)
+	}
 
 	client, err := mtlsClient(certFile, keyFile, caCertFile)
 	if err != nil {
@@ -154,8 +161,12 @@ func postRegisterMTLS(ctx context.Context, routerBase string, info protocol.Work
 // RegisterLoopWithRefreshMTLS is RegisterLoopWithRefresh with an mTLS client.
 // It runs the same immediate-then-tick loop but dials the router over HTTPS
 // with client-certificate verification.
-func RegisterLoopWithRefreshMTLS(ctx context.Context, routerBase string, infoFn func() protocol.WorkerInfo, interval time.Duration, certFile, keyFile, caCertFile string, log *slog.Logger) {
-	postRegisterMTLS(ctx, routerBase, infoFn(), certFile, keyFile, caCertFile, log)
+//
+// routerAPIKey is the key the router expects on /v1/dev/register (the same
+// --api-key the router was started with). When non-empty, the worker sends
+// X-API-Key so the router's API-key middleware admits the registration.
+func RegisterLoopWithRefreshMTLS(ctx context.Context, routerBase string, infoFn func() protocol.WorkerInfo, interval time.Duration, certFile, keyFile, caCertFile, routerAPIKey string, log *slog.Logger) {
+	postRegisterMTLS(ctx, routerBase, infoFn(), certFile, keyFile, caCertFile, routerAPIKey, log)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -172,7 +183,7 @@ func RegisterLoopWithRefreshMTLS(ctx context.Context, routerBase string, infoFn 
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			postRegisterMTLS(ctx, routerBase, infoFn(), certFile, keyFile, caCertFile, log)
+			postRegisterMTLS(ctx, routerBase, infoFn(), certFile, keyFile, caCertFile, routerAPIKey, log)
 		}
 	}
 }

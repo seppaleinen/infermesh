@@ -91,18 +91,23 @@ func dockerCreateNetwork(t *testing.T) string {
 
 // dockerRunDetached starts a container on the given network (extra run args
 // may override -p mappings etc.) and registers its removal on cleanup.
-func dockerRunDetached(t *testing.T, name string, args ...string) {
+// It appends a unique suffix to the given base name so repeated test runs
+// don't collide on a stale container from a previous run (issue #195).
+// Returns the full container name for use in dockerContainerIP/dockerLogs.
+func dockerRunDetached(t *testing.T, name string, args ...string) string {
 	t.Helper()
-	full := append([]string{"run", "-d", "--name", name}, args...)
+	fullName := fmt.Sprintf("%s-%d-%d", name, os.Getpid(), time.Now().UnixNano()%100000)
+	full := append([]string{"run", "-d", "--name", fullName}, args...)
 	out, err := exec.Command("docker", full...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("docker run %s: %v (%s)", strings.Join(full, " "), err, strings.TrimSpace(string(out)))
 	}
-	t.Logf("started container %s: %s", name, strings.TrimSpace(string(out)))
+	t.Logf("started container %s: %s", fullName, strings.TrimSpace(string(out)))
 	t.Cleanup(func() {
-		out, _ := exec.Command("docker", "rm", "-f", name).CombinedOutput()
-		t.Logf("removed container %s: %s", name, strings.TrimSpace(string(out)))
+		out, _ := exec.Command("docker", "rm", "-f", fullName).CombinedOutput()
+		t.Logf("removed container %s: %s", fullName, strings.TrimSpace(string(out)))
 	})
+	return fullName
 }
 
 // copyFile copies src to dst using only the standard library.
@@ -232,7 +237,6 @@ func TestRouterWorkerDockerE2E(t *testing.T) {
 	}
 	mockPort := 8197
 	mockArgs := []string{
-		"--name", "imesh-mock",
 		"--network", network,
 		"-v", mockDir + ":/mock:ro",
 		"python:3-alpine",
@@ -240,8 +244,8 @@ func TestRouterWorkerDockerE2E(t *testing.T) {
 		"--port", fmt.Sprintf("%d", mockPort),
 		"--mode", "healthy",
 	}
-	dockerRunDetached(t, "imesh-mock", mockArgs...)
-	mockIP := dockerContainerIP(t, "imesh-mock", network)
+	mockName := dockerRunDetached(t, "imesh-mock", mockArgs...)
+	mockIP := dockerContainerIP(t, mockName, network)
 
 	// Give the mock a moment to bind the port.
 	waitForHTTP200(t, fmt.Sprintf("http://%s:%d/v1/models", mockIP, mockPort), 10*time.Second)
@@ -249,27 +253,25 @@ func TestRouterWorkerDockerE2E(t *testing.T) {
 	// 2. Router container: listen on 0.0.0.0:8080 inside the container,
 	//    port-mapped to 127.0.0.1:8480 on the host.
 	routerArgs := []string{
-		"--name", "imesh-router",
 		"--network", network,
 		"-p", fmt.Sprintf("127.0.0.1:%d:8080", dockerRouterHostPort),
 		dockerRouterImage,
 		"--dev-mode",
 		"--addr", "0.0.0.0:8080",
 	}
-	dockerRunDetached(t, "imesh-router", routerArgs...)
-	routerIP := dockerContainerIP(t, "imesh-router", network)
+	routerName := dockerRunDetached(t, "imesh-router", routerArgs...)
+	routerIP := dockerContainerIP(t, routerName, network)
 
 	// Wait for the router HTTP server to come up (via the host-side mapping).
 	if code := waitForHTTP200(t, routerBase+"/v1/workers", 15*time.Second); code != http.StatusOK {
-		t.Fatalf("router not ready after 15s (last status: %d, logs: %s)", code, dockerLogs(t, "imesh-router"))
+		t.Fatalf("router not ready after 15s (last status: %d, logs: %s)", code, dockerLogs(t, routerName))
 	}
 
 	// 3. Worker container: shares the mock's netns so it reaches the mock on
 	//    127.0.0.1:8197. Registers against the router via the router's
 	//    network IP. Uses the "custom" backend pointed at the mock.
 	workerArgs := []string{
-		"--name", "imesh-worker",
-		"--network", "container:imesh-mock",
+		"--network", "container:" + mockName,
 		dockerWorkerImage,
 		"--dev-mode",
 		"--router", fmt.Sprintf("http://%s:8080", routerIP),
@@ -277,7 +279,7 @@ func TestRouterWorkerDockerE2E(t *testing.T) {
 		"--backend", "custom",
 		"--backend-url", fmt.Sprintf("http://127.0.0.1:%d", mockPort),
 	}
-	dockerRunDetached(t, "imesh-worker", workerArgs...)
+	workerName := dockerRunDetached(t, "imesh-worker", workerArgs...)
 
 	// The worker's advertised IP is the mock container's IP (shared netns).
 	workerIP := mockIP // worker shares the mock's netns
@@ -287,7 +289,7 @@ func TestRouterWorkerDockerE2E(t *testing.T) {
 	body := waitForWorker(t, routerBase, 8081, 20*time.Second)
 	if len(body.Workers) == 0 {
 		t.Fatalf("no workers registered after 20s (router logs: %s, worker logs: %s)",
-			dockerLogs(t, "imesh-router"), dockerLogs(t, "imesh-worker"))
+			dockerLogs(t, routerName), dockerLogs(t, workerName))
 	}
 	for _, w := range body.Workers {
 		t.Logf("registered worker: %v", w)
@@ -301,7 +303,7 @@ func TestRouterWorkerDockerE2E(t *testing.T) {
 			t.Fatalf("GET %s: %v", endpoint, err)
 		}
 		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("GET %s: unexpected status %d (router logs: %s)", endpoint, resp.StatusCode, dockerLogs(t, "imesh-router"))
+			t.Fatalf("GET %s: unexpected status %d (router logs: %s)", endpoint, resp.StatusCode, dockerLogs(t, routerName))
 		}
 		_ = resp.Body.Close()
 	}
@@ -321,7 +323,7 @@ func TestRouterWorkerDockerE2E(t *testing.T) {
 	if chatResp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(chatResp.Body)
 		t.Fatalf("non-streaming chat: expected 200, got %d (worker logs: %s, body: %s)",
-			chatResp.StatusCode, dockerLogs(t, "imesh-worker"), string(b))
+			chatResp.StatusCode, dockerLogs(t, workerName), string(b))
 	}
 	if ct := chatResp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		t.Errorf("non-streaming chat content-type = %q, want application/json", ct)

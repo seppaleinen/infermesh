@@ -301,6 +301,9 @@ func TestProdMTLS_e2e(t *testing.T) {
 
 	// Start worker in prod mode with mTLS registration.
 	// --prod-router https://127.0.0.1:routerPort — worker dials router with mTLS.
+	// --api-key mirrors the router's key so the worker's mTLS registration
+	// POST carries X-API-Key and the router's API-key middleware admits it
+	// (issue #194).
 	workerCmd, workerLog := startCmdLog(t, "worker", workerBin,
 		"--prod-mode",
 		"--port", fmt.Sprintf("%d", workerPort),
@@ -312,6 +315,7 @@ func TestProdMTLS_e2e(t *testing.T) {
 		"--backend", "custom",
 		"--backend-url", mock.URL(),
 		"--prod-router", fmt.Sprintf("https://127.0.0.1:%d", routerPort),
+		"--api-key", apiKey,
 		"--enable-health-checks", "true",
 	)
 
