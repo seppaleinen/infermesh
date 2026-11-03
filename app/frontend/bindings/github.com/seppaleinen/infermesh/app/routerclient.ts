@@ -40,10 +40,10 @@ export function GetAutoRouting(): $CancellablePromise<$models.AutoRoutingConfigR
 }
 
 /**
- * GetConnectionCount fetches the number of currently active HTTP connections
- * to the router from /meta/connections/count. It returns 0 when the router is
- * reachable but idle, and a typed error when the router is unreachable or
- * returns a bad body. Mirrors GetWorkers / GetPopularModels.
+ * GetConnectionCount fetches the number of connected/available workers
+ * from /meta/connections/count. It returns 0 when the router is
+ * reachable but has no workers, and a typed error when the router is
+ * unreachable or returns a bad body. Mirrors GetWorkers / GetPopularModels.
  */
 export function GetConnectionCount(): $CancellablePromise<number> {
     return $Call.ByID(207629005);
