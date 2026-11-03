@@ -16,11 +16,11 @@ import (
 
 func TestServer_ProdModeRejectsInvalidTLS(t *testing.T) {
 	tests := []struct {
-		name           string
-		cfg            security.Config
-		addr           string
-		expectError    bool
-		errorContains  string
+		name          string
+		cfg           security.Config
+		addr          string
+		expectError   bool
+		errorContains string
 	}{
 		// Fallback cases: all three mTLS fields empty -> plain HTTP on loopback
 		{"missing cert on loopback - fallback to plain HTTP", security.Config{DevMode: false, MTLSCert: "", MTLSKey: "", CertDir: ""}, "127.0.0.1:0", false, ""},

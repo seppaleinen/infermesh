@@ -80,14 +80,19 @@ func (s *Supervisor) buildRouterArgs(settings Settings) ([]string, error) {
 	if settings.ScorerThroughputWeight > 0 {
 		args = append(args, "--scorer-throughput-weight", strconv.FormatFloat(settings.ScorerThroughputWeight, 'f', -1, 64))
 	}
+
+	// Resolve the router API key from the keyring. The router enforces the
+	// key whenever one is configured (dev or prod), so the desktop must
+	// pass it on the CLI and carry it on every HTTP request (issue #195).
+	apiKey, err := s.resolveSecret(secretRefRouterAPIKey)
+	if err != nil {
+		return nil, err
+	}
+	if apiKey != "" {
+		args = append(args, "--api-key", apiKey)
+	}
+
 	if !modeFromSettings(settings).IsDev() {
-		apiKey, err := s.resolveSecret(secretRefRouterAPIKey)
-		if err != nil {
-			return nil, err
-		}
-		if apiKey != "" {
-			args = append(args, "--api-key", apiKey)
-		}
 		cert, key, err := s.writeMTLSFiles()
 		if err != nil {
 			return nil, err

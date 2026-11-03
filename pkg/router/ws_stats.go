@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/internal/wsutil"
+	"github.com/seppaleinen/infermesh/pkg/protocol"
 )
 
 // isRateLimited reports whether the worker identified by id is at its
@@ -26,6 +26,7 @@ func (h *WSHub) isRateLimited(workerID string) bool {
 	}
 	return h.relayInFlightAt(workerID) >= int64(h.maxInFlightFor(workerID))
 }
+
 // relayInFlightAt returns the current in-flight count for worker id in relay
 // mode. Safe to call concurrently; the counter is only mutated under
 // relayPendingMu, which is also the lock guarding the relayPending map.
@@ -34,6 +35,7 @@ func (h *WSHub) relayInFlightAt(workerID string) int64 {
 	defer h.relayPendingMu.Unlock()
 	return h.relayInFlight[workerID]
 }
+
 // decrementRelayInFlight decrements the per-worker in-flight counter for
 // relay-mode calls. Called from pendingCall.finish for relay-level calls.
 func (h *WSHub) decrementRelayInFlight(workerID string) {
@@ -47,6 +49,7 @@ func (h *WSHub) decrementRelayInFlight(workerID string) {
 		delete(h.relayInFlight, workerID)
 	}
 }
+
 // recordRejection bumps the per-worker 429 counter for a direct-connection
 // worker. The counter is stored on the connection so it survives only for
 // the life of that connection (matching the per-worker stats semantics).
@@ -62,12 +65,14 @@ func (h *WSHub) recordRejection(workerID string, code int) {
 	c.rejected429++
 	c.pendingMu.Unlock()
 }
+
 // recordRejectionLocked bumps the per-worker 429 counter for a direct-
 // connection worker. The caller MUST hold c.pendingMu (used by addPending
 // to avoid a re-entrant lock deadlock).
 func (h *WSHub) recordRejectionLocked(c *wsConnection) {
 	c.rejected429++
 }
+
 // recordTimeout bumps the per-worker 504 counter for a direct-connection
 // worker. Safe to call from outside any pendingMu lock.
 func (h *WSHub) recordTimeout(workerID string) {
@@ -81,6 +86,7 @@ func (h *WSHub) recordTimeout(workerID string) {
 	c.rejected504++
 	c.pendingMu.Unlock()
 }
+
 // recordRelayTimeout bumps the per-worker 504 counter for a relay-mode
 // worker. Safe to call concurrently.
 func (h *WSHub) recordRelayTimeout(workerID string) {
@@ -88,6 +94,7 @@ func (h *WSHub) recordRelayTimeout(workerID string) {
 	defer h.relayPendingMu.Unlock()
 	h.relayRejected504[workerID]++
 }
+
 // recordWait records a queue-wait sample into the pool reservoir for the
 // worker whose call just completed. Called from pendingCall.finish.
 func (h *WSHub) recordWait(workerID string, queuedAt time.Time) {
@@ -95,6 +102,7 @@ func (h *WSHub) recordWait(workerID string, queuedAt time.Time) {
 		h.qm.recordWait(time.Since(queuedAt))
 	}
 }
+
 // connSnapshot returns the current connection map under a brief RLock.
 // Callers must not retain references to the returned slice's elements
 // across a mutation of the hub's conn map.
@@ -107,6 +115,7 @@ func (h *WSHub) connSnapshot() []*wsConnection {
 	}
 	return out
 }
+
 // avgWaitFor returns the average queue-wait duration for worker id based
 // on the pool reservoir's samples. This is a coarse estimate (reservoir
 // sampling is not per-worker), but it is read-only and fast.
@@ -117,6 +126,7 @@ func (h *WSHub) avgWaitFor(workerID string) time.Duration {
 	p50, _, _ := h.qm.percentiles()
 	return p50
 }
+
 // relayRejected429Total returns the sum of per-worker 429 counts across
 // all relay-mode workers.
 func (h *WSHub) relayRejected429Total() int64 {
@@ -128,6 +138,7 @@ func (h *WSHub) relayRejected429Total() int64 {
 	}
 	return total
 }
+
 // relayRejected504Total returns the sum of per-worker 504 (gateway timeout)
 // counts across all relay-mode workers.
 func (h *WSHub) relayRejected504Total() int64 {
@@ -139,6 +150,7 @@ func (h *WSHub) relayRejected504Total() int64 {
 	}
 	return total
 }
+
 // relayInFlightSnapshot returns a copy of the per-worker in-flight counts
 // for relay-mode workers.
 func (h *WSHub) relayInFlightSnapshot() map[string]int64 {
@@ -150,6 +162,7 @@ func (h *WSHub) relayInFlightSnapshot() map[string]int64 {
 	}
 	return out
 }
+
 // queuePercentiles returns the 50th, 95th and 99th percentiles of the
 // pool-level queue-wait reservoir.
 func (h *WSHub) queuePercentiles() (time.Duration, time.Duration, time.Duration) {
@@ -158,6 +171,7 @@ func (h *WSHub) queuePercentiles() (time.Duration, time.Duration, time.Duration)
 	}
 	return h.qm.percentiles()
 }
+
 // QueueStats returns a snapshot of the pool's queue observability for the
 // /v1/queue/stats endpoint. Read-only; safe to call concurrently.
 func (h *WSHub) QueueStats() QueueStatsResponse {
@@ -214,6 +228,7 @@ func (h *WSHub) QueueStats() QueueStatsResponse {
 		},
 	}
 }
+
 // rejected429For returns the per-worker 429 count for a direct-connection
 // worker. Safe to call concurrently.
 func (c *wsConnection) rejected429Snapshot() int64 {
@@ -250,6 +265,7 @@ func (h *WSHub) cleanupRelayMetrics() {
 		}
 	}
 }
+
 // relayWorkerClient is a WorkerClient that sends inference/model-load
 // requests over a shared relay WebSocket connection. It is used when
 // workers connect via relay (no direct connection exists) and the
@@ -262,8 +278,10 @@ type relayWorkerClient struct {
 func newRelayWorkerClient(hub *WSHub, log *slog.Logger) *relayWorkerClient {
 	return &relayWorkerClient{hub: hub, log: log}
 }
+
 // Transport returns "ws" for relay connections.
 func (c *relayWorkerClient) Transport() string { return protocol.TransportWS }
+
 // Complete sends a non-streaming inference request via the relay and
 // awaits the correlated inference response.
 func (c *relayWorkerClient) Complete(ctx context.Context, worker protocol.WorkerInfo, kind string, body []byte) ([]byte, error) {
@@ -305,6 +323,7 @@ func (c *relayWorkerClient) Complete(ctx context.Context, worker protocol.Worker
 	}()
 	return awaitResponse(ctx, respCh, errCh)
 }
+
 // Stream sends an inference request via the relay and returns a channel
 // of SSE-framed stream events plus an error channel.
 func (c *relayWorkerClient) Stream(ctx context.Context, worker protocol.WorkerInfo, kind string, body []byte) (<-chan StreamEvent, <-chan error) {
@@ -349,6 +368,7 @@ func (c *relayWorkerClient) Stream(ctx context.Context, worker protocol.WorkerIn
 	}()
 	return chunkCh, errCh
 }
+
 // LoadModel sends a model load request via the relay and awaits the
 // correlated model load response.
 func (c *relayWorkerClient) LoadModel(ctx context.Context, worker protocol.WorkerInfo, model string) (bool, error) {
@@ -399,6 +419,7 @@ func (c *relayWorkerClient) LoadModel(ctx context.Context, worker protocol.Worke
 		return false, ctx.Err()
 	}
 }
+
 // Capabilities returns the worker's capabilities from the registry.
 // No HTTP call is needed; the relay worker is already registered.
 func (c *relayWorkerClient) Capabilities(ctx context.Context, worker protocol.WorkerInfo) (protocol.Capabilities, error) {
@@ -418,9 +439,11 @@ func (c *relayWorkerClient) Capabilities(ctx context.Context, worker protocol.Wo
 	}
 	return protocol.Capabilities{}, errors.New("worker not found")
 }
+
 // Close is a no-op for relay workers; the shared relay connection
 // stays open.
 func (c *relayWorkerClient) Close() error { return nil }
+
 // RecordTimeout bumps the per-worker 504 counter for this relay-mode
 // worker, surfaced by /v1/queue/stats.
 func (c *relayWorkerClient) RecordTimeout(workerID string) {

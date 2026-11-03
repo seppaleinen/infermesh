@@ -52,22 +52,32 @@ func (s *Supervisor) buildTLSClient() *http.Client {
 // so the UI's live poll always talks to the router over the right transport
 // (issue #103 R1).
 //
-// It also syncs the prod-mode API key (issue #119): the router enforces
-// X-API-Key on /v1/workers, /meta/models/popular, /meta/aliases and the
-// inference endpoints, so the desktop must send it. The key is resolved
-// from the keyring (router/apikey) and cleared when the transport is
-// cleared, preserving dev-mode behaviour (no header when no key).
-func (s *Supervisor) updateRouterClientTransport() {
+// When running is true the function also syncs the router API key (issue #119):
+// the router enforces X-API-Key on /v1/workers, /meta/models/popular,
+// /meta/aliases, /meta/requests/inflight and the inference endpoints whenever a
+// key is configured, so the desktop must send it. The key is resolved from the
+// keyring (router/apikey). This is independent of the transport: a key
+// configured in dev mode is enforced by the router and must be sent by the
+// desktop (issue #195).
+//
+// When running is false the transport and the API key are both cleared so the
+// UI falls back to dev-mode behaviour (no header, plain HTTP).
+func (s *Supervisor) updateRouterClientTransport(running bool) {
 	if s.routerClient == nil {
+		return
+	}
+	if !running {
+		s.routerClient.SetTransport(nil)
+		s.routerClient.SetAPIKey("")
 		return
 	}
 	client := s.buildTLSClient()
 	s.routerClient.SetTransport(client)
-	if client == nil {
-		// Dev mode (or no mTLS provisioned): no key, no header.
-		s.routerClient.SetAPIKey("")
-		return
-	}
+
+	// Always resolve the API key from the keyring, regardless of transport.
+	// The router enforces the key whenever one is configured (dev or prod),
+	// so the desktop must carry it. An empty/unprovisioned key means no
+	// header, preserving dev-mode behaviour.
 	key, err := s.resolveSecret(secretRefRouterAPIKey)
 	if err != nil || key == "" {
 		s.routerClient.SetAPIKey("")

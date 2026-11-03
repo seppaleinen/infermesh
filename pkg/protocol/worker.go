@@ -94,12 +94,12 @@ type Capabilities struct {
 // InferenceStatsSnapshot is a single per-model throughput snapshot
 // advertised by a worker in its Capabilities payload.
 type InferenceStatsSnapshot struct {
-	Model             string  `json:"model"`
-	TokensPerSecond   float64 `json:"tokens_per_second"`
-	AvgTTFTMs         float64 `json:"avg_ttft_ms"`
-	AvgPromptTokens   float64 `json:"avg_prompt_tokens"`
+	Model               string  `json:"model"`
+	TokensPerSecond     float64 `json:"tokens_per_second"`
+	AvgTTFTMs           float64 `json:"avg_ttft_ms"`
+	AvgPromptTokens     float64 `json:"avg_prompt_tokens"`
 	AvgCompletionTokens float64 `json:"avg_completion_tokens"`
-	Samples           int     `json:"samples"`
+	Samples             int     `json:"samples"`
 }
 
 // WorkerInfo is the canonical payload carried in mDNS TXT records.

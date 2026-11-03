@@ -54,7 +54,7 @@ func (s *Supervisor) StartRouter() error {
 	s.mu.Unlock()
 	// Update the desktop RouterClient's transport so the live poll talks
 	// to the router over mTLS in prod mode (issue #103 R1).
-	s.updateRouterClientTransport()
+	s.updateRouterClientTransport(true)
 	return nil
 }
 
@@ -74,7 +74,7 @@ func (s *Supervisor) StopRouter() error {
 	s.clearCACertDir()
 	// Clear the desktop RouterClient's transport so the live poll falls
 	// back to plain HTTP (dev mode) once the router is gone (issue #103 R1).
-	s.updateRouterClientTransport()
+	s.updateRouterClientTransport(false)
 	return nil
 }
 

@@ -95,6 +95,7 @@ func (s *Server) buildCandidates(model string) []protocol.WorkerInfo {
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].ID < candidates[j].ID })
 	return candidates
 }
+
 // selectWorkerExcluding selects a worker for the given model, excluding any
 // workers whose IDs are in the provided set. This is used by the failover
 // loop to avoid retrying the same worker. The exclusion set is respected
@@ -365,12 +366,12 @@ func (s *Server) dispatchWithFailover(ctx context.Context, model string, body []
 			reqID = s.tracker.Begin(model, worker.ID, worker.Hostname, kind)
 		}
 		var client WorkerClient
-	if s.clientFactory != nil {
-		client = s.clientFactory(worker)
-	} else {
-		client = s.clientFor(worker)
-	}
-	resp, err := client.Complete(ctx, worker, kind, body)
+		if s.clientFactory != nil {
+			client = s.clientFactory(worker)
+		} else {
+			client = s.clientFor(worker)
+		}
+		resp, err := client.Complete(ctx, worker, kind, body)
 		if s.tracker != nil && reqID != "" {
 			if err == nil {
 				s.tracker.Finish(reqID, StatusDone)

@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/internal/registry"
+	"github.com/seppaleinen/infermesh/pkg/protocol"
 )
 
 // CapabilityCache wraps a registry with capability caching.
@@ -35,21 +35,21 @@ type CapabilityCache struct {
 // per-model inference throughput snapshot, as advertised in the worker's
 // Capabilities payload.
 type WorkerInferenceStats struct {
-	WorkerID             string  `json:"worker_id"`
-	Model                string  `json:"model"`
-	TokensPerSecond      float64 `json:"tokens_per_second"`
-	AvgTTFTMs            float64 `json:"avg_ttft_ms"`
-	AvgPromptTokens      float64 `json:"avg_prompt_tokens"`
-	AvgCompletionTokens  float64 `json:"avg_completion_tokens"`
-	Samples              int     `json:"samples"`
+	WorkerID            string  `json:"worker_id"`
+	Model               string  `json:"model"`
+	TokensPerSecond     float64 `json:"tokens_per_second"`
+	AvgTTFTMs           float64 `json:"avg_ttft_ms"`
+	AvgPromptTokens     float64 `json:"avg_prompt_tokens"`
+	AvgCompletionTokens float64 `json:"avg_completion_tokens"`
+	Samples             int     `json:"samples"`
 }
 
 // NewCapabilityCache creates a new capability cache.
 func NewCapabilityCache(reg registry.Registry, log *slog.Logger) *CapabilityCache {
 	return &CapabilityCache{
-		reg:           reg,
-		log:           log,
-		cache:         make(map[string]protocol.WorkerInfo),
+		reg:            reg,
+		log:            log,
+		cache:          make(map[string]protocol.WorkerInfo),
 		inferenceStats: make(map[string]map[string]WorkerInferenceStats),
 	}
 }

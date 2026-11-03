@@ -40,11 +40,11 @@ type CompletionRequest struct {
 // choices[i].text form) leave Delta empty; omitempty keeps both shapes
 // wire-compatible for non-streaming responses.
 type Choice struct {
-	Index        int        `json:"index"`
+	Index        int         `json:"index"`
 	Message      ChatMessage `json:"message,omitempty"`
 	Delta        ChatMessage `json:"delta,omitempty"`
-	Text         string     `json:"text,omitempty"`
-	FinishReason string     `json:"finish_reason"`
+	Text         string      `json:"text,omitempty"`
+	FinishReason string      `json:"finish_reason"`
 }
 
 // CompletionChunk represents a streaming chunk of a completion response.

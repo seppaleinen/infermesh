@@ -13,6 +13,7 @@ import (
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, nil))
 }
+
 // mockBackend is a test implementation of the Backend interface.
 type mockBackend struct {
 	mu          sync.Mutex

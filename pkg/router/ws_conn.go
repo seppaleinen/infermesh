@@ -12,8 +12,8 @@ import (
 
 	"golang.org/x/net/websocket"
 
-	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/internal/wsutil"
+	"github.com/seppaleinen/infermesh/pkg/protocol"
 )
 
 // errConnClosed is delivered to in-flight calls when their connection dies.
@@ -63,6 +63,7 @@ type wsConnection struct {
 	slot         chan struct{}
 	slotReleased sync.Once
 }
+
 // queueDepthSnapshot returns the current queue depth.
 func (c *wsConnection) queueDepthSnapshot() int64 {
 	return c.queueDepth.Load()
@@ -78,6 +79,7 @@ func (c *wsConnection) workerSnapshot() protocol.WorkerInfo {
 	defer c.stateMu.RUnlock()
 	return c.worker
 }
+
 // readerLoop is the single reader goroutine for the connection.
 func (c *wsConnection) readerLoop() {
 	defer c.shutdown("read loop exited")
@@ -99,6 +101,7 @@ func (c *wsConnection) readerLoop() {
 		c.hub.dispatch(c, msg)
 	}
 }
+
 // writerLoop is the single writer goroutine for the connection. It applies
 // the write deadline to every frame and shuts the connection down on failure.
 func (c *wsConnection) writerLoop() {
@@ -120,6 +123,7 @@ func (c *wsConnection) writerLoop() {
 		}
 	}
 }
+
 // send enqueues a marshaled envelope, honoring ctx cancellation.
 func (c *wsConnection) send(ctx context.Context, msg protocol.Message) error {
 	// If relay is configured, send through relay with WorkerID set
@@ -159,6 +163,7 @@ func (c *wsConnection) send(ctx context.Context, msg protocol.Message) error {
 		return errConnClosed
 	}
 }
+
 // enqueue enqueues a message without blocking; returns false if the queue is
 // full or the connection is closing (the message is dropped).
 func (c *wsConnection) enqueue(msg protocol.Message) bool {
@@ -197,6 +202,7 @@ func (c *wsConnection) enqueue(msg protocol.Message) bool {
 		return false
 	}
 }
+
 // enqueueClose politely asks the peer to close, then force-closes if it does
 // not comply within a grace period.
 // In relay mode, the relay connection is shared and should not be closed.
@@ -221,6 +227,7 @@ func (c *wsConnection) enqueueClose(reason string) bool {
 	}()
 	return ok
 }
+
 // shutdown tears the connection down exactly once: it closes the socket,
 // removes the connection from the hub, fails in-flight calls and deregisters
 // the worker from the registry.
@@ -255,6 +262,7 @@ func (c *wsConnection) shutdown(reason string) {
 		}
 	})
 }
+
 // routeResponse delivers a chunk/response message to its pending call.
 func (c *wsConnection) routeResponse(msg protocol.Message) {
 	c.pendingMu.Lock()
@@ -266,6 +274,7 @@ func (c *wsConnection) routeResponse(msg protocol.Message) {
 	}
 	pc.handle(msg)
 }
+
 // failPending terminates the pending call for id with err.
 func (c *wsConnection) failPending(id string, err error) {
 	c.pendingMu.Lock()
@@ -275,6 +284,7 @@ func (c *wsConnection) failPending(id string, err error) {
 		pc.fail(err)
 	}
 }
+
 // addPending registers a pending call, rejecting duplicate IDs and rejecting
 // the call when the worker is at its MaxInFlight cap (returns errRateLimited).
 //
@@ -295,6 +305,7 @@ func (c *wsConnection) addPending(pc *pendingCall) error {
 	c.pending[pc.id] = pc
 	return nil
 }
+
 // registerStream registers a streaming inference call. Inbound chunks are
 // framed as SSE events (data: <json>\n\n); the terminal response emits
 // "data: [DONE]" with Done=true ahead of the channel closing.
@@ -312,6 +323,7 @@ func (c *wsConnection) registerStream(id string, chunkCh chan StreamEvent, errCh
 	}
 	return pc, nil
 }
+
 // registerCall registers a single-response call (model load, non-streaming
 // inference). The first correlated response is forwarded to respCh.
 func (c *wsConnection) registerCall(id string, respCh chan protocol.Message, errCh chan error) (*pendingCall, error) {
@@ -328,6 +340,7 @@ func (c *wsConnection) registerCall(id string, respCh chan protocol.Message, err
 	}
 	return pc, nil
 }
+
 // workerInFlight returns the current in-flight count for worker id. The
 // counter is owned by the connection's pendingMu; callers must not hold
 // pendingMu across this call.
@@ -336,6 +349,7 @@ func (c *wsConnection) workerInFlight() int64 {
 	defer c.pendingMu.Unlock()
 	return int64(len(c.pending))
 }
+
 // releaseSlot releases this connection's semaphore slot exactly once. It is
 // a no-op when the cap is disabled (slot is nil).
 func (c *wsConnection) releaseSlot() {
@@ -350,12 +364,14 @@ func (c *wsConnection) releaseSlot() {
 		c.slot = nil
 	})
 }
+
 // wsWorkerClient sends inference/load requests over a worker's WebSocket
 // connection and consumes the correlated responses.
 type wsWorkerClient struct {
 	conn *wsConnection
 	log  *slog.Logger
 }
+
 func (c *wsWorkerClient) Transport() string { return protocol.TransportWS }
 func (c *wsWorkerClient) Stream(ctx context.Context, worker protocol.WorkerInfo, kind string, body []byte) (<-chan StreamEvent, <-chan error) {
 	chunkCh := make(chan StreamEvent, wsutil.SendQueueSize)
@@ -474,11 +490,13 @@ func (c *wsWorkerClient) Close() error {
 	c.conn.enqueueClose("client close")
 	return nil
 }
+
 // RecordTimeout bumps the per-worker 504 counter for this direct-connection
 // worker, surfaced by /v1/queue/stats.
 func (c *wsWorkerClient) RecordTimeout(workerID string) {
 	c.conn.hub.recordTimeout(workerID)
 }
+
 // awaitResponse reads the single correlated response of a call.
 func awaitResponse(ctx context.Context, respCh chan protocol.Message, errCh chan error) ([]byte, error) {
 	for {
@@ -507,6 +525,7 @@ func awaitResponse(ctx context.Context, respCh chan protocol.Message, errCh chan
 		}
 	}
 }
+
 // inferenceRequest builds the WS protocol request payload from an
 // OpenAI-compatible request body.
 func inferenceRequest(kind string, body []byte) (protocol.InferenceRequestPayload, error) {
@@ -518,6 +537,7 @@ func inferenceRequest(kind string, body []byte) (protocol.InferenceRequestPayloa
 	}
 	return protocol.InferenceRequestPayload{Kind: kind, Model: rb.Model, Body: body}, nil
 }
+
 // forceNonStreaming rewrites body so the worker returns a single response.
 func forceNonStreaming(body []byte) ([]byte, error) {
 	var m map[string]interface{}

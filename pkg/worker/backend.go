@@ -39,13 +39,13 @@ func (e *BackendHTTPError) Error() string {
 
 // Metrics represents backend performance metrics.
 type Metrics struct {
-	Requests       int   `json:"requests_total"`
-	Errors         int   `json:"errors_total"`
-	LatencyMs      int64 `json:"latency_ms_total"`
-	ModelLoads     int   `json:"model_loads_total"`
-	ModelUnloads   int   `json:"model_unloads_total"`
-	MemoryUsageMB  int   `json:"memory_usage_mb"`
-	GPUUsagePct    int   `json:"gpu_usage_pct"`
+	Requests      int   `json:"requests_total"`
+	Errors        int   `json:"errors_total"`
+	LatencyMs     int64 `json:"latency_ms_total"`
+	ModelLoads    int   `json:"model_loads_total"`
+	ModelUnloads  int   `json:"model_unloads_total"`
+	MemoryUsageMB int   `json:"memory_usage_mb"`
+	GPUUsagePct   int   `json:"gpu_usage_pct"`
 	// Threads is the backend's effective thread count (llama-cpp only).
 	// Zero means the backend does not expose a thread count.
 	Threads int `json:"threads,omitempty"`

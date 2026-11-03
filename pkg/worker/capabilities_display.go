@@ -37,15 +37,29 @@ func writeCapabilities(w io.Writer, caps protocol.Capabilities) error {
 	}
 	// Helper that writes and returns error if non-nil, avoiding deep nesting
 	ok := func(err error) bool { return err != nil }
-	
-	if ok(wr("=== InferMesh Worker Capabilities ===\n")) { return nil }
-	if ok(wr("\n")) { return nil }
 
-	if err := writeGPU(wr, caps); err != nil { return err }
-	if err := writeVRAM(wr, caps); err != nil { return err }
-	if err := writeSystem(wr, caps); err != nil { return err }
-	if err := writeModels(wr, caps); err != nil { return err }
-	if err := writeEngines(wr, caps); err != nil { return err }
+	if ok(wr("=== InferMesh Worker Capabilities ===\n")) {
+		return nil
+	}
+	if ok(wr("\n")) {
+		return nil
+	}
+
+	if err := writeGPU(wr, caps); err != nil {
+		return err
+	}
+	if err := writeVRAM(wr, caps); err != nil {
+		return err
+	}
+	if err := writeSystem(wr, caps); err != nil {
+		return err
+	}
+	if err := writeModels(wr, caps); err != nil {
+		return err
+	}
+	if err := writeEngines(wr, caps); err != nil {
+		return err
+	}
 	return nil
 }
 

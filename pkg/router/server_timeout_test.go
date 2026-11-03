@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
-	
+
 	"github.com/seppaleinen/infermesh/pkg/protocol"
 )
 

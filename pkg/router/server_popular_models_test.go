@@ -9,6 +9,7 @@ import (
 
 	"github.com/seppaleinen/infermesh/pkg/protocol"
 )
+
 func TestPopularModelsHandler(t *testing.T) {
 	worker := protocol.WorkerInfo{
 		ID:       "worker-1",
