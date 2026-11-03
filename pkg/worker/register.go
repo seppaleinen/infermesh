@@ -24,14 +24,14 @@ const DefaultRegisterInterval = 10 * time.Second
 // infoFn is called on every tick (including the initial registration) so
 // heartbeats carry fresh capabilities/models instead of a stale startup snapshot.
 func RegisterLoop(ctx context.Context, routerBase string, info protocol.WorkerInfo, interval time.Duration, log *slog.Logger) {
-	RegisterLoopWithRefresh(ctx, routerBase, func() protocol.WorkerInfo { return info }, interval, log)
+	RegisterLoopWithRefresh(ctx, routerBase, func() protocol.WorkerInfo { return info }, interval, "", log)
 }
 
 // RegisterLoopWithRefresh is RegisterLoop with a dynamic info provider.
 // Use it so each heartbeat reflects currently discovered models/capabilities.
-func RegisterLoopWithRefresh(ctx context.Context, routerBase string, infoFn func() protocol.WorkerInfo, interval time.Duration, log *slog.Logger) {
+func RegisterLoopWithRefresh(ctx context.Context, routerBase string, infoFn func() protocol.WorkerInfo, interval time.Duration, apiKey string, log *slog.Logger) {
 	// Register immediately on start
-	postRegister(ctx, routerBase, infoFn(), log)
+	postRegister(ctx, routerBase, infoFn(), apiKey, log)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -51,7 +51,7 @@ func RegisterLoopWithRefresh(ctx context.Context, routerBase string, infoFn func
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			postRegister(ctx, routerBase, infoFn(), log)
+			postRegister(ctx, routerBase, infoFn(), apiKey, log)
 		}
 	}
 }
@@ -64,7 +64,7 @@ func registerURL(routerBase string) string {
 }
 
 // postRegister sends a single POST to the router's /v1/dev/register endpoint.
-func postRegister(ctx context.Context, routerBase string, info protocol.WorkerInfo, log *slog.Logger) {
+func postRegister(ctx context.Context, routerBase string, info protocol.WorkerInfo, apiKey string, log *slog.Logger) {
 	// Short-circuit if the context is already done: the select in
 	// RegisterLoopWithRefresh may have dequeued a ticker.C before ctx was
 	// cancelled, so a call can be in-flight when cancel() returns. Without
@@ -86,6 +86,12 @@ func postRegister(ctx context.Context, routerBase string, info protocol.WorkerIn
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Present the worker's configured API key when one is set so an apikey-
+	// enforcing router (dev or prod mode) accepts /v1/dev/register. An empty
+	// key is a deliberate no-op for unauthenticated routers.
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
@@ -108,7 +114,7 @@ func postRegister(ctx context.Context, routerBase string, info protocol.WorkerIn
 // verifies the router's server certificate against the CA pool. This is the
 // prod-mode counterpart of postRegister: the router's /v1/dev/register endpoint
 // is wrapped by the mTLS middleware, so plain HTTP is rejected with 403.
-func postRegisterMTLS(ctx context.Context, routerBase string, info protocol.WorkerInfo, certFile, keyFile, caCertFile string, log *slog.Logger) {
+func postRegisterMTLS(ctx context.Context, routerBase string, info protocol.WorkerInfo, certFile, keyFile, caCertFile string, apiKey string, log *slog.Logger) {
 	// See postRegister: the select in RegisterLoopWithRefreshMTLS can dequeue
 	// a ticker.C after ctx was cancelled, so an in-flight POST is possible at
 	// cancel time. Short-circuit to keep the "no calls after cancel"
@@ -129,6 +135,12 @@ func postRegisterMTLS(ctx context.Context, routerBase string, info protocol.Work
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Present the worker's configured API key when one is set so an apikey-
+	// enforcing prod router accepts /v1/dev/register over mTLS. An empty key
+	// is a deliberate no-op for unauthenticated routers.
+	if apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
 
 	client, err := mtlsClient(certFile, keyFile, caCertFile)
 	if err != nil {
@@ -154,8 +166,8 @@ func postRegisterMTLS(ctx context.Context, routerBase string, info protocol.Work
 // RegisterLoopWithRefreshMTLS is RegisterLoopWithRefresh with an mTLS client.
 // It runs the same immediate-then-tick loop but dials the router over HTTPS
 // with client-certificate verification.
-func RegisterLoopWithRefreshMTLS(ctx context.Context, routerBase string, infoFn func() protocol.WorkerInfo, interval time.Duration, certFile, keyFile, caCertFile string, log *slog.Logger) {
-	postRegisterMTLS(ctx, routerBase, infoFn(), certFile, keyFile, caCertFile, log)
+func RegisterLoopWithRefreshMTLS(ctx context.Context, routerBase string, infoFn func() protocol.WorkerInfo, interval time.Duration, certFile, keyFile, caCertFile string, apiKey string, log *slog.Logger) {
+	postRegisterMTLS(ctx, routerBase, infoFn(), certFile, keyFile, caCertFile, apiKey, log)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -172,7 +184,7 @@ func RegisterLoopWithRefreshMTLS(ctx context.Context, routerBase string, infoFn 
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			postRegisterMTLS(ctx, routerBase, infoFn(), certFile, keyFile, caCertFile, log)
+			postRegisterMTLS(ctx, routerBase, infoFn(), certFile, keyFile, caCertFile, apiKey, log)
 		}
 	}
 }

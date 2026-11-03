@@ -177,7 +177,7 @@ func (c *httpWorkerClient) endpoint(worker protocol.WorkerInfo, kind string) str
 }
 
 // postWithRetry POSTs body to url with exponential backoff (max 3 retries).
-func postWithRetry(ctx context.Context, client *http.Client, url string, body []byte) (*http.Response, error) {
+func postWithRetry(ctx context.Context, client *http.Client, url string, body []byte, apiKey string) (*http.Response, error) {
 	var lastErr error
 	for attempt := 0; attempt <= 3; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -185,6 +185,13 @@ func postWithRetry(ctx context.Context, client *http.Client, url string, body []
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
+		// Present the worker's registered API key so the prod-mode worker's
+		// inference endpoint auth matches. The router dials workers over mTLS
+		// (mutual TLS already authenticates this dial), but wrapInferenceEndpoints
+		// on the worker also enforces the gating key, so forward it here.
+		if apiKey != "" {
+			req.Header.Set("X-API-Key", apiKey)
+		}
 		resp, err := client.Do(req)
 		if err == nil {
 			return resp, nil
@@ -198,7 +205,7 @@ func postWithRetry(ctx context.Context, client *http.Client, url string, body []
 }
 
 func (c *httpWorkerClient) Complete(ctx context.Context, worker protocol.WorkerInfo, kind string, body []byte) ([]byte, error) {
-	resp, err := postWithRetry(ctx, c.client(), c.endpoint(worker, kind), body)
+	resp, err := postWithRetry(ctx, c.client(), c.endpoint(worker, kind), body, worker.APIKey)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +226,7 @@ func (c *httpWorkerClient) Stream(ctx context.Context, worker protocol.WorkerInf
 		defer close(chunkCh)
 
 		client := c.streamHTTPClient()
-		resp, err := postWithRetry(ctx, client, c.endpoint(worker, kind), body)
+		resp, err := postWithRetry(ctx, client, c.endpoint(worker, kind), body, worker.APIKey)
 		if err != nil {
 			if ctx.Err() == context.DeadlineExceeded {
 				errCh <- fmt.Errorf("%w: %w", errTimeout, ctx.Err())

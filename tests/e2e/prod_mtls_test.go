@@ -312,6 +312,7 @@ func TestProdMTLS_e2e(t *testing.T) {
 		"--backend", "custom",
 		"--backend-url", mock.URL(),
 		"--prod-router", fmt.Sprintf("https://127.0.0.1:%d", routerPort),
+		"--api-key", apiKey, // matches the router's --api-key so /v1/dev/register accepts this worker
 		"--enable-health-checks", "true",
 	)
 

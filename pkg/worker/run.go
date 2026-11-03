@@ -279,7 +279,7 @@ func (h *Handle) startHTTPRegistration(regConfig ReloadableConfig) context.Cance
 	h.regCancel = regCancel
 	go RegisterLoopWithRefresh(regCtx, regConfig.RouterBase, func() protocol.WorkerInfo {
 		return h.buildRegistrationInfo(regConfig)
-	}, DefaultRegisterInterval, h.log)
+	}, DefaultRegisterInterval, regConfig.APIKey, h.log)
 	return regCancel
 }
 
@@ -300,7 +300,7 @@ func (h *Handle) launchMTLSRegistration(regConfig ReloadableConfig) context.Canc
 	h.regCancel = regCancel
 	go RegisterLoopWithRefreshMTLS(regCtx, h.regProdRouter, func() protocol.WorkerInfo {
 		return h.buildRegistrationInfo(regConfig)
-	}, DefaultRegisterInterval, h.regMTLSCert, h.regMTLSKey, caCertPath, h.log)
+	}, DefaultRegisterInterval, h.regMTLSCert, h.regMTLSKey, caCertPath, regConfig.APIKey, h.log)
 	return regCancel
 }
 
@@ -319,7 +319,17 @@ func (h *Handle) buildRegistrationInfo(regConfig ReloadableConfig) protocol.Work
 	}
 	info.Capabilities.Models = models
 	h.srv.ApplyModelFilters(&info.Capabilities)
-	info.APIKey = regConfig.RelayAPIKey
+	// Carry the API key other components must use to authenticate calls to
+	// this worker, so the router can present it when dialing back for
+	// inference. The relay path authenticates over WS using the shared
+	// RelayAPIKey (see ws_relay.go/ws_hub.go), so keep that value there; mTLS
+	// and plain-HTTP dial-back paths authenticate the worker's own --api-key
+	// gating key, which is what wrapInferenceEndpoints enforces on inference.
+	if regConfig.RelayURL != "" {
+		info.APIKey = regConfig.RelayAPIKey
+	} else {
+		info.APIKey = regConfig.APIKey
+	}
 	// Relay path uses WebSocket transport; HTTP path uses default (empty/HTTP).
 	if regConfig.RelayURL != "" {
 		info.Transport = protocol.TransportWS
