@@ -35,6 +35,15 @@ build-static:
 # out to `wails3 generate ...` / `wails3 tool has ...` internally).
 export PATH := $(shell go env GOPATH)/bin:$(PATH)
 
+# macOS SDK for CGO builds (Wails app). Apple ships CLT SDKs whose .tbd stub
+# files declare `arm64e.x1-macos` targets that Go 1.27's tapi linker rejects
+# as "unknown architecture" (ld: multiple errors: tapi error: malformed file).
+# `xcrun` defaults to the newest SDK, which is the broken one here, so prefer
+# the `MacOSX.sdk` alias (points to a compatible SDK using `arm64e-macos`).
+# Override per-invocation:
+#   SDKROOT=/path/to/compatible.sdk make build-app
+export SDKROOT ?= $(shell if [ -d /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk ]; then echo /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk; else xcrun --sdk macosx --show-sdk-path 2>/dev/null; fi)
+
 APP_NAME    ?= InferMesh
 APP_BIN_DIR ?= bin/app
 

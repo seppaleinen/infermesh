@@ -53,6 +53,10 @@ tasks:
       CGO_CFLAGS: "-mmacosx-version-min=12.0"
       CGO_LDFLAGS: "-mmacosx-version-min=12.0"
       MACOSX_DEPLOYMENT_TARGET: "12.0"
+      # Go 1.27's tapi linker rejects the `arm64e.x1-macos` targets in newer
+      # CLT SDK .tbd stubs ("ld: multiple errors: tapi error: malformed file").
+      # The MacOSX.sdk alias points to a compatible SDK. Falls back to xcrun.
+      SDKROOT: '{{.SDKROOT | default "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk"}}'
 
   build:docker:
     summary: Cross-compiles for macOS using Docker (for Linux/Windows hosts)

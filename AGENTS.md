@@ -20,6 +20,12 @@ make package-app-dmg  # -> bin/app/InferMesh.dmg (macOS; darwin-only, builds pac
 make package-app-linux    # -> bin/app/ (AppImage + deb; Linux host/wails-cross Docker only — guidance + exit 1 elsewhere)
 make package-app-windows  # -> compile-check (real cross-compile); currently FAILS until Windows desktop support lands (deferred); + NSIS installer when makensis present
 make test-app-smoke   # build, launch, liveness-only smoke test (needs a display; see Testing)
+# macOS SDK pin: CGO app builds (build-app / package-app) need a CLT SDK whose
+# .tbd stubs use `arm64e-macos` targets. Apple's newest SDK ships
+# `arm64e.x1-macos` stubs that Go 1.27's tapi linker rejects ("ld: multiple
+# errors: tapi error: malformed file"). Makefile pins SDKROOT to the
+# `MacOSX.sdk` alias (a compatible SDK); override with
+#   SDKROOT=/path/to/compatible.sdk make build-app
 # These make targets prepend `$(go env GOPATH)/bin` to PATH, so a `go install`-ed
 # `wails3` resolves even when it is not on your shell PATH.
 # package-app-windows is a compile-check ONLY — it does NOT produce an exe today.
