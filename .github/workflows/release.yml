@@ -115,7 +115,7 @@ jobs:
           VERSION: ${{ needs.release.outputs.next_tag }}
           PLATFORMS: linux/amd64,linux/arm64
         run: |
-          docker buildx build --platform ${{ env.PLATFORMS }} -t ${{ env.IMAGE }}/relay:${{ env.VERSION }}-amd64 -t ${{ env.IMAGE }}/relay:${{ env.VERSION }}-arm64 -f docker/Dockerfile.relay --push .
+          docker buildx build --platform "$PLATFORMS" -t "$IMAGE/relay:$VERSION-amd64" -t "$IMAGE/relay:$VERSION-arm64" -f docker/Dockerfile.relay --push .
 
 
   release-app:
