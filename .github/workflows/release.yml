@@ -109,7 +109,6 @@ jobs:
           PLATFORMS: linux/amd64,linux/arm64
         run: |
           make pkg-docker-push IMAGE="$IMAGE" VERSION="$VERSION" PLATFORMS="$PLATFORMS"
-
       - name: Build and push Relay Docker image
         env:
           IMAGE: ghcr.io/seppaleinen/infermesh
@@ -122,6 +121,8 @@ jobs:
             -t $(IMAGE)/relay:$(VERSION)-arm64 \
             -f docker/Dockerfile.relay \
             --push .
+
+
 
   release-app:
     needs: release
