@@ -79,6 +79,15 @@ export function useRouterPoll<T>(
 	}
 
 	function start(): void {
+		// Seed routerURL eagerly so the loading card shows the configured
+		// address instead of a misleading localhost fallback. GetRouterURL is
+		// a local Go call (no network) and resolves near-instantly.
+		RouterClient.GetRouterURL().then(url => {
+			routerURL.value = url
+		}).catch(() => {
+			// Keyring unavailable or other transient error: leave empty so
+			// the fallback in the template renders (for error display purposes).
+		})
 		state.value = { kind: 'loading' }
 		void fetchOnce({ timeoutMs: FIRST_LOAD_TIMEOUT_MS })
 		timer = setInterval(() => {

@@ -470,7 +470,7 @@ function prevModelPage() {
               </svg>
             </div>
             <h1 id="status-title" class="status-title">Connecting to router…</h1>
-            <p class="status-copy">Querying <span class="mono">{{ workers.routerURL.value || 'http://127.0.0.1:8080' }}</span> for connected workers.</p>
+            <p class="status-copy">Querying router for connected workers…</p>
             <div class="status-flag" role="status">
               <span class="dot flag-dot"></span>
               <span>polling</span>
