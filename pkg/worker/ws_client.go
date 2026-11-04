@@ -267,6 +267,11 @@ func handleWSMessage(ctx context.Context, msg protocol.Message, out *wsOutbound,
 		if err := out.send(reply); err != nil {
 			return false, fmt.Errorf("echo ping: %w", err)
 		}
+	case protocol.MsgHeartbeat:
+		// The relay (or router) echoes our heartbeat back to keep the
+		// external link alive across NAT/proxy/firewall. Accept it silently;
+		// the echo resets our read deadline so the connection is not
+		// dropped for inactivity.
 	case protocol.MsgInferenceRequest:
 		go dispatchInferenceRequest(ctx, msg, out, srv)
 	case protocol.MsgModelLoadRequest:

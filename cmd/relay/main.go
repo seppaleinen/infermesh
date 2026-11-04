@@ -284,6 +284,21 @@ func (r *Relay) workerReadLoop(ws *websocket.Conn, workerID string) {
 			return
 		}
 
+		// Echo heartbeats back to the worker. Workers behind NAT/proxy/firewall
+		// (the common case for remote inference workers) have no inbound path,
+		// so the relay must send traffic outbound to them — otherwise the
+		// intermediate proxy drops the idle link at its own timeout (often
+		// 60s, well under the worker's 90s read deadline). The worker's
+		// wsReaderLoop sees the echo and resets its read deadline. The echo
+		// is forwarded to the router too, so the registry stays current.
+		if msg.Type == protocol.MsgHeartbeat {
+			echo := protocol.Message{ID: msg.ID, Type: protocol.MsgHeartbeat}
+			if err := wsutil.SendJSON(ws, echo); err != nil {
+				r.log.Debug("failed to echo worker heartbeat", "worker_id", workerID, "error", err)
+				return
+			}
+		}
+
 		// Stamp WorkerID before forwarding to router or buffering
 		msg.WorkerID = workerID
 
