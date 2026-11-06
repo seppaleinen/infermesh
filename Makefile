@@ -149,7 +149,7 @@ pkg-docker:
 # Build and push Docker images to registry (CI use; requires auth)
 # Usage: make pkg-docker-push IMAGE=ghcr.io/seppaleinen/infermesh VERSION=v0.1.16
 pkg-docker-push:
-	@echo "Building and pushing Docker images for $(IMAGE):router/$(VERSION), $(IMAGE):worker/$(VERSION), and $(IMAGE):relay/$(VERSION)"
+	@echo "Building and pushing Docker images for $(IMAGE):router/$(VERSION) and $(IMAGE):worker/$(VERSION)"
 	@echo "Platforms: $(PLATFORMS)"
 	docker buildx build \
 		--platform $(PLATFORMS) \
@@ -163,14 +163,6 @@ pkg-docker-push:
 		--target worker \
 		-t $(IMAGE)/worker:$(VERSION) \
 		-t $(IMAGE)/worker:latest \
-		-f $(DOCKERFILE) \
-		--push .
-	docker buildx build \
-		--platform $(PLATFORMS) \
-		--target relay \
-		-t $(IMAGE)/relay:$(VERSION)-amd64 \
-		-t $(IMAGE)/relay:$(VERSION)-arm64 \
-		-t $(IMAGE)/relay:latest \
 		-f $(DOCKERFILE) \
 		--push .
 
