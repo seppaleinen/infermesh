@@ -308,6 +308,10 @@ func (c *relayWorkerClient) Complete(ctx context.Context, worker protocol.Worker
 	// Route the frame through the single relay writer goroutine instead of
 	// writing to relayConn directly from this HTTP-handler goroutine
 	// (issue #196).
+	// Apply a hard cap on in-flight call duration so no call hangs beyond
+	// 60s even if the relay link stays alive but the worker stops responding.
+	ctx, cancel := context.WithTimeout(ctx, maxRelayCallTimeout)
+	defer cancel()
 	if err := c.hub.enqueueRelay(ctx, msg); err != nil {
 		pc.fail(err)
 		if errors.Is(err, errRelayDisconnected) {
@@ -354,6 +358,10 @@ func (c *relayWorkerClient) Stream(ctx context.Context, worker protocol.WorkerIn
 	// Route the frame through the single relay writer goroutine instead of
 	// writing to relayConn directly from this HTTP-handler goroutine
 	// (issue #196).
+	// Apply a hard cap on in-flight call duration so no call hangs beyond
+	// 60s even if the relay link stays alive but the worker stops responding.
+	ctx, cancel := context.WithTimeout(ctx, maxRelayCallTimeout)
+	defer cancel()
 	if err := c.hub.enqueueRelay(ctx, msg); err != nil {
 		pc.fail(err)
 		return chunkCh, errCh
@@ -386,6 +394,10 @@ func (c *relayWorkerClient) LoadModel(ctx context.Context, worker protocol.Worke
 	// Route the frame through the single relay writer goroutine instead of
 	// writing to relayConn directly from this HTTP-handler goroutine
 	// (issue #196).
+	// Apply a hard cap on in-flight call duration so no call hangs beyond
+	// 60s even if the relay link stays alive but the worker stops responding.
+	ctx, cancel := context.WithTimeout(ctx, maxRelayCallTimeout)
+	defer cancel()
 	if err := c.hub.enqueueRelay(ctx, msg); err != nil {
 		pc.fail(err)
 		if errors.Is(err, errRelayDisconnected) {

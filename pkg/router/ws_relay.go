@@ -22,6 +22,11 @@ var errRelayDisconnected = errors.New("relay connection unavailable")
 // treat it as a transient backpressure signal (issue #196).
 var errRelayQueueFull = errors.New("relay send queue full")
 
+// maxRelayCallTimeout is the hard cap on in-flight relay call duration.
+// Even if the relay link stays technically alive but the worker stops responding,
+// calls are failed within this timeout to prevent indefinite hangs (issue #197).
+const maxRelayCallTimeout = 60 * time.Second
+
 // canonicalConnectPath is the WebSocket endpoint the relay mounts for
 // worker and router connections (see cmd/relay/main.go startWSServer). It is
 // the same path the router's own /v1/connect handler serves, so both sides of
@@ -198,6 +203,23 @@ func (h *WSHub) DialRelay(ctx context.Context, url string) error {
 	return nil
 }
 
+// failAllRelayPending fails all pending relay calls with the given error.
+// It snapshots the pending calls under the lock and fails them outside of
+// it to avoid holding the lock during the fail() call (which itself acquires
+// closeOnce). This is used by relayWriterLoop on write failure to provide
+// fast-fail behavior for in-flight calls when the relay link wedges (issue #197).
+func (h *WSHub) failAllRelayPending(err error) {
+	h.relayPendingMu.Lock()
+	pend := make([]*pendingCall, 0, len(h.relayPending))
+	for _, pc := range h.relayPending {
+		pend = append(pend, pc)
+	}
+	h.relayPendingMu.Unlock()
+	for _, pc := range pend {
+		pc.fail(err)
+	}
+}
+
 // relayRetry bounds the exponential backoff applied when re-dialing the
 // relay after a failed or dropped connection.
 const (
@@ -292,6 +314,11 @@ func (h *WSHub) relayWriterLoop(ctx context.Context, done chan struct{}) {
 			}
 			if err := wsutil.WriteText(conn, data); err != nil {
 				h.log.Warn("failed to send to relay", "error", err)
+				// Fail in-flight calls immediately so clients don't wait
+				// 120s for the reader loop's defer to notice the disconnect.
+				// The reader loop's defer still acts as a safety net for
+				// non-wedge disconnects (reader-side EOF, etc.).
+				h.failAllRelayPending(errRelayDisconnected)
 				return
 			}
 		}
