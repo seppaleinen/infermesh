@@ -305,13 +305,14 @@ func (c *relayWorkerClient) Complete(ctx context.Context, worker protocol.Worker
 	if err != nil {
 		return nil, err
 	}
-	conn := c.hub.relayConnSnapshot()
-	if conn == nil {
-		pc.fail(errRelayDisconnected)
-		return nil, errRelayDisconnected
-	}
-	if err := wsutil.SendJSON(conn, msg); err != nil {
+	// Route the frame through the single relay writer goroutine instead of
+	// writing to relayConn directly from this HTTP-handler goroutine
+	// (issue #196).
+	if err := c.hub.enqueueRelay(ctx, msg); err != nil {
 		pc.fail(err)
+		if errors.Is(err, errRelayDisconnected) {
+			return nil, errRelayDisconnected
+		}
 		return nil, err
 	}
 	go func() {
@@ -350,12 +351,10 @@ func (c *relayWorkerClient) Stream(ctx context.Context, worker protocol.WorkerIn
 		close(chunkCh)
 		return chunkCh, errCh
 	}
-	conn := c.hub.relayConnSnapshot()
-	if conn == nil {
-		pc.fail(errRelayDisconnected)
-		return chunkCh, errCh
-	}
-	if err := wsutil.SendJSON(conn, msg); err != nil {
+	// Route the frame through the single relay writer goroutine instead of
+	// writing to relayConn directly from this HTTP-handler goroutine
+	// (issue #196).
+	if err := c.hub.enqueueRelay(ctx, msg); err != nil {
 		pc.fail(err)
 		return chunkCh, errCh
 	}
@@ -384,13 +383,14 @@ func (c *relayWorkerClient) LoadModel(ctx context.Context, worker protocol.Worke
 	if err != nil {
 		return false, err
 	}
-	conn := c.hub.relayConnSnapshot()
-	if conn == nil {
-		pc.fail(errRelayDisconnected)
-		return false, errRelayDisconnected
-	}
-	if err := wsutil.SendJSON(conn, msg); err != nil {
+	// Route the frame through the single relay writer goroutine instead of
+	// writing to relayConn directly from this HTTP-handler goroutine
+	// (issue #196).
+	if err := c.hub.enqueueRelay(ctx, msg); err != nil {
 		pc.fail(err)
+		if errors.Is(err, errRelayDisconnected) {
+			return false, errRelayDisconnected
+		}
 		return false, err
 	}
 	go func() {

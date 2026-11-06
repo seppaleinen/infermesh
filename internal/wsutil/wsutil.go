@@ -15,6 +15,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -51,6 +52,12 @@ const (
 
 // ErrMessageTooLarge reports a frame that exceeded MaxMessageSize.
 var ErrMessageTooLarge = errors.New("wsutil: message exceeds 64 MiB cap")
+
+// ErrWriteTimeout is returned by WriteJSON / WriteText when the outbound
+// frame could not be delivered within WriteTimeout. Callers use it to detect
+// a wedged peer (the peer stopped reading) and tear the connection down
+// rather than blocking forever on the next write.
+var ErrWriteTimeout = errors.New("wsutil: write deadline exceeded")
 
 // Dial opens an outbound WebSocket client connection with TCP keepalive and a
 // bounded handshake timeout. origin may be empty for non-browser clients;
@@ -114,6 +121,71 @@ func ReceiveJSON(ws *websocket.Conn, v interface{}) error {
 // SendText writes pre-marshaled bytes as a single text frame.
 func SendText(ws *websocket.Conn, data []byte) error {
 	return websocket.Message.Send(ws, string(data))
+}
+
+// writeTimeout is the deadline applied to every outbound frame. It defaults
+// to the WriteTimeout constant (30s) and is a package variable so tests can
+// tighten it; production callers see the same 30s value.
+var writeTimeout = WriteTimeout
+
+// SetWriteTimeout replaces the deadline used by WriteJSON/WriteText. Tests
+// tighten it; production callers see the WriteTimeout constant value.
+func SetWriteTimeout(d time.Duration) {
+	writeTimeout = d
+}
+
+// WriteJSON marshals v and writes it as a single text frame, applying the
+// writeTimeout deadline first. On deadline-exceeded or write error it returns
+// ErrWriteTimeout (wrapped) so callers can distinguish a wedged peer from a
+// transient transport error. A nil connection returns an error.
+func WriteJSON(ws *websocket.Conn, v interface{}) error {
+	if ws == nil {
+		return errors.New("wsutil: nil websocket connection")
+	}
+	if err := ws.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+		return err
+	}
+	err := websocket.JSON.Send(ws, v)
+	if isWriteTimeout(err) {
+		return ErrWriteTimeout
+	}
+	return err
+}
+
+// WriteText writes pre-marshaled bytes as a single text frame, applying the
+// writeTimeout deadline first. Same deadline semantics as WriteJSON.
+func WriteText(ws *websocket.Conn, data []byte) error {
+	if ws == nil {
+		return errors.New("wsutil: nil websocket connection")
+	}
+	if err := ws.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+		return err
+	}
+	err := websocket.Message.Send(ws, string(data))
+	if isWriteTimeout(err) {
+		return ErrWriteTimeout
+	}
+	return err
+}
+
+// isWriteTimeout reports whether err is a write deadline exceeded. x/net/websocket
+// surfaces the timeout through different layers depending on the underlying
+// transport, so unwrap and check the sentinel, net.Error timeout, and os.IsTimeout.
+func isWriteTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrWriteTimeout) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	if os.IsTimeout(err) {
+		return true
+	}
+	return false
 }
 
 // SetReadDeadline sets the connection's network read deadline.

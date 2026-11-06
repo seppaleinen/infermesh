@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -214,4 +215,81 @@ func TestRoutableIPSentinel(t *testing.T) {
 	if ipFromRemote("") != "" {
 		t.Fatal("ipFromRemote(\"\") should be empty sentinel")
 	}
+}
+
+// TestSendToRouter_ClosesConnOnWriteFailure verifies the issue #195/#196 fix:
+// when the router stops reading, the relay's single writer goroutine's write
+// to routerConn times out and the writer closes the connection so the router's
+// reader loop exits and runRelay re-dials — instead of wedging permanently.
+//
+// With the single-writer architecture, sendToRouter now ENQUEUES (returns nil)
+// and the writer loop does the actual write; on write deadline the writer loop
+// closes routerConn. The test enqueues a 4 MiB frame to a non-reading router
+// and asserts routerConn becomes nil within a timeout.
+func TestSendToRouter_ClosesConnOnWriteFailure(t *testing.T) {
+	orig := wsutil.WriteTimeout
+	wsutil.SetWriteTimeout(100 * time.Millisecond)
+	t.Cleanup(func() { wsutil.SetWriteTimeout(orig) })
+
+	srv, relay := newTestRelayServer(t)
+
+	// Router connects and sends router_ready, then stops reading so the
+	// relay's outbound write to it blocks until the deadline fires.
+	routerWS := dialWS(t, wsURL(srv)+"/v1/connect")
+	if err := wsutil.SendJSON(routerWS, mustMessage(t, protocol.MsgRouterReady)); err != nil {
+		t.Fatalf("failed to send router_ready: %v", err)
+	}
+	waitForRouterConnected(t, relay)
+
+	// Give the writer loop a moment to start draining the queue before we
+	// enqueue a blocking frame, so the enqueue happens after the writer is
+	// already parked on the socket.
+	time.Sleep(50 * time.Millisecond)
+
+	// Send a payload large enough to exceed the kernel send buffer (~64 KiB
+	// on macOS) so the write genuinely blocks rather than completing into the
+	// buffer. The router never reads it. 4 MiB was verified empirically to
+	// block reliably; 2 MiB completes into the buffer.
+	big := strings.Repeat("z", 4<<20) // 4 MiB
+	msg := protocol.Message{
+		Type:     protocol.MsgHeartbeat,
+		WorkerID: "worker-1",
+		Payload:  jsonRaw(t, map[string]string{"payload": big}),
+	}
+
+	// sendToRouter enqueues the frame onto routerSendCh; the single writer
+	// goroutine does the actual write and times out. The enqueue itself
+	// returns nil (the queue has room).
+	if err := relay.sendToRouter(context.Background(), msg); err != nil {
+		t.Fatalf("sendToRouter enqueue err = %v, want nil (enqueue succeeds; writer owns the write)", err)
+	}
+
+	// routerConn must be nilled (closed) by the writer loop on write
+	// failure, so the reader loop exits and runRelay re-dials — this is
+	// what breaks the permanent wedge.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		relay.routerMu.Lock()
+		got := relay.routerConn
+		relay.routerMu.Unlock()
+		if got == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("routerConn not closed after write failure; link would wedge permanently")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	_ = routerWS.Close()
+}
+
+// jsonRaw marshals v into a json.RawMessage.
+func jsonRaw(t *testing.T, v interface{}) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return json.RawMessage(b)
 }

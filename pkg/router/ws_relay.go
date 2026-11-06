@@ -2,13 +2,12 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"strings"
 	"time"
-
-	"golang.org/x/net/websocket"
 
 	"github.com/seppaleinen/infermesh/internal/wsutil"
 	"github.com/seppaleinen/infermesh/pkg/protocol"
@@ -17,6 +16,11 @@ import (
 // errRelayDisconnected is returned when a relay worker request cannot be
 // sent because the relay connection is down.
 var errRelayDisconnected = errors.New("relay connection unavailable")
+
+// errRelayQueueFull is returned when the relay's outbound queue is full and
+// the frame cannot be enqueued for the single writer goroutine. Callers
+// treat it as a transient backpressure signal (issue #196).
+var errRelayQueueFull = errors.New("relay send queue full")
 
 // canonicalConnectPath is the WebSocket endpoint the relay mounts for
 // worker and router connections (see cmd/relay/main.go startWSServer). It is
@@ -64,12 +68,27 @@ func (h *WSHub) relayConnected() bool {
 	return h.relayConn != nil
 }
 
-// relayConnSnapshot returns the current relay connection, or nil when the
-// relay is not connected. Callers must treat a nil result as "relay down".
-func (h *WSHub) relayConnSnapshot() *websocket.Conn {
-	h.relayMu.RLock()
-	defer h.relayMu.RUnlock()
-	return h.relayConn
+// enqueueRelay marshals msg and enqueues it onto relaySendCh for the single
+// relayWriterLoop. It is the ONLY path for outbound relay frames: the reader
+// loop and the HTTP-handler relayWorkerClient both enqueue here instead of
+// writing to relayConn directly, so the connection has exactly one writer
+// (issue #196). It honors ctx cancellation and the queue's SendQueueSize cap.
+func (h *WSHub) enqueueRelay(ctx context.Context, msg protocol.Message) error {
+	if !h.relayConnected() {
+		return errRelayDisconnected
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal relay frame: %w", err)
+	}
+	select {
+	case h.relaySendCh <- data:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return errRelayQueueFull
+	}
 }
 
 // registerRelayCall registers a pending call on the relay connection,
@@ -158,7 +177,7 @@ func (h *WSHub) DialRelay(ctx context.Context, url string) error {
 	// Send router_ready as the first frame. On failure the connection is
 	// discarded before it is ever published, so relayConnected() stays false.
 	readyMsg := protocol.Message{Type: protocol.MsgRouterReady}
-	if err := wsutil.SendJSON(conn, readyMsg); err != nil {
+	if err := wsutil.WriteJSON(conn, readyMsg); err != nil {
 		_ = conn.Close()
 		return fmt.Errorf("send router_ready: %w", err)
 	}
@@ -271,7 +290,7 @@ func (h *WSHub) relayWriterLoop(ctx context.Context, done chan struct{}) {
 			if !ok {
 				return
 			}
-			if err := wsutil.SendText(conn, data); err != nil {
+			if err := wsutil.WriteText(conn, data); err != nil {
 				h.log.Warn("failed to send to relay", "error", err)
 				return
 			}
@@ -335,13 +354,15 @@ func (h *WSHub) relayReaderLoop(ctx context.Context, done chan struct{}) {
 			continue
 		}
 
-		// Echo relay keepalive pings straight back. The relay is blocked in
-		// its read loop, so its own outbound ping does not reset its idle
-		// deadline — the echo is what keeps the link alive (see
-		// relayPingLoop in cmd/relay/main.go).
+		// Echo relay keepalive pings through the single writer loop. The relay is
+		// blocked in its read loop, so its own outbound ping does not reset
+		// its idle deadline — the echo is what keeps the link alive (see
+		// relayPingLoop in cmd/relay/main.go). The reader loop must NEVER
+		// write relayConn (issue #196): enqueue the echo instead so
+		// relayWriterLoop sends it.
 		if msg.Type == protocol.MsgPing {
 			reply := protocol.Message{ID: msg.ID, Type: protocol.MsgPing}
-			if err := wsutil.SendJSON(conn, reply); err != nil {
+			if err := h.enqueueRelay(context.Background(), reply); err != nil {
 				h.log.Debug("relay ping echo failed", "error", err)
 				return
 			}

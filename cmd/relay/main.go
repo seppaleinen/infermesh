@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -40,6 +41,21 @@ type Relay struct {
 	routerConn  *websocket.Conn            // single router connection
 	routerMu    sync.Mutex
 	workerQueue []protocol.Message // buffered messages when router is disconnected
+
+	// routerSendCh is the single outbound queue for the relay's current
+	// router connection. Every goroutine that wants to send to the router —
+	// the worker read loops (sendToRouter), the ping loop, and the buffered-
+	// message flush — enqueues marshaled frames here instead of writing
+	// directly. routerWriterLoop is the ONLY goroutine that ever calls
+	// wsutil.WriteText on routerConn, so the connection has exactly one
+	// writer and frames cannot be interleaved (issue #196).
+	//
+	// The channel is recreated per router connection under routerMu and set
+	// to nil by the writer on exit, so enqueue callers snapshot it under the
+	// same lock and never send to a channel whose writer has gone. The
+	// channel is never closed (sending to a closed channel panics), so the
+	// writer drains its own snapshot and the old channel is GC'd.
+	routerSendCh chan []byte
 }
 
 func main() {
@@ -207,18 +223,15 @@ func (r *Relay) handleWorker(ws *websocket.Conn, msg protocol.Message) {
 	r.routerMu.Unlock()
 
 	if conn != nil {
-		if err := r.sendToRouter(msg); err != nil {
+		if err := r.sendToRouter(context.Background(), msg); err != nil {
 			r.log.Warn("failed to forward worker register to router; buffering", "worker_id", workerID, "error", err)
-			r.mu.Lock()
-			r.workerQueue = append(r.workerQueue, msg)
-			r.mu.Unlock()
+			r.bufferWorkerMessage(msg)
 		}
 	} else {
 		// Buffer the register for when the router connects
-		r.mu.Lock()
-		r.workerQueue = append(r.workerQueue, msg)
-		r.mu.Unlock()
-		r.log.Debug("buffered worker register (router disconnected)", "worker_id", workerID)
+		if r.bufferWorkerMessage(msg) {
+			r.log.Debug("buffered worker register (router disconnected)", "worker_id", workerID)
+		}
 	}
 
 	r.log.Info("worker connected", "worker_id", workerID)
@@ -234,14 +247,32 @@ func (r *Relay) handleWorker(ws *websocket.Conn, msg protocol.Message) {
 // handleRouter registers a router connection and starts relay loops.
 func (r *Relay) handleRouter(ws *websocket.Conn) {
 	r.routerMu.Lock()
-	if r.routerConn != nil {
+	old := r.routerConn
+	if old != nil {
+		// A new router superseded the old one: tear the old socket down so
+		// its reader loop exits and its writer stops below.
 		r.log.Warn("router already connected, closing old connection")
-		_ = r.routerConn.Close()
+		_ = old.Close()
 	}
 	r.routerConn = ws
+	// Publish a fresh outbound queue for this connection, atomically with
+	// the connection. Snapshot callers (sendToRouter, flush, ping) read it
+	// under the same lock, so they never enqueue onto a channel whose
+	// writer has exited.
+	sendCh := make(chan []byte, wsutil.SendQueueSize)
+	r.routerSendCh = sendCh
 	r.routerMu.Unlock()
 
 	r.log.Info("router connected")
+
+	// done signals this connection's writer and ping loops to stop; it is
+	// closed exactly once, after the reader loop returns.
+	done := make(chan struct{})
+
+	// Start the single writer goroutine for the router connection BEFORE
+	// flushing buffered messages: the flush enqueues frames onto sendCh,
+	// and only this loop writes them to the socket (issue #196).
+	go r.routerWriterLoop(ws, sendCh, done)
 
 	// Flush buffered messages for all workers when router reconnects
 	r.flushBufferedMessages()
@@ -252,12 +283,13 @@ func (r *Relay) handleRouter(ws *websocket.Conn) {
 	// and re-dialled on a timer. Keep it alive with protocol pings: the
 	// relay pings the router, and the router echoes the ping back, so each
 	// side sees inbound traffic and resets its idle deadline.
-	done := make(chan struct{})
-	go r.relayPingLoop(ws, done)
+	go r.relayPingLoop(done)
 
 	// Block until the connection closes (handler must not return or
 	// net/http will close the WebSocket connection immediately).
 	r.routerReadLoop(ws)
+
+	// Connection gone: stop this connection's writer and ping loops.
 	close(done)
 }
 
@@ -293,7 +325,7 @@ func (r *Relay) workerReadLoop(ws *websocket.Conn, workerID string) {
 		// is forwarded to the router too, so the registry stays current.
 		if msg.Type == protocol.MsgHeartbeat {
 			echo := protocol.Message{ID: msg.ID, Type: protocol.MsgHeartbeat}
-			if err := wsutil.SendJSON(ws, echo); err != nil {
+			if err := wsutil.WriteJSON(ws, echo); err != nil {
 				r.log.Debug("failed to echo worker heartbeat", "worker_id", workerID, "error", err)
 				return
 			}
@@ -308,14 +340,12 @@ func (r *Relay) workerReadLoop(ws *websocket.Conn, workerID string) {
 		r.routerMu.Unlock()
 
 		if conn != nil {
-			if err := r.sendToRouter(msg); err != nil {
+			if err := r.sendToRouter(context.Background(), msg); err != nil {
 				r.log.Warn("failed to forward worker message to router", "worker_id", workerID, "error", err)
 			}
 		} else {
 			// Buffer message for when router reconnects
-			r.mu.Lock()
-			r.workerQueue = append(r.workerQueue, msg)
-			r.mu.Unlock()
+			r.bufferWorkerMessage(msg)
 			r.log.Debug("buffered worker message (router disconnected)", "worker_id", workerID)
 		}
 	}
@@ -367,7 +397,7 @@ func (r *Relay) forwardToWorker(msg protocol.Message) {
 		return
 	}
 
-	if err := wsutil.SendJSON(conn, msg); err != nil {
+	if err := wsutil.WriteJSON(conn, msg); err != nil {
 		r.log.Warn("failed to forward to worker", "worker_id", msg.WorkerID, "error", err)
 	}
 }
@@ -382,23 +412,123 @@ func (r *Relay) broadcastToWorkers(msg protocol.Message) {
 	r.mu.RUnlock()
 
 	for _, conn := range workers {
-		if err := wsutil.SendJSON(conn, msg); err != nil {
+		if err := wsutil.WriteJSON(conn, msg); err != nil {
 			r.log.Warn("failed to broadcast to worker", "error", err)
 		}
 	}
 }
 
-// sendToRouter sends a message to the router connection.
-func (r *Relay) sendToRouter(msg protocol.Message) error {
+// bufferWorkerMessage appends msg to workerQueue, dropping the oldest
+// buffered frame when the queue is at its cap. The cap is wsutil.SendQueueSize
+// so the queue and the reconnect flush can never grow without limit during a
+// prolonged router outage (issue #196 — the "flushed buffered messages
+// count=1738" evidence). The oldest frame is almost always a redundant
+// heartbeat; the log warning makes a dropped register visible. Returns true
+// when the message was kept.
+func (r *Relay) bufferWorkerMessage(msg protocol.Message) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.workerQueue) >= wsutil.SendQueueSize {
+		dropped := r.workerQueue[0]
+		r.workerQueue = r.workerQueue[1:]
+		r.log.Warn("worker queue full; dropping oldest buffered message",
+			"dropped_worker_id", dropped.WorkerID, "dropped_type", dropped.Type,
+			"queued", len(r.workerQueue))
+	}
+	r.workerQueue = append(r.workerQueue, msg)
+	return true
+}
+
+// enqueueRouter marshals msg and enqueues it onto the current routerSendCh
+// for the single writer goroutine. The channel snapshot is obtained under
+// routerMu so the caller never sends to a channel whose writer has exited.
+// It is the ONLY path for outbound relay frames: call through this function
+// instead of writing to routerConn directly (issue #196). Returns an error
+// if the router is not connected, the queue is full, or the context is
+// cancelled.
+//
+// The gate is routerConn != nil, NOT routerSendCh != nil: the channel is
+// created lazily by handleRouter when a router connects, so a nil channel
+// means "no router connected yet" — enqueuing into it would silently drop
+// the frame (the buffered-register ordering bug, where a worker's register
+// reached the relay before any router existed).
+func (r *Relay) enqueueRouter(ctx context.Context, msg protocol.Message) error {
+	// Gate on a live router connection: routerConn and routerSendCh are
+	// published atomically by handleRouter under routerMu, so a non-nil
+	// routerConn guarantees a live writer loop draining the snapshot.
 	r.routerMu.Lock()
 	conn := r.routerConn
+	sendCh := r.routerSendCh
 	r.routerMu.Unlock()
 
 	if conn == nil {
 		return errors.New("router not connected")
 	}
 
-	return wsutil.SendJSON(conn, msg)
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal router frame: %w", err)
+	}
+	select {
+	case sendCh <- data:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		// Queue full: transient backpressure.
+		return errQueueFull
+	}
+}
+
+// sendToRouter forwards a worker message to the router via the single writer
+// goroutine. On failure the message is re-buffered onto workerQueue for the
+// next flush (issue #196). Returns nil on enqueue success, or an error if the
+// router is not connected (the caller will buffer).
+func (r *Relay) sendToRouter(ctx context.Context, msg protocol.Message) error {
+	if err := r.enqueueRouter(ctx, msg); err != nil {
+		return err
+	}
+	return nil
+}
+
+// sendQueueFull is returned when the outbound queue is full and the frame
+// cannot be enqueued for the single writer goroutine.
+var errQueueFull = errors.New("router send queue full")
+
+// routerWriterLoop is the ONLY goroutine that writes to the router connection.
+// It drains the per-connection sendCh and applies the per-frame write deadline;
+// on write failure it closes the socket so the reader loop exits and
+// runRelay re-dials (issue #195, #196).
+//
+// On exit it nils routerSendCh under routerMu so enqueueRouter (which gates on
+// routerConn != nil) can never deliver a frame into a channel whose writer has
+// gone — the frame would otherwise sit buffered forever and be silently lost.
+func (r *Relay) routerWriterLoop(ws *websocket.Conn, sendCh chan []byte, done chan struct{}) {
+	defer func() {
+		r.routerMu.Lock()
+		if r.routerSendCh == sendCh {
+			r.routerSendCh = nil
+		}
+		r.routerMu.Unlock()
+	}()
+
+	for {
+		select {
+		case <-done:
+			return
+		case data, ok := <-sendCh:
+			if !ok {
+				return
+			}
+			if err := wsutil.WriteText(ws, data); err != nil {
+				r.log.Warn("failed to send to router", "error", err)
+				// On write failure close the connection so the router's
+				// reader loop exits and runRelay re-dials (issue #195).
+				_ = ws.Close()
+				return
+			}
+		}
+	}
 }
 
 // relayPingLoop sends protocol pings to the router at a fixed cadence so the
@@ -406,8 +536,9 @@ func (r *Relay) sendToRouter(msg protocol.Message) error {
 // deadline, so without keepalive traffic the link is torn down and re-dialled
 // every 90s. The router echoes each ping back; the echo is what resets the
 // relay's own read deadline (the relay is blocked reading, so its outbound
-// ping alone does not help).
-func (r *Relay) relayPingLoop(ws *websocket.Conn, done chan struct{}) {
+// ping alone does not help). Pings enqueue onto routerSendCh — this loop is
+// never a writer (issue #196).
+func (r *Relay) relayPingLoop(done chan struct{}) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -419,18 +550,27 @@ func (r *Relay) relayPingLoop(ws *websocket.Conn, done chan struct{}) {
 			if err != nil {
 				continue
 			}
-			if err := r.sendToRouter(msg); err != nil {
-				r.log.Debug("relay ping failed", "error", err)
-				return
-			}
+			// Pings are best-effort: if the writer is gone the reader
+			// loop will exit and runRelay re-dials.
+			_ = r.enqueueRouter(context.Background(), msg)
 		}
 	}
 }
 
-// flushBufferedMessages sends all buffered messages when router reconnects.
+// flushBufferedMessages drains workerQueue and enqueues each frame onto the
+// router's outbound queue for the single writer goroutine, instead of
+// writing directly. Frames are bounded by the channel's cap; if the queue
+// fills the flush stops and remaining frames stay buffered for the next
+// flush (issue #196 — the "flushed buffered messages count=1738" evidence).
+//
+// The gate is a live router connection (routerConn != nil), not the channel
+// itself: the channel is created lazily by handleRouter, so without this
+// check a flush would enqueue into an orphaned channel when no router is
+// connected and the buffered register would be silently lost.
 func (r *Relay) flushBufferedMessages() {
 	r.routerMu.Lock()
 	conn := r.routerConn
+	sendCh := r.routerSendCh
 	r.routerMu.Unlock()
 
 	if conn == nil {
@@ -447,12 +587,25 @@ func (r *Relay) flushBufferedMessages() {
 	r.workerQueue = r.workerQueue[:0]
 	r.mu.Unlock()
 
-	// Send all buffered messages
+	flushed := 0
 	for _, msg := range workers {
-		if err := wsutil.SendJSON(conn, msg); err != nil {
-			r.log.Warn("failed to flush buffered message", "worker_id", msg.WorkerID, "error", err)
+		data, err := json.Marshal(msg)
+		if err != nil {
+			r.log.Warn("failed to marshal buffered message", "worker_id", msg.WorkerID, "error", err)
+			continue
+		}
+		select {
+		case sendCh <- data:
+			flushed++
+		default:
+			// Queue full: keep the rest buffered for the next flush.
+			r.mu.Lock()
+			r.workerQueue = append(r.workerQueue, workers[flushed:]...)
+			r.mu.Unlock()
+			r.log.Debug("router send queue full during flush; re-buffering", "remaining", len(workers)-flushed)
+			return
 		}
 	}
 
-	r.log.Info("flushed buffered messages", "count", len(workers))
+	r.log.Info("flushed buffered messages", "count", flushed)
 }
