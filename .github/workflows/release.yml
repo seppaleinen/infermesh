@@ -110,7 +110,15 @@ jobs:
         run: |
           make pkg-docker-push IMAGE="$IMAGE" VERSION="$VERSION" PLATFORMS="$PLATFORMS"
       - name: Build and push Relay Docker image
+        env:
+          GHCR_RELAY_PAT: ${{ secrets.GHCR_RELAY_PAT }}
         run: |
+          if [ -z "$GHCR_RELAY_PAT" ]; then
+            echo "::error::GHCR_RELAY_PAT secret not set. Cannot push relay image."
+            echo "Add a PAT with 'read:packages' + 'write:packages' scopes to repo settings > Secrets > Actions."
+            exit 1
+          fi
+          echo "$GHCR_RELAY_PAT" | docker login ghcr.io -u seppaleinen --password-stdin
           docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/seppaleinen/infermesh/relay:${{ needs.release.outputs.next_tag }}-amd64 -t ghcr.io/seppaleinen/infermesh/relay:${{ needs.release.outputs.next_tag }}-arm64 -f docker/Dockerfile.relay --push .
 
 
