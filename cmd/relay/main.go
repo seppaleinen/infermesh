@@ -359,6 +359,12 @@ func (r *Relay) routerReadLoop(ws *websocket.Conn) {
 			r.routerConn = nil
 		}
 		r.routerMu.Unlock()
+		// Close the socket so the router's reader loop gets EOF and exits,
+		// signaling runRelay to re-dial. Without this, a read-timeout exit
+		// leaves a half-open socket: the router keeps reading forever, the
+		// relay never sees its done channel close, and worker heartbeats
+		// buffer indefinitely (issue #199).
+		_ = ws.Close()
 		r.log.Info("router disconnected")
 	}()
 
