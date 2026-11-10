@@ -11,7 +11,14 @@ import (
 
 	"github.com/seppaleinen/infermesh/internal/wsutil"
 	"github.com/seppaleinen/infermesh/pkg/protocol"
+	"golang.org/x/net/websocket"
 )
+
+// watchdogRelayReadTimeout is how long the relay can go silent before the
+// router force-closes the connection. It matches wsutil.ReadTimeout so the
+// watchdog fires at the same point the relay's own idle deadline would.
+// It is a var (not a const) so tests can shorten it.
+var watchdogRelayReadTimeout = wsutil.ReadTimeout
 
 // errRelayDisconnected is returned when a relay worker request cannot be
 // sent because the relay connection is down.
@@ -333,33 +340,23 @@ func (h *WSHub) relayReaderLoop(ctx context.Context, done chan struct{}) {
 	h.relayMu.RLock()
 	conn := h.relayConn
 	h.relayMu.RUnlock()
+	if conn == nil {
+		return
+	}
 
-	defer func() {
-		h.relayMu.Lock()
-		if h.relayConn == conn {
-			h.relayConn = nil
-		}
-		h.relayMu.Unlock()
-		if conn != nil {
-			_ = conn.Close()
-		}
-		// Fail in-flight relay calls so HTTP clients get a fast error
-		// instead of waiting on a response that can never arrive (the
-		// relay link is gone). Finished calls are no-ops (closeOnce).
-		h.relayPendingMu.Lock()
-		pend := make([]*pendingCall, 0, len(h.relayPending))
-		for _, pc := range h.relayPending {
-			pend = append(pend, pc)
-		}
-		h.relayPendingMu.Unlock()
-		for _, pc := range pend {
-			pc.fail(errRelayDisconnected)
-		}
-		// Clean up relay metric maps to prevent accumulation of stale worker IDs
-		h.cleanupRelayMetrics()
-		close(done)
-		h.log.Info("relay reader loop exited")
-	}()
+	defer func() { h.cleanupRelayExit(conn, done) }()
+
+	// watchdog: if the relay goes silent for ReadTimeout, force the
+	// connection closed so the blocked ReceiveJSON returns. This is the
+	// fix for the lost-close-frame wedge: the relay's ws.Close() writes
+	// its close frame to an internal bufio.Writer and then closes the
+	// TCP socket without flushing, so the close frame is discarded. The
+	// CNI path between the relay and router nodes can also lose the TCP
+	// FIN. Without this watchdog, the router's reader loop blocks forever
+	// in ReceiveJSON's read syscall and runRelay never re-dials (issue
+	// #199).
+	watchdogDone, watchdogReset := h.startRelayWatchdog(ctx, conn)
+	defer close(watchdogDone)
 
 	for {
 		if err := wsutil.SetReadDeadline(conn, time.Now().Add(wsutil.ReadTimeout)); err != nil {
@@ -373,6 +370,12 @@ func (h *WSHub) relayReaderLoop(ctx context.Context, done chan struct{}) {
 				h.log.Debug("relay read failed", "error", err)
 			}
 			return
+		}
+
+		// Reset the watchdog: we received a frame, so the relay is alive.
+		select {
+		case watchdogReset <- struct{}{}:
+		default:
 		}
 
 		// Handle relay-internal register messages — create synthetic connections.
@@ -433,6 +436,81 @@ func (h *WSHub) relayReaderLoop(ctx context.Context, done chan struct{}) {
 			}
 		}
 	}
+}
+
+// startRelayWatchdog starts a goroutine that force-closes the relay connection
+// after watchdogRelayReadTimeout of silence. This is the fix for the lost-close-frame
+// wedge: the relay's ws.Close() writes its close frame to an internal
+// bufio.Writer and then closes the TCP socket without flushing, so the close
+// frame is discarded (or the FIN is dropped by the CNI). Without this watchdog,
+// the router's reader loop blocks forever in ReceiveJSON's read syscall.
+// Returns a done channel and a reset channel; close done to stop, send to reset
+// to restart the timer when a frame is received.
+func (h *WSHub) startRelayWatchdog(ctx context.Context, conn *websocket.Conn) (chan struct{}, chan struct{}) {
+	watchdogDone := make(chan struct{})
+	watchdogReset := make(chan struct{}, 1)
+	watchdog := time.NewTimer(watchdogRelayReadTimeout)
+	defer watchdog.Stop()
+
+	go func() {
+		for {
+			select {
+			case <-watchdogDone:
+				return
+			case <-ctx.Done():
+				return
+			case <-watchdog.C:
+				// Relay silent for watchdogRelayReadTimeout. Force the read
+				// deadline to fire so ReceiveJSON's blocking read syscall
+				// returns. SetReadDeadline on the underlying net.Conn is
+				// goroutine-safe and works even while ReceiveJSON holds ws.rio.
+				_ = conn.SetReadDeadline(time.Now())
+				// Give ReceiveJSON a moment to return, then hard-close so
+				// the reader loop's defer cleans up and runRelay re-dials.
+				select {
+				case <-watchdogDone:
+					return
+				case <-ctx.Done():
+					return
+				case <-time.After(2 * time.Second):
+				}
+				_ = conn.Close()
+				return
+			case <-watchdogReset:
+				watchdog.Stop()
+				watchdog.Reset(watchdogRelayReadTimeout)
+			}
+		}
+	}()
+	return watchdogDone, watchdogReset
+}
+
+// cleanupRelayExit handles the cleanup when the relay reader loop exits.
+func (h *WSHub) cleanupRelayExit(conn *websocket.Conn, done chan struct{}) {
+	h.relayMu.Lock()
+	if h.relayConn == conn {
+		h.relayConn = nil
+	}
+	h.relayMu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+	// Fail in-flight relay calls so HTTP clients get a fast error
+	// instead of waiting on a response that can never arrive (the
+	// relay link is gone). Finished calls are no-ops (closeOnce).
+	h.relayPendingMu.Lock()
+	pend := make([]*pendingCall, 0, len(h.relayPending))
+	for _, pc := range h.relayPending {
+		pend = append(pend, pc)
+	}
+	h.relayPendingMu.Unlock()
+	for _, pc := range pend {
+		pc.fail(errRelayDisconnected)
+	}
+	// Clean up relay metric maps to prevent accumulation of stale worker IDs
+	h.cleanupRelayMetrics()
+	close(done)
+	h.log.Info("relay reader loop exited")
 }
 
 // cleanupRelayMetrics removes zero-value entries from relay metric maps
