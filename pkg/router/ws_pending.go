@@ -11,6 +11,15 @@ import (
 // data lines, and sends them on pc.chunkCh. MsgError terminates the stream
 // with an error. The returned closure captures pc and may be assigned to
 // pc.handle.
+//
+// The handler is non-blocking: if the HTTP consumer is not draining pc.chunkCh
+// (slow client, disconnected agent), the select falls through to default and
+// drops the chunk rather than blocking the reader loop. A blocked reader loop
+// is the root cause of the relay↔router wedge: the router stops reading from
+// the relay, the relay's single writer goroutine can't drain its send queue,
+// worker heartbeats and inference responses are dropped, and the router marks
+// the worker unavailable. Dropping a few SSE chunks is far cheaper than
+// wedging the entire pool (issue #198).
 func streamPendingHandler(pc *pendingCall) func(protocol.Message) {
 	return func(msg protocol.Message) {
 		switch msg.Type {
@@ -25,6 +34,10 @@ func streamPendingHandler(pc *pendingCall) func(protocol.Message) {
 			select {
 			case pc.chunkCh <- StreamEvent{Data: framed}:
 			case <-pc.doneCh:
+			default:
+				// Consumer is full or done; drop the chunk rather than
+				// block the reader loop. The HTTP handler will eventually
+				// time out or the client will disconnect, closing doneCh.
 			}
 		case protocol.MsgInferenceResponse:
 			var p protocol.InferenceResponsePayload
@@ -42,6 +55,8 @@ func streamPendingHandler(pc *pendingCall) func(protocol.Message) {
 				select {
 				case pc.chunkCh <- StreamEvent{Data: framed}:
 				case <-pc.doneCh:
+				default:
+					// Consumer is full or done; drop the chunk.
 				}
 			}
 			if p.Done {
@@ -60,6 +75,12 @@ func streamPendingHandler(pc *pendingCall) func(protocol.Message) {
 // and MsgModelLoadResponse to pc.respCh and calls pc.completeCall().
 // MsgError terminates the call with an error. The returned closure captures
 // pc and may be assigned to pc.handle.
+//
+// Like streamPendingHandler, this is non-blocking: if the HTTP consumer is
+// not reading pc.respCh, the select falls through to default and fails the
+// call rather than blocking the reader loop. Failing the call is correct here
+// (the client gets a fast error instead of a hang) whereas silently dropping
+// the response would leave the client waiting forever.
 func callPendingHandler(pc *pendingCall) func(protocol.Message) {
 	return func(msg protocol.Message) {
 		switch msg.Type {
@@ -67,12 +88,19 @@ func callPendingHandler(pc *pendingCall) func(protocol.Message) {
 			select {
 			case pc.respCh <- msg:
 			case <-pc.doneCh:
+			default:
+				// Consumer is full (HTTP handler not reading). Fail the
+				// call rather than block the reader loop — the HTTP
+				// handler will see the error when it next reads from errCh.
+				pc.fail(errors.New("response dropped: consumer not reading"))
 			}
 			pc.completeCall()
 		case protocol.MsgModelLoadResponse:
 			select {
 			case pc.respCh <- msg:
 			case <-pc.doneCh:
+			default:
+				pc.fail(errors.New("response dropped: consumer not reading"))
 			}
 			pc.completeCall()
 		case protocol.MsgError:

@@ -40,4 +40,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - v2: backward-compatible JSON superset; existing clients ignore `loaded_worker_count`
 - v3: connection count is TCP sockets (not distinct clients); workers registering via `/v1/dev/register` are counted
 - Dev-mode HTTP only; prod-mode mTLS deferred to Issues #9/#10
-- Distinct-client counting, loaded-vs-advertised distinction deferred to v2 (now shipped)
+- Distinct-client counting, loaded-vs-advertised distinction deferred to v2 (now shipped)# Trigger CI for relay image build
+# Trigger CI

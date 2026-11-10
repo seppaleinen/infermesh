@@ -2,21 +2,37 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"strings"
 	"time"
 
-	"golang.org/x/net/websocket"
-
 	"github.com/seppaleinen/infermesh/internal/wsutil"
 	"github.com/seppaleinen/infermesh/pkg/protocol"
+	"golang.org/x/net/websocket"
 )
+
+// watchdogRelayReadTimeout is how long the relay can go silent before the
+// router force-closes the connection. It matches wsutil.ReadTimeout so the
+// watchdog fires at the same point the relay's own idle deadline would.
+// It is a var (not a const) so tests can shorten it.
+var watchdogRelayReadTimeout = wsutil.ReadTimeout
 
 // errRelayDisconnected is returned when a relay worker request cannot be
 // sent because the relay connection is down.
 var errRelayDisconnected = errors.New("relay connection unavailable")
+
+// errRelayQueueFull is returned when the relay's outbound queue is full and
+// the frame cannot be enqueued for the single writer goroutine. Callers
+// treat it as a transient backpressure signal (issue #196).
+var errRelayQueueFull = errors.New("relay send queue full")
+
+// maxRelayCallTimeout is the hard cap on in-flight relay call duration.
+// Even if the relay link stays technically alive but the worker stops responding,
+// calls are failed within this timeout to prevent indefinite hangs (issue #197).
+const maxRelayCallTimeout = 60 * time.Second
 
 // canonicalConnectPath is the WebSocket endpoint the relay mounts for
 // worker and router connections (see cmd/relay/main.go startWSServer). It is
@@ -64,12 +80,27 @@ func (h *WSHub) relayConnected() bool {
 	return h.relayConn != nil
 }
 
-// relayConnSnapshot returns the current relay connection, or nil when the
-// relay is not connected. Callers must treat a nil result as "relay down".
-func (h *WSHub) relayConnSnapshot() *websocket.Conn {
-	h.relayMu.RLock()
-	defer h.relayMu.RUnlock()
-	return h.relayConn
+// enqueueRelay marshals msg and enqueues it onto relaySendCh for the single
+// relayWriterLoop. It is the ONLY path for outbound relay frames: the reader
+// loop and the HTTP-handler relayWorkerClient both enqueue here instead of
+// writing to relayConn directly, so the connection has exactly one writer
+// (issue #196). It honors ctx cancellation and the queue's SendQueueSize cap.
+func (h *WSHub) enqueueRelay(ctx context.Context, msg protocol.Message) error {
+	if !h.relayConnected() {
+		return errRelayDisconnected
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal relay frame: %w", err)
+	}
+	select {
+	case h.relaySendCh <- data:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return errRelayQueueFull
+	}
 }
 
 // registerRelayCall registers a pending call on the relay connection,
@@ -158,7 +189,7 @@ func (h *WSHub) DialRelay(ctx context.Context, url string) error {
 	// Send router_ready as the first frame. On failure the connection is
 	// discarded before it is ever published, so relayConnected() stays false.
 	readyMsg := protocol.Message{Type: protocol.MsgRouterReady}
-	if err := wsutil.SendJSON(conn, readyMsg); err != nil {
+	if err := wsutil.WriteJSON(conn, readyMsg); err != nil {
 		_ = conn.Close()
 		return fmt.Errorf("send router_ready: %w", err)
 	}
@@ -177,6 +208,23 @@ func (h *WSHub) DialRelay(ctx context.Context, url string) error {
 	go h.relayReaderLoop(ctx, done)
 	go h.relayWriterLoop(ctx, done)
 	return nil
+}
+
+// failAllRelayPending fails all pending relay calls with the given error.
+// It snapshots the pending calls under the lock and fails them outside of
+// it to avoid holding the lock during the fail() call (which itself acquires
+// closeOnce). This is used by relayWriterLoop on write failure to provide
+// fast-fail behavior for in-flight calls when the relay link wedges (issue #197).
+func (h *WSHub) failAllRelayPending(err error) {
+	h.relayPendingMu.Lock()
+	pend := make([]*pendingCall, 0, len(h.relayPending))
+	for _, pc := range h.relayPending {
+		pend = append(pend, pc)
+	}
+	h.relayPendingMu.Unlock()
+	for _, pc := range pend {
+		pc.fail(err)
+	}
 }
 
 // relayRetry bounds the exponential backoff applied when re-dialing the
@@ -271,8 +319,13 @@ func (h *WSHub) relayWriterLoop(ctx context.Context, done chan struct{}) {
 			if !ok {
 				return
 			}
-			if err := wsutil.SendText(conn, data); err != nil {
+			if err := wsutil.WriteText(conn, data); err != nil {
 				h.log.Warn("failed to send to relay", "error", err)
+				// Fail in-flight calls immediately so clients don't wait
+				// 120s for the reader loop's defer to notice the disconnect.
+				// The reader loop's defer still acts as a safety net for
+				// non-wedge disconnects (reader-side EOF, etc.).
+				h.failAllRelayPending(errRelayDisconnected)
 				return
 			}
 		}
@@ -287,33 +340,23 @@ func (h *WSHub) relayReaderLoop(ctx context.Context, done chan struct{}) {
 	h.relayMu.RLock()
 	conn := h.relayConn
 	h.relayMu.RUnlock()
+	if conn == nil {
+		return
+	}
 
-	defer func() {
-		h.relayMu.Lock()
-		if h.relayConn == conn {
-			h.relayConn = nil
-		}
-		h.relayMu.Unlock()
-		if conn != nil {
-			_ = conn.Close()
-		}
-		// Fail in-flight relay calls so HTTP clients get a fast error
-		// instead of waiting on a response that can never arrive (the
-		// relay link is gone). Finished calls are no-ops (closeOnce).
-		h.relayPendingMu.Lock()
-		pend := make([]*pendingCall, 0, len(h.relayPending))
-		for _, pc := range h.relayPending {
-			pend = append(pend, pc)
-		}
-		h.relayPendingMu.Unlock()
-		for _, pc := range pend {
-			pc.fail(errRelayDisconnected)
-		}
-		// Clean up relay metric maps to prevent accumulation of stale worker IDs
-		h.cleanupRelayMetrics()
-		close(done)
-		h.log.Info("relay reader loop exited")
-	}()
+	defer func() { h.cleanupRelayExit(conn, done) }()
+
+	// watchdog: if the relay goes silent for ReadTimeout, force the
+	// connection closed so the blocked ReceiveJSON returns. This is the
+	// fix for the lost-close-frame wedge: the relay's ws.Close() writes
+	// its close frame to an internal bufio.Writer and then closes the
+	// TCP socket without flushing, so the close frame is discarded. The
+	// CNI path between the relay and router nodes can also lose the TCP
+	// FIN. Without this watchdog, the router's reader loop blocks forever
+	// in ReceiveJSON's read syscall and runRelay never re-dials (issue
+	// #199).
+	watchdogDone, watchdogReset := h.startRelayWatchdog(ctx, conn)
+	defer close(watchdogDone)
 
 	for {
 		if err := wsutil.SetReadDeadline(conn, time.Now().Add(wsutil.ReadTimeout)); err != nil {
@@ -329,19 +372,27 @@ func (h *WSHub) relayReaderLoop(ctx context.Context, done chan struct{}) {
 			return
 		}
 
+		// Reset the watchdog: we received a frame, so the relay is alive.
+		select {
+		case watchdogReset <- struct{}{}:
+		default:
+		}
+
 		// Handle relay-internal register messages — create synthetic connections.
 		if msg.Type == protocol.MsgRegister {
 			h.handleRelayRegister(msg)
 			continue
 		}
 
-		// Echo relay keepalive pings straight back. The relay is blocked in
-		// its read loop, so its own outbound ping does not reset its idle
-		// deadline — the echo is what keeps the link alive (see
-		// relayPingLoop in cmd/relay/main.go).
+		// Echo relay keepalive pings through the single writer loop. The relay is
+		// blocked in its read loop, so its own outbound ping does not reset
+		// its idle deadline — the echo is what keeps the link alive (see
+		// relayPingLoop in cmd/relay/main.go). The reader loop must NEVER
+		// write relayConn (issue #196): enqueue the echo instead so
+		// relayWriterLoop sends it.
 		if msg.Type == protocol.MsgPing {
 			reply := protocol.Message{ID: msg.ID, Type: protocol.MsgPing}
-			if err := wsutil.SendJSON(conn, reply); err != nil {
+			if err := h.enqueueRelay(context.Background(), reply); err != nil {
 				h.log.Debug("relay ping echo failed", "error", err)
 				return
 			}
@@ -385,6 +436,81 @@ func (h *WSHub) relayReaderLoop(ctx context.Context, done chan struct{}) {
 			}
 		}
 	}
+}
+
+// startRelayWatchdog starts a goroutine that force-closes the relay connection
+// after watchdogRelayReadTimeout of silence. This is the fix for the lost-close-frame
+// wedge: the relay's ws.Close() writes its close frame to an internal
+// bufio.Writer and then closes the TCP socket without flushing, so the close
+// frame is discarded (or the FIN is dropped by the CNI). Without this watchdog,
+// the router's reader loop blocks forever in ReceiveJSON's read syscall.
+// Returns a done channel and a reset channel; close done to stop, send to reset
+// to restart the timer when a frame is received.
+func (h *WSHub) startRelayWatchdog(ctx context.Context, conn *websocket.Conn) (chan struct{}, chan struct{}) {
+	watchdogDone := make(chan struct{})
+	watchdogReset := make(chan struct{}, 1)
+	watchdog := time.NewTimer(watchdogRelayReadTimeout)
+	defer watchdog.Stop()
+
+	go func() {
+		for {
+			select {
+			case <-watchdogDone:
+				return
+			case <-ctx.Done():
+				return
+			case <-watchdog.C:
+				// Relay silent for watchdogRelayReadTimeout. Force the read
+				// deadline to fire so ReceiveJSON's blocking read syscall
+				// returns. SetReadDeadline on the underlying net.Conn is
+				// goroutine-safe and works even while ReceiveJSON holds ws.rio.
+				_ = conn.SetReadDeadline(time.Now())
+				// Give ReceiveJSON a moment to return, then hard-close so
+				// the reader loop's defer cleans up and runRelay re-dials.
+				select {
+				case <-watchdogDone:
+					return
+				case <-ctx.Done():
+					return
+				case <-time.After(2 * time.Second):
+				}
+				_ = conn.Close()
+				return
+			case <-watchdogReset:
+				watchdog.Stop()
+				watchdog.Reset(watchdogRelayReadTimeout)
+			}
+		}
+	}()
+	return watchdogDone, watchdogReset
+}
+
+// cleanupRelayExit handles the cleanup when the relay reader loop exits.
+func (h *WSHub) cleanupRelayExit(conn *websocket.Conn, done chan struct{}) {
+	h.relayMu.Lock()
+	if h.relayConn == conn {
+		h.relayConn = nil
+	}
+	h.relayMu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+	// Fail in-flight relay calls so HTTP clients get a fast error
+	// instead of waiting on a response that can never arrive (the
+	// relay link is gone). Finished calls are no-ops (closeOnce).
+	h.relayPendingMu.Lock()
+	pend := make([]*pendingCall, 0, len(h.relayPending))
+	for _, pc := range h.relayPending {
+		pend = append(pend, pc)
+	}
+	h.relayPendingMu.Unlock()
+	for _, pc := range pend {
+		pc.fail(errRelayDisconnected)
+	}
+	// Clean up relay metric maps to prevent accumulation of stale worker IDs
+	h.cleanupRelayMetrics()
+	close(done)
+	h.log.Info("relay reader loop exited")
 }
 
 // cleanupRelayMetrics removes zero-value entries from relay metric maps

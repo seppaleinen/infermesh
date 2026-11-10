@@ -125,6 +125,8 @@ func (c *wsConnection) writerLoop() {
 }
 
 // send enqueues a marshaled envelope, honoring ctx cancellation.
+// When relay is connected, it uses a non-blocking send to avoid wedging
+// the reader loop when the relay send queue is full (issue #198).
 func (c *wsConnection) send(ctx context.Context, msg protocol.Message) error {
 	// If relay is configured, send through relay with WorkerID set
 	if c.hub.relayConnected() {
@@ -137,6 +139,8 @@ func (c *wsConnection) send(ctx context.Context, msg protocol.Message) error {
 		sendCh := c.hub.relaySendCh
 		c.hub.mu.Unlock()
 
+		// Non-blocking send: if the relay queue is full, fail immediately
+		// rather than blocking the reader loop (would cause relay wedge).
 		select {
 		case sendCh <- data:
 			return nil
@@ -144,6 +148,10 @@ func (c *wsConnection) send(ctx context.Context, msg protocol.Message) error {
 			return ctx.Err()
 		case <-c.doneCh:
 			return errConnClosed
+		default:
+			// Queue full - return error so caller can handle (fail call)
+			// rather than blocking the entire reader loop.
+			return fmt.Errorf("relay send queue full")
 		}
 	}
 
@@ -160,6 +168,10 @@ func (c *wsConnection) send(ctx context.Context, msg protocol.Message) error {
 		return ctx.Err()
 	case <-c.doneCh:
 		c.queueDepth.Add(-1)
+		return errConnClosed
+	default:
+		c.queueDepth.Add(-1)
+		c.hub.log.Warn("websocket send queue full; dropping message", "worker", c.id, "type", msg.Type)
 		return errConnClosed
 	}
 }
