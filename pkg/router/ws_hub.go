@@ -233,32 +233,73 @@ func (h *WSHub) Handler() http.Handler {
 }
 
 // Start launches the idle ping loop that keeps liveness traffic flowing on
-// otherwise quiet connections.
+// otherwise quiet connections, and — when a registry is configured — the
+// registry-event loop that tears down stale hub connections when the
+// registry sweep prunes a worker (issue #200).
 func (h *WSHub) Start(ctx context.Context) {
-	go func() {
-		ticker := time.NewTicker(wsutil.DefaultPingInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				h.mu.RLock()
-				conns := make([]*wsConnection, 0, len(h.conns))
-				for _, c := range h.conns {
-					conns = append(conns, c)
-				}
-				h.mu.RUnlock()
-				msg, err := protocol.NewMessage(protocol.MsgPing, protocol.PingPayload{Timestamp: time.Now().Unix()})
-				if err != nil {
-					continue
-				}
-				for _, c := range conns {
-					c.enqueue(msg)
-				}
+	go h.pingLoop(ctx)
+	if h.reg != nil {
+		go h.registryEventLoop(ctx)
+	}
+}
+
+// pingLoop is the idle ping loop extracted from Start so that Start can also
+// launch the registry-event loop. The ping behavior is unchanged.
+func (h *WSHub) pingLoop(ctx context.Context) {
+	ticker := time.NewTicker(wsutil.DefaultPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			h.mu.RLock()
+			conns := make([]*wsConnection, 0, len(h.conns))
+			for _, c := range h.conns {
+				conns = append(conns, c)
+			}
+			h.mu.RUnlock()
+			msg, err := protocol.NewMessage(protocol.MsgPing, protocol.PingPayload{Timestamp: time.Now().Unix()})
+			if err != nil {
+				continue
+			}
+			for _, c := range conns {
+				c.enqueue(msg)
 			}
 		}
-	}()
+	}
+}
+
+// registryEventLoop subscribes to the registry and routes removal /
+// unavailable events into HandleRegistryEvent so a worker the registry
+// sweep prunes (TTL expiry — not an explicit leave) also has its stale
+// hub connection torn down. The registry never closes subscriber
+// channels (registry.Stop contract), so this loop exits only on ctx
+// cancellation. It mirrors CapabilityCache.Start's subscription pattern.
+func (h *WSHub) registryEventLoop(ctx context.Context) {
+	sub := h.reg.Subscribe()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-sub:
+			if !ok {
+				return
+			}
+			switch ev.Type {
+			case registry.RegistryRemoved:
+				h.HandleRegistryEvent(protocol.DiscoveryEvent{
+					Type:   protocol.EventRemoved,
+					Worker: ev.Worker,
+				})
+			case registry.RegistryUnavailable:
+				h.HandleRegistryEvent(protocol.DiscoveryEvent{
+					Type:   protocol.EventExpired,
+					Worker: ev.Worker,
+				})
+			}
+		}
+	}
 }
 
 // Client returns a WorkerClient bound to the active WebSocket connection for
@@ -455,12 +496,23 @@ func (h *WSHub) bridge(event protocol.DiscoveryEvent) {
 	}
 }
 
-// HandleRegistryEvent processes registry-level events to clean up worker state.
-// Currently used to prune workerMaxInFlight entries when workers leave the registry.
+// HandleRegistryEvent processes registry-level events to clean up worker
+// state. It prunes workerMaxInFlight and, on EventRemoved, tears down the
+// worker's stale wsConnection so a later reconnect does not take the
+// supersede path. It must NEVER call shutdown() while holding h.mu:
+// shutdown() acquires h.mu itself (ws_conn.go), so doing so would
+// re-deadlock the same way the supersede path did (issue #198). Release
+// h.mu first, then tear down. Only EventRemoved tears the connection
+// down; EventExpired (worker marked unavailable but still potentially
+// alive) keeps the existing workerMaxInFlight-only behavior.
 func (h *WSHub) HandleRegistryEvent(event protocol.DiscoveryEvent) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	delete(h.workerMaxInFlight, event.Worker.ID)
+	c, ok := h.conns[event.Worker.ID]
+	h.mu.Unlock()
+	if ok && event.Type == protocol.EventRemoved {
+		c.shutdown("worker removed from registry")
+	}
 }
 
 // sendErrorRaw writes an error message on a not-yet-registered connection.

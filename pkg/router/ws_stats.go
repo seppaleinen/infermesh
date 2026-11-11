@@ -357,19 +357,28 @@ func (c *relayWorkerClient) Stream(ctx context.Context, worker protocol.WorkerIn
 	}
 	// Route the frame through the single relay writer goroutine instead of
 	// writing to relayConn directly from this HTTP-handler goroutine
-	// (issue #196).
-	// Apply a hard cap on in-flight call duration so no call hangs beyond
-	// 60s even if the relay link stays alive but the worker stops responding.
-	ctx, cancel := context.WithTimeout(ctx, maxRelayCallTimeout)
-	defer cancel()
+	// (issue #196). The frame-send uses the caller's ctx ONLY — the 60s
+	// hard cap (maxRelayCallTimeout) governs the response-wait, not the
+	// send. The old code wrapped the send ctx in WithTimeout and
+	// cancel()ed it on Stream's return; because Stream returns its
+	// channels immediately, cancel() fired before the goroutine could
+	// observe a response, failing the call with context.Canceled while the
+	// worker was still executing (issue #199).
 	if err := c.hub.enqueueRelay(ctx, msg); err != nil {
 		pc.fail(err)
 		return chunkCh, errCh
 	}
 	go func() {
+		// The cap is owned by this goroutine: cancel() runs only when the
+		// goroutine exits (call finished, cap fired, or caller ctx
+		// cancelled), so it can never pre-empt the response-wait the way a
+		// caller-side `defer cancel()` did. The timer starts after the
+		// frame is enqueued.
+		callCtx, callCancel := context.WithTimeout(ctx, maxRelayCallTimeout)
+		defer callCancel()
 		select {
-		case <-ctx.Done():
-			pc.fail(ctx.Err())
+		case <-callCtx.Done():
+			pc.fail(callCtx.Err())
 		case <-pc.doneCh:
 		}
 	}()

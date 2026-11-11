@@ -135,9 +135,13 @@ func (c *wsConnection) send(ctx context.Context, msg protocol.Message) error {
 		if err != nil {
 			return fmt.Errorf("marshal websocket message: %w", err)
 		}
-		c.hub.mu.Lock()
+		// relaySendCh is write-once (assigned once in NewWSHub, never
+		// reassigned), so reading it does not require h.mu. The old
+		// h.mu.Lock()/Unlock() here made this path re-entrant on h.mu:
+		// handleRelayRegister holds the WRITE lock and calls
+		// old.enqueueClose("superseded") -> enqueue -> this branch ->
+		// c.hub.mu.Lock() -> self-deadlock (issue #198).
 		sendCh := c.hub.relaySendCh
-		c.hub.mu.Unlock()
 
 		// Non-blocking send: if the relay queue is full, fail immediately
 		// rather than blocking the reader loop (would cause relay wedge).
@@ -186,9 +190,13 @@ func (c *wsConnection) enqueue(msg protocol.Message) bool {
 		if err != nil {
 			return false
 		}
-		c.hub.mu.Lock()
+		// relaySendCh is write-once (assigned once in NewWSHub, never
+		// reassigned), so reading it does not require h.mu. The old
+		// h.mu.Lock()/Unlock() here made this path re-entrant on h.mu:
+		// handleRelayRegister holds the WRITE lock and calls
+		// old.enqueueClose("superseded") -> enqueue -> this branch ->
+		// c.hub.mu.Lock() -> self-deadlock (issue #198).
 		sendCh := c.hub.relaySendCh
-		c.hub.mu.Unlock()
 
 		select {
 		case sendCh <- data:
