@@ -31,14 +31,7 @@ func streamPendingHandler(pc *pendingCall) func(protocol.Message) {
 			}
 			framed := append([]byte("data: "), p.Chunk...)
 			framed = append(framed, '\n', '\n')
-			select {
-			case pc.chunkCh <- StreamEvent{Data: framed}:
-			case <-pc.doneCh:
-			default:
-				// Consumer is full or done; drop the chunk rather than
-				// block the reader loop. The HTTP handler will eventually
-				// time out or the client will disconnect, closing doneCh.
-			}
+			pc.deliverChunk(StreamEvent{Data: framed})
 		case protocol.MsgInferenceResponse:
 			var p protocol.InferenceResponsePayload
 			if err := msg.DecodePayload(&p); err != nil {
@@ -52,12 +45,7 @@ func streamPendingHandler(pc *pendingCall) func(protocol.Message) {
 			if len(p.Response) > 0 {
 				framed := append([]byte("data: "), p.Response...)
 				framed = append(framed, '\n', '\n')
-				select {
-				case pc.chunkCh <- StreamEvent{Data: framed}:
-				case <-pc.doneCh:
-				default:
-					// Consumer is full or done; drop the chunk.
-				}
+				pc.deliverChunk(StreamEvent{Data: framed})
 			}
 			if p.Done {
 				pc.completeStream()
@@ -85,21 +73,14 @@ func callPendingHandler(pc *pendingCall) func(protocol.Message) {
 	return func(msg protocol.Message) {
 		switch msg.Type {
 		case protocol.MsgInferenceResponse:
-			select {
-			case pc.respCh <- msg:
-			case <-pc.doneCh:
-			default:
-				// Consumer is full (HTTP handler not reading). Fail the
-				// call rather than block the reader loop — the HTTP
-				// handler will see the error when it next reads from errCh.
+			delivered, done := pc.deliverResp(msg)
+			if !done && !delivered {
 				pc.fail(errors.New("response dropped: consumer not reading"))
 			}
 			pc.completeCall()
 		case protocol.MsgModelLoadResponse:
-			select {
-			case pc.respCh <- msg:
-			case <-pc.doneCh:
-			default:
+			delivered, done := pc.deliverResp(msg)
+			if !done && !delivered {
 				pc.fail(errors.New("response dropped: consumer not reading"))
 			}
 			pc.completeCall()
@@ -108,5 +89,61 @@ func callPendingHandler(pc *pendingCall) func(protocol.Message) {
 			_ = msg.DecodePayload(&p)
 			pc.fail(errors.New(p.Message))
 		}
+	}
+}
+
+// deliverChunk delivers ev on pc.chunkCh without ever blocking. Returns
+// (delivered, done): done means the call is already finished and ev was
+// dropped. sendMu serializes the send against finish()'s close(pc.chunkCh):
+// a send and a close on the same channel must never interleave (concurrent
+// send+close is a data race; sending on a closed channel panics).
+func (pc *pendingCall) deliverChunk(ev StreamEvent) (bool, bool) {
+	select {
+	case <-pc.doneCh:
+		return false, true
+	default:
+	}
+	pc.sendMu.Lock()
+	select {
+	case <-pc.doneCh:
+		pc.sendMu.Unlock()
+		return false, true
+	default:
+	}
+	select {
+	case pc.chunkCh <- ev:
+		pc.sendMu.Unlock()
+		return true, false
+	default:
+		pc.sendMu.Unlock()
+		return false, false
+	}
+}
+
+// deliverResp delivers msg on pc.respCh without ever blocking. Returns
+// (delivered, done): done means the call is already finished and msg was
+// dropped. sendMu serializes the send against finish()'s close(pc.respCh):
+// a send and a close on the same channel must never interleave (concurrent
+// send+close is a data race; sending on a closed channel panics).
+func (pc *pendingCall) deliverResp(msg protocol.Message) (bool, bool) {
+	select {
+	case <-pc.doneCh:
+		return false, true
+	default:
+	}
+	pc.sendMu.Lock()
+	select {
+	case <-pc.doneCh:
+		pc.sendMu.Unlock()
+		return false, true
+	default:
+	}
+	select {
+	case pc.respCh <- msg:
+		pc.sendMu.Unlock()
+		return true, false
+	default:
+		pc.sendMu.Unlock()
+		return false, false
 	}
 }

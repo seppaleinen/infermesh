@@ -1,12 +1,19 @@
 package router
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/seppaleinen/infermesh/internal/wsutil"
 	"github.com/seppaleinen/infermesh/pkg/protocol"
+	"golang.org/x/net/websocket"
 )
 
 // TestNormalizeRelayURL_StripsExistingSuffix verifies that a user-supplied
@@ -216,5 +223,206 @@ func TestRelayWorkerClient_ContextTimeoutTriggersFail(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for Complete to return after context cancellation")
+	}
+}
+
+// TestRelayRegisterSupersede_NoDeadlock verifies BUG-1: no goroutine holds
+// h.mu while invoking any wsConnection method that acquires h.mu. After the
+// fix, the relay branches of send() and enqueue() acquire no hub lock at all.
+//
+// This is a REAL regression test: it drives the actual handleRelayRegister →
+// enqueueClose → enqueue relay-branch code path over a real relaySendCh. If
+// BUG-1 is present, the goroutine at step 2 blocks forever on the non-
+// reentrant RWMutex; the test does NOT hang the test process (the deadlock is
+// in a spawned goroutine), it fails deterministically on the 2 s timeout.
+func TestRelayRegisterSupersede_NoDeadlock(t *testing.T) {
+	// Build a hub with reg == nil (so bridge is a no-op), with relayConn set
+	// to a real dialed *websocket.Conn against a trivial httptest WS server.
+	// This mirrors TestRelayReaderWatchdogBreaksSilentRelay's hub construction.
+	hub := NewWSHub(nil, testLogger())
+
+	// Fake relay server: accepts connections, reads router_ready, then idles.
+	srv := httptest.NewServer(websocket.Server{
+		Handshake: func(_ *websocket.Config, _ *http.Request) error { return nil },
+		Handler: func(ws *websocket.Conn) {
+			ws.MaxPayloadBytes = wsutil.MaxMessageSize
+			var ready protocol.Message
+			_ = wsutil.ReceiveJSON(ws, &ready) // router_ready
+			// Hold connection open; no more frames needed.
+			<-time.After(5 * time.Second)
+		},
+	})
+	defer srv.Close()
+
+	// Dial the relay and set it on the hub.
+	conn, err := wsutil.Dial(context.Background(),
+		"ws://"+strings.TrimPrefix(srv.URL, "http://")+"/", "")
+	if err != nil {
+		t.Fatalf("dial relay: %v", err)
+	}
+	hub.relayMu.Lock()
+	hub.relayConn = conn
+	hub.relayMu.Unlock()
+
+	// First relay register: no supersede, must return promptly.
+	reg1, _ := protocol.NewMessage(protocol.MsgRegister, protocol.RegisterPayload{
+		Worker: protocol.WorkerInfo{
+			ID:        "w-relay",
+			Hostname:  "relay-worker",
+			IP:        "127.0.0.1",
+			Port:      8081,
+			Status:    protocol.StatusAvailable,
+			Transport: protocol.TransportWS,
+		},
+	})
+	hub.handleRelayRegister(reg1)
+	if hub.Client("w-relay") == nil {
+		t.Fatal("first register: hub.Client(\"w-relay\") == nil")
+	}
+
+	// Second relay register, SAME worker id → supersede path (the deadlock site).
+	// Spawn a goroutine that calls hub.handleRelayRegister(reg2).
+	// Assert it completes within 2 seconds.
+	reg2, _ := protocol.NewMessage(protocol.MsgRegister, protocol.RegisterPayload{
+		Worker: protocol.WorkerInfo{
+			ID:        "w-relay",
+			Hostname:  "relay-worker",
+			IP:        "127.0.0.1",
+			Port:      8081,
+			Status:    protocol.StatusAvailable,
+			Transport: protocol.TransportWS,
+		},
+	})
+
+	done := make(chan struct{})
+	go func() {
+		hub.handleRelayRegister(reg2)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good: handleRelayRegister returned promptly.
+	case <-time.After(2 * time.Second):
+		t.Fatal("DEADLOCK: handleRelayRegister held h.mu and re-acquired it via enqueueClose")
+	}
+
+	// Assert the superseding conn is the active one.
+	if hub.Client("w-relay") == nil {
+		t.Fatal("superseded conn: hub.Client(\"w-relay\") == nil")
+	}
+}
+
+// TestRelayWorkerClientStream_FirstEventIsChunk_NotError verifies BUG-2:
+// the maxRelayCallTimeout context's cancel() function is owned exclusively by
+// the response-wait goroutine and is invoked only when that goroutine exits.
+// The frame-send path (enqueueRelay) receives the caller's ctx and is never
+// cancelled by the 60 s cap.
+//
+// This is a REAL regression test: it exercises the actual relay frame-send →
+// writer loop → fake relay → reader loop → routeRelayResponse →
+// streamPendingHandler → chunkCh path, including the goroutine that owns the
+// cap context. With BUG-2 present, errs receives context.Canceled within
+// milliseconds (well before the 100 ms delayed chunk) and the
+// case err := <-errs branch fires → fail. With the fix, no early cancel
+// exists, the chunk arrives at ~100 ms, and the case ev := <-chunks branch
+// fires → pass.
+func TestRelayWorkerClientStream_FirstEventIsChunk_NotError(t *testing.T) {
+	// Build a real relay round-trip.
+	hub := NewWSHub(nil, testLogger())
+
+	// Fake relay: reads frames from the router, sleeps ~100 ms, then writes
+	// back a MsgInferenceChunk followed by MsgInferenceResponse{Done: true}.
+	var reqMsg protocol.Message
+	srv := httptest.NewServer(websocket.Server{
+		Handshake: func(_ *websocket.Config, _ *http.Request) error { return nil },
+		Handler: func(ws *websocket.Conn) {
+			ws.MaxPayloadBytes = wsutil.MaxMessageSize
+			// Read router_ready (first frame the router sends on dial,
+			// mirroring DialRelay).
+			var ready protocol.Message
+			if err := wsutil.ReceiveJSON(ws, &ready); err != nil {
+				return
+			}
+			// Read the inference request. The relay writer loop (separate
+			// goroutine from the reader loop) delivers it to us.
+			if err := wsutil.ReceiveJSON(ws, &reqMsg); err != nil {
+				return
+			}
+			// Sleep 100 ms — longer than the bug's early-cancel latency.
+			time.Sleep(100 * time.Millisecond)
+
+			// Send a chunk.
+			chunk, _ := protocol.NewMessage(protocol.MsgInferenceChunk,
+				protocol.InferenceChunkPayload{
+					Kind:  "chat",
+					Chunk: json.RawMessage(`{"delta":"hi"}`),
+				})
+			chunk.ID = reqMsg.ID
+			_ = wsutil.SendJSON(ws, chunk)
+
+			// Send the terminal response.
+			done, _ := protocol.NewMessage(protocol.MsgInferenceResponse,
+				protocol.InferenceResponsePayload{
+					Kind: "chat",
+					Done: true,
+				})
+			done.ID = reqMsg.ID
+			_ = wsutil.SendJSON(ws, done)
+
+			// Hold open briefly.
+			<-time.After(500 * time.Millisecond)
+		},
+	})
+	defer srv.Close()
+
+	// Dial the relay and start reader/writer loops (mirroring DialRelay).
+	conn, err := wsutil.Dial(context.Background(),
+		"ws://"+strings.TrimPrefix(srv.URL, "http://")+"/", "")
+	if err != nil {
+		t.Fatalf("dial relay: %v", err)
+	}
+	// Send router_ready as the first frame (DialRelay does this).
+	if err := wsutil.WriteJSON(conn, protocol.Message{Type: protocol.MsgRouterReady}); err != nil {
+		t.Fatalf("send router_ready: %v", err)
+	}
+	hub.relayMu.Lock()
+	hub.relayConn = conn
+	hub.relayDone = make(chan struct{})
+	hub.relayMu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go hub.relayReaderLoop(ctx, hub.relayDone)
+	go hub.relayWriterLoop(ctx, hub.relayDone)
+	defer func() {
+		cancel()
+		_ = conn.Close()
+	}()
+
+	// Give loops time to start.
+	time.Sleep(50 * time.Millisecond)
+
+	// Call client.Stream with a 5s timeout ctx.
+	client := newRelayWorkerClient(hub, testLogger())
+	info := protocol.WorkerInfo{ID: "relay-stream-worker"}
+	chunks, errs := client.Stream(context.Background(), info, "chat",
+		[]byte(`{"model":"test","messages":[{"role":"user","content":"hi"}]}`))
+
+	// The FIRST thing delivered must be an SSE chunk, never an error.
+	select {
+	case ev := <-chunks:
+		// Assert the chunk is a real SSE frame (e.g., data: {"delta":"hi"}\n\n), not [DONE].
+		if !bytes.Contains(ev.Data, []byte("delta")) {
+			t.Fatalf("BUG-2: first event not a chunk with delta; got %q", string(ev.Data))
+		}
+		if ev.Done {
+			t.Fatal("BUG-2: first event was [DONE], expected a chunk first")
+		}
+		// Pass: chunk arrived before any error.
+	case err := <-errs:
+		t.Fatalf("BUG-2: send context cancelled on Stream return; worker executed the request but the pending call was already failed: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout: neither chunk nor error arrived within 2s")
 	}
 }

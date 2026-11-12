@@ -599,6 +599,12 @@ type pendingCall struct {
 	doneCh     chan struct{}
 	closeOnce  sync.Once
 	removeOnce sync.Once
+	// sendMu is a leaf lock that serializes delivery sends against
+	// finish()'s channel closes. It is never held while acquiring any
+	// other lock (h.mu, pendingMu, relayPendingMu). A send and a close
+	// on the same channel must never interleave (concurrent send+close is
+	// a data race; sending on a closed channel panics).
+	sendMu sync.Mutex
 }
 
 // completeStream terminates a streaming call: it emits the [DONE] sentinel
@@ -606,10 +612,7 @@ type pendingCall struct {
 // channels exactly once.
 func (pc *pendingCall) completeStream() {
 	pc.closeOnce.Do(func() {
-		select {
-		case pc.chunkCh <- StreamEvent{Data: []byte("data: [DONE]\n\n"), Done: true}:
-		default:
-		}
+		pc.deliverChunk(StreamEvent{Data: []byte("data: [DONE]\n\n"), Done: true})
 		pc.finish()
 	})
 }
@@ -658,11 +661,17 @@ func (pc *pendingCall) finish() {
 			}
 		}
 	})
+	// Close doneCh FIRST so handlers observe completion before channels close.
+	// Then protect the chunkCh/respCh closes with sendMu: this serializes
+	// against deliverChunk/deliverResp sends, ensuring no concurrent send+close
+	// on the same channel (data race under -race; send on closed panics).
 	close(pc.doneCh)
+	pc.sendMu.Lock()
 	if pc.chunkCh != nil {
 		close(pc.chunkCh)
 	}
 	if pc.respCh != nil {
 		close(pc.respCh)
 	}
+	pc.sendMu.Unlock()
 }
