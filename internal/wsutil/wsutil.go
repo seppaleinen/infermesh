@@ -155,10 +155,20 @@ func WriteJSON(ws *websocket.Conn, v interface{}) error {
 // WriteText writes pre-marshaled bytes as a single text frame, applying the
 // writeTimeout deadline first. Same deadline semantics as WriteJSON.
 func WriteText(ws *websocket.Conn, data []byte) error {
+	return WriteTextWithTimeout(ws, data, writeTimeout)
+}
+
+// WriteTextWithTimeout writes pre-marshaled bytes as a single text frame,
+// applying an explicit per-frame deadline. It is the single-writer path's
+// variant: the writer goroutine captures the deadline once at start (instead
+// of reading the package-global writeTimeout on every frame), so a test that
+// tightens wsutil.SetWriteTimeout after the loop has launched no longer
+// races the loop's per-frame reads (issue #203 — CI run 43464933750).
+func WriteTextWithTimeout(ws *websocket.Conn, data []byte, d time.Duration) error {
 	if ws == nil {
 		return errors.New("wsutil: nil websocket connection")
 	}
-	if err := ws.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
+	if err := ws.SetWriteDeadline(time.Now().Add(d)); err != nil {
 		return err
 	}
 	err := websocket.Message.Send(ws, string(data))

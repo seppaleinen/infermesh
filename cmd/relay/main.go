@@ -44,6 +44,12 @@ type Relay struct {
 	routerMu    sync.Mutex
 	workerQueue []protocol.Message // buffered messages when router is disconnected
 
+	// writeTimeout is the per-frame write deadline applied by the single
+	// writer loops (routerWriterLoop, workerWriterLoop). It is captured at
+	// loop start so tests can configure it at Relay construction time
+	// instead of racing a package-global (issue #203).
+	writeTimeout time.Duration
+
 	// routerSendCh is the single outbound queue for the relay's current
 	// router connection. Every goroutine that wants to send to the router —
 	// the worker read loops (sendToRouter), the ping loop, and the buffered-
@@ -92,6 +98,7 @@ func main() {
 		workers:      make(map[string]*websocket.Conn),
 		workerQueue:  make([]protocol.Message, 0),
 		workerSendCh: make(map[string]chan []byte),
+		writeTimeout: wsutil.WriteTimeout,
 	}
 
 	// Start WebSocket server (both workers and routers connect here)
@@ -588,7 +595,7 @@ func (r *Relay) workerWriterLoop(ws *websocket.Conn, workerID string, sendCh cha
 	}()
 
 	for data := range sendCh {
-		if err := wsutil.WriteText(ws, data); err != nil {
+		if err := wsutil.WriteTextWithTimeout(ws, data, r.writeTimeout); err != nil {
 			r.log.Debug("failed to send to worker", "worker_id", workerID, "error", err)
 			// On write failure close the socket so the read loop exits
 			// and the worker is pruned (mirrors routerWriterLoop).
@@ -726,7 +733,7 @@ func (r *Relay) routerWriterLoop(ws *websocket.Conn, sendCh chan []byte, done ch
 			if !ok {
 				return
 			}
-			if err := wsutil.WriteText(ws, data); err != nil {
+			if err := wsutil.WriteTextWithTimeout(ws, data, r.writeTimeout); err != nil {
 				r.log.Warn("failed to send to router", "error", err)
 				// On write failure close the connection so the router's
 				// reader loop exits and runRelay re-dials (issue #195).

@@ -59,6 +59,7 @@ func newTestRelayServer(t *testing.T) (*httptest.Server, *Relay) {
 		workers:      make(map[string]*websocket.Conn),
 		workerQueue:  make([]protocol.Message, 0),
 		workerSendCh: make(map[string]chan []byte),
+		writeTimeout: wsutil.WriteTimeout,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/connect", func(w http.ResponseWriter, req *http.Request) {
@@ -230,11 +231,10 @@ func TestRoutableIPSentinel(t *testing.T) {
 // closes routerConn. The test enqueues a 4 MiB frame to a non-reading router
 // and asserts routerConn becomes nil within a timeout.
 func TestSendToRouter_ClosesConnOnWriteFailure(t *testing.T) {
-	orig := wsutil.WriteTimeout
-	wsutil.SetWriteTimeout(100 * time.Millisecond)
-	t.Cleanup(func() { wsutil.SetWriteTimeout(orig) })
-
 	srv, relay := newTestRelayServer(t)
+	// Tight write timeout on the relay instance (not the package global) so
+	// the writer loop captures it at start and we don't race.
+	relay.writeTimeout = 100 * time.Millisecond
 
 	// Router connects and sends router_ready, then stops reading so the
 	// relay's outbound write to it blocks until the deadline fires.
@@ -357,12 +357,10 @@ func jsonRaw(t *testing.T, v interface{}) json.RawMessage {
 // single writer handles backpressure cleanly and more frames get through.
 // On the pre-fix baseline, the deadline race causes early teardown.
 func TestWorkerConcurrentEchoAndForward_NoCorruption(t *testing.T) {
-	// Tight write timeout to trigger deadline race on slow reader
-	orig := wsutil.WriteTimeout
-	wsutil.SetWriteTimeout(100 * time.Millisecond)
-	t.Cleanup(func() { wsutil.SetWriteTimeout(orig) })
-
+	// Tight write timeout on the relay instance (not the package global) so
+	// the writer loop captures it at start and we don't race.
 	srv, relay := newTestRelayServer(t)
+	relay.writeTimeout = 100 * time.Millisecond
 
 	// Router connects and sends router_ready
 	routerWS := dialWS(t, wsURL(srv)+"/v1/connect")
