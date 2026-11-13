@@ -26,6 +26,7 @@ const (
 	MsgPing              MessageType = "ping"
 	MsgError             MessageType = "error"
 	MsgClose             MessageType = "close"
+	MsgWorkerGone        MessageType = "worker_gone"
 	MsgRouterReady       MessageType = "router_ready"
 )
 
@@ -76,8 +77,9 @@ func NewMessageID() string {
 // RegisterPayload is sent by a worker immediately after the WebSocket
 // handshake completes.
 type RegisterPayload struct {
-	Worker WorkerInfo `json:"worker"`
-	Relay  bool       `json:"relay,omitempty"` // true if this is a relay registration
+	Worker     WorkerInfo `json:"worker"`
+	Relay      bool       `json:"relay,omitempty"`       // true if this is a relay registration
+	RelayNonce string     `json:"relay_nonce,omitempty"` // relay-injected conn identity (issue #201)
 }
 
 // WelcomePayload is sent by the router after it accepts a registration.
@@ -157,4 +159,19 @@ type ErrorPayload struct {
 // ClosePayload asks the peer to close the connection (e.g. superseded).
 type ClosePayload struct {
 	Reason string `json:"reason,omitempty"`
+}
+
+// WorkerGonePayload notifies the router that a worker has disconnected
+// from the relay. The relay cannot tear down the router's synthetic
+// connection itself (it does not know about h.conns), so it sends this
+// explicit signal instead of relying on the 120s registry sweep to prune
+// the stale entry (issue #201).
+//
+// RelayNonce carries the per-connection identity the relay stamped onto the
+// worker's register frame, so the router matches the signal to the conn
+// that actually died rather than a successor that reconnected under the
+// same worker ID.
+type WorkerGonePayload struct {
+	WorkerID   string `json:"worker_id"`
+	RelayNonce string `json:"relay_nonce,omitempty"`
 }

@@ -210,6 +210,29 @@ func (h *WSHub) DialRelay(ctx context.Context, url string) error {
 	return nil
 }
 
+// failRelayPendingForWorker fails every hub-level relay pending call owned
+// by workerID. A relay worker's in-flight calls live in the hub's relayPending
+// map (not on the synthetic conn), so tearing the conn down must also fail
+// them — otherwise they hang until the caller's ctx or the 60s hard cap
+// fires (issue #201: "in-flight relay calls must fast-fail, not hang").
+//
+// It snapshots under relayPendingMu and fails outside it, matching
+// failAllRelayPending, so it never holds relayPendingMu across pc.fail()
+// (which acquires closeOnce/removeOnce).
+func (h *WSHub) failRelayPendingForWorker(workerID string) {
+	h.relayPendingMu.Lock()
+	pend := make([]*pendingCall, 0, len(h.relayPending))
+	for _, pc := range h.relayPending {
+		if pc.workerID == workerID {
+			pend = append(pend, pc)
+		}
+	}
+	h.relayPendingMu.Unlock()
+	for _, pc := range pend {
+		pc.fail(errConnClosed)
+	}
+}
+
 // failAllRelayPending fails all pending relay calls with the given error.
 // It snapshots the pending calls under the lock and fails them outside of
 // it to avoid holding the lock during the fail() call (which itself acquires
@@ -539,23 +562,43 @@ func (h *WSHub) handleRelayRegister(msg protocol.Message) {
 	}
 
 	conn := &wsConnection{
-		hub:     h,
-		id:      worker.ID,
-		ws:      nil, // no real socket — relay handles transport
-		worker:  worker,
-		sendCh:  make(chan []byte, h.sendQueueSize),
-		doneCh:  make(chan struct{}),
-		pending: make(map[string]*pendingCall),
+		hub:        h,
+		id:         worker.ID,
+		ws:         nil, // no real socket — relay handles transport
+		worker:     worker,
+		relayNonce: reg.RelayNonce,
+		sendCh:     make(chan []byte, h.sendQueueSize),
+		doneCh:     make(chan struct{}),
+		pending:    make(map[string]*pendingCall),
 	}
 
-	// One active connection per worker ID: a newer connection supersedes the old one.
+	// One active connection per worker ID: a newer connection supersedes the
+	// old one. In relay mode the old synthetic conn is discarded SILENTLY —
+	// no MsgClose frame goes out the relay for relay workers. The relay owns
+	// the transport; a close frame stamped with this worker ID would be
+	// routed to the worker's currently live socket and kill the new
+	// connection (issue #201). Pending calls on the old conn fast-fail with
+	// errConnClosed instead of hanging.
+	//
+	// Phase 1 (discardRelayConnLocked, h.mu-held) removes the old conn from
+	// h.conns and clears its worker snapshot. Phase 2 (discardRelayConn,
+	// after h.mu.Unlock) acquires closeOnce and tears down the conn's
+	// lifecycle — it MUST run outside h.mu, because shutdown() takes the
+	// reverse lock order (closeOnce → h.mu) and holding h.mu across
+	// closeOnce deadlocks a supersede racing a concurrent teardown.
 	h.mu.Lock()
-	if old, ok := h.conns[worker.ID]; ok {
+	var old *wsConnection
+	if o, ok := h.conns[worker.ID]; ok {
 		h.log.Info("superseding existing relay connection", "worker", worker.ID)
-		old.enqueueClose("superseded")
+		old = o
+		old.discardRelayConnLocked()
 	}
 	h.conns[worker.ID] = conn
 	h.mu.Unlock()
+
+	if old != nil {
+		old.discardRelayConn()
+	}
 
 	h.bridge(protocol.DiscoveryEvent{Type: protocol.EventAdded, Worker: worker})
 

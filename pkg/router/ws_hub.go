@@ -578,6 +578,36 @@ func (h *WSHub) dispatch(c *wsConnection, msg protocol.Message) {
 		h.log.Info("worker closed websocket connection", "worker", c.id, "reason", p.Reason)
 		c.shutdown("worker requested close")
 
+	case protocol.MsgWorkerGone:
+		// The relay reports that the worker's transport socket is gone.
+		// Tear down the synthetic conn silently (no close frame — the relay
+		// owns the transport) and fail its pending calls. The nonce match
+		// guards against a stale signal arriving after a reconnect under
+		// the same worker ID: a mismatch means a newer conn is live and
+		// must not be pruned (issue #201).
+		var p protocol.WorkerGonePayload
+		_ = msg.DecodePayload(&p)
+		if c.relayNonce != "" && p.RelayNonce != c.relayNonce {
+			h.log.Debug("stale worker_gone ignored (nonce mismatch; newer conn live)",
+				"worker", c.id, "signal_nonce", p.RelayNonce, "conn_nonce", c.relayNonce)
+			return
+		}
+		h.log.Info("worker gone from relay; tearing down synthetic connection", "worker", c.id)
+		// The worker's socket has genuinely closed, so its hub-level relay
+		// pending calls (keyed by message ID in h.relayPending, not on this
+		// conn) can never be answered. Fail them fast instead of hanging on
+		// the caller ctx or the 60s hard cap. A supersede (same worker
+		// re-registering over a fresh socket) must NOT fail them — see
+		// discardRelayConnLocked (issue #201).
+		h.failRelayPendingForWorker(c.id)
+		// Phase 1 removes from h.conns; phase 2 (discardRelayConn) tears
+		// down the conn lifecycle. Both are closeOnce-guarded, so a
+		// worker_gone racing a concurrent supersede is idempotent.
+		h.mu.Lock()
+		c.discardRelayConnLocked()
+		h.mu.Unlock()
+		c.discardRelayConn()
+
 	default:
 		h.log.Debug("ignoring unexpected websocket message", "worker", c.id, "type", msg.Type)
 	}

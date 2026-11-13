@@ -62,6 +62,13 @@ type wsConnection struct {
 	// Nil when the cap is disabled (no semaphore was ever created).
 	slot         chan struct{}
 	slotReleased sync.Once
+
+	// relayNonce is the per-connection identity the relay stamped onto this
+	// worker's register frame. For relay-mode synthetic conns it lets a
+	// worker_gone signal be matched to the conn that actually died, instead
+	// of pruning a successor that reconnected under the same ID (issue #201).
+	// Empty for direct connections.
+	relayNonce string
 }
 
 // queueDepthSnapshot returns the current queue depth.
@@ -221,6 +228,77 @@ func (c *wsConnection) enqueue(msg protocol.Message) bool {
 		c.hub.log.Warn("websocket send queue full; dropping message", "worker", c.id, "type", msg.Type)
 		return false
 	}
+}
+
+// discard tears down a superseded relay-mode synthetic connection WITHOUT
+// sending a MsgClose frame. The relay owns the transport: the router cannot
+// ask a relay worker to close its socket, and a close frame stamped with this
+// worker ID would be routed by the relay to the worker's CURRENTLY LIVE socket
+// — killing the brand-new connection that just superseded it (issue #201).
+//
+// The teardown is split into two phases so h.mu is NEVER held across
+// c.closeOnce. shutdown() takes closeOnce → h.mu (it must, to delete from
+// h.conns), so this path must release h.mu before acquiring closeOnce —
+// otherwise a supersede racing a concurrent HandleRegistryEvent deadlocks
+// (handleRelayRegister holds h.mu, shutdown holds closeOnce; both wait on
+// the other). The map removal (phase 1) is identity-guarded, so a stale
+// discard cannot delete a conn that a concurrent reconnect replaced.
+//
+// Phase 1 (discardRelayConnLocked, h.mu-held): remove from h.conns and clear
+// the worker snapshot. Does NOT touch closeOnce, doneCh, or pending.
+//
+// Phase 2 (discardRelayConn, no h.mu): closeOnce-guarded — closes doneCh,
+// fails the conn's pending calls, releases the semaphore slot. Hub-level
+// relay calls (h.relayPending, keyed by message ID, not on this conn) are
+// intentionally NOT failed here: a supersede means the SAME worker is
+// re-registering over a fresh socket, so its in-flight request is still live
+// and its response still routes to the caller via the hub (pinned by
+// TestSupersedeDuringInFlightRelayCall). Hub-level calls are instead failed
+// by the worker_gone path, where the worker's socket has genuinely closed.
+func (c *wsConnection) discardRelayConnLocked() {
+	// Remove from the hub map. The identity check (cur == c) keeps a
+	// concurrent reconnect from being deleted by a stale discard.
+	if cur, ok := c.hub.conns[c.id]; ok && cur == c {
+		delete(c.hub.conns, c.id)
+	}
+
+	// Clear the worker snapshot so a later teardown path cannot bridge
+	// an EventRemoved for a conn that is already gone. The supersede
+	// immediately re-registers the same ID under a fresh conn, and an
+	// EventRemoved bridged here would race that re-registration.
+	c.stateMu.Lock()
+	c.worker = protocol.WorkerInfo{}
+	c.stateMu.Unlock()
+}
+
+// discardRelayConn tears down the superseded relay conn's lifecycle
+// (doneCh + pending + slot). It is closeOnce-guarded, so a supersede that
+// races a concurrent teardown is idempotent. Callers that already hold h.mu
+// must call discardRelayConnLocked (phase 1) and then this — never this
+// directly, since this acquires closeOnce and shutdown() also does, and
+// holding h.mu across closeOnce deadlocks.
+func (c *wsConnection) discardRelayConn() {
+	c.closeOnce.Do(func() {
+		c.hub.log.Info("discarding superseded relay connection", "worker", c.id)
+		close(c.doneCh)
+		// No socket to close: relay-mode synthetic conns have ws == nil.
+
+		// Release the semaphore slot. A 1:1 replacement (supersede) must
+		// never hold the pool at capacity; the slot is released exactly
+		// once, here or in shutdown().
+		c.releaseSlot()
+
+		c.pendingMu.Lock()
+		pend := make([]*pendingCall, 0, len(c.pending))
+		for _, pc := range c.pending {
+			pend = append(pend, pc)
+		}
+		c.pending = make(map[string]*pendingCall)
+		c.pendingMu.Unlock()
+		for _, pc := range pend {
+			pc.fail(errConnClosed)
+		}
+	})
 }
 
 // enqueueClose politely asks the peer to close, then force-closes if it does

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -182,6 +184,18 @@ func ipFromRemote(remoteAddr string) string {
 	return ip.String() // IPv6-only fallback
 }
 
+// newRelayNonce returns a random hex token that identifies one worker
+// registration. The relay injects it into the register frame; the router
+// stores it on the synthetic conn and matches a worker_gone signal against
+// it, so a signal that arrives after a reconnect prunes the right conn.
+func newRelayNonce() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return hex.EncodeToString(b[:])
+	}
+	return fmt.Sprintf("%d", time.Now().UnixNano())
+}
+
 // handleWorker registers a worker connection and starts relay loops.
 func (r *Relay) handleWorker(ws *websocket.Conn, msg protocol.Message) {
 	var reg protocol.RegisterPayload
@@ -213,6 +227,15 @@ func (r *Relay) handleWorker(ws *websocket.Conn, msg protocol.Message) {
 
 	r.mu.Lock()
 	r.workers[workerID] = ws
+	// Stamp a per-connection nonce onto the register so the router can
+	// match a later worker_gone signal to THIS connection specifically.
+	nonce := newRelayNonce()
+	reg.RelayNonce = nonce
+	if data, err := json.Marshal(reg); err == nil {
+		msg.Payload = json.RawMessage(data)
+	} else {
+		r.log.Warn("failed to re-marshal register with relay nonce; keeping original payload", "worker_id", workerID, "error", err)
+	}
 	r.mu.Unlock()
 
 	// Forward the register to the router so it knows this worker exists.
@@ -241,7 +264,12 @@ func (r *Relay) handleWorker(ws *websocket.Conn, msg protocol.Message) {
 
 	// Block until the connection closes (handler must not return or
 	// net/http will close the WebSocket connection immediately).
-	r.workerReadLoop(ws, workerID)
+	// Pass the nonce explicitly: a worker_gone signal must carry THIS
+	// socket's identity. Reading r.workerNonces[workerID] at exit time
+	// would race a reconnect — the old socket's reader loop could exit
+	// after the worker re-registered, pick up the NEW nonce, and prune
+	// the still-live successor (issue #201).
+	r.workerReadLoop(ws, workerID, nonce)
 }
 
 // handleRouter registers a router connection and starts relay loops.
@@ -294,11 +322,26 @@ func (r *Relay) handleRouter(ws *websocket.Conn) {
 }
 
 // workerReadLoop reads messages from a worker and forwards them to the router.
-func (r *Relay) workerReadLoop(ws *websocket.Conn, workerID string) {
+// nonce is the identity the relay stamped onto this worker's register frame;
+// the worker_gone signal it emits on disconnect carries it, so the router
+// matches the signal to THIS connection rather than a successor that
+// reconnected under the same worker ID (issue #201).
+func (r *Relay) workerReadLoop(ws *websocket.Conn, workerID, nonce string) {
 	defer func() {
 		r.mu.Lock()
 		delete(r.workers, workerID)
 		r.mu.Unlock()
+
+		// Notify the router that this worker's connection is gone so it can
+		// prune the synthetic conn immediately, instead of waiting up to the
+		// 120s registry sweep. Only sent when a router is connected: with no
+		// router, no register was ever forwarded, so there is no stale conn
+		// to prune (issue #201).
+		if nonce != "" && r.routerConnected() {
+			if err := r.sendWorkerGone(context.Background(), workerID, nonce); err != nil {
+				r.log.Debug("failed to send worker_gone to router", "worker_id", workerID, "error", err)
+			}
+		}
 		r.log.Info("worker disconnected", "worker_id", workerID)
 	}()
 
@@ -443,6 +486,32 @@ func (r *Relay) bufferWorkerMessage(msg protocol.Message) bool {
 	}
 	r.workerQueue = append(r.workerQueue, msg)
 	return true
+}
+
+// routerConnected reports whether the relay currently has a live router
+// connection. The gate for outbound frames: with no router, no register was
+// ever forwarded, so there is no stale conn on the router to prune.
+func (r *Relay) routerConnected() bool {
+	r.routerMu.Lock()
+	defer r.routerMu.Unlock()
+	return r.routerConn != nil
+}
+
+// sendWorkerGone enqueues a worker_gone frame for the single writer loop.
+// It is best-effort: if the router link is wedged the relay is already on
+// its way to re-dialing, and the router's 120s sweep remains the safety
+// net. The nonce lets the router match the signal to the conn that died.
+func (r *Relay) sendWorkerGone(ctx context.Context, workerID, nonce string) error {
+	msg, err := protocol.NewMessage(protocol.MsgWorkerGone, protocol.WorkerGonePayload{
+		WorkerID: workerID, RelayNonce: nonce,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal worker_gone: %w", err)
+	}
+	// The router routes relay frames by WorkerID; stamp it so the signal
+	// reaches the target conn directly instead of the broadcast path.
+	msg.WorkerID = workerID
+	return r.enqueueRouter(ctx, msg)
 }
 
 // enqueueRouter marshals msg and enqueues it onto the current routerSendCh

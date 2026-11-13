@@ -28,14 +28,14 @@ import (
 //
 // UNSPECIFIED FINDINGS (contract gaps discovered while probing):
 //
-//  1. Conn-level pending calls are ORPHANED on relay supersede.
-//     handleRelayRegister's supersede path calls old.enqueueClose("superseded")
-//     but never fails the old synthetic conn's conn.pending map and never
-//     calls old.shutdown(). A wsWorkerClient call in flight on the superseded
-//     conn gets its response DROPPED (routed to the new conn, unknown ID) and
-//     only fails when the CALLER's ctx expires (bounded by the HTTP dispatch
-//     budget — it does not hang forever, but the contract never said who
-//     fails it). Pinned by TestPendingCallOrphanedOnSupersede_FailsViaCallerCtx.
+//  1. Conn-level pending calls fast-fail on relay supersede.
+//     handleRelayRegister's supersede path discards the old synthetic conn
+//     (discardRelayConnLocked): it fails the conn's pending calls with
+//     errConnClosed immediately, instead of enqueuing a MsgClose frame that
+//     the relay would route to the worker's new socket (issue #201). A
+//     wsWorkerClient call in flight on the superseded conn therefore
+//     fast-fails at supersede time. Pinned by
+//     TestPendingCallOrphanedOnSupersede_FailsViaCallerCtx.
 //
 //  2. maxRelayCallTimeout is a CONST (60s), not injectable. The 60s cap
 //     boundary cannot be unit-tested without waiting real time; the scaled
@@ -337,12 +337,21 @@ func TestRelaySendChReassignmentHazard(t *testing.T) {
 	_ = hub.relaySendCh
 }
 
-// TestPendingCallOrphanedOnSupersede_FailsViaCallerCtx pins the UNSPECIFIED
-// behavior discovered while probing BUG-1: a conn-level (wsWorkerClient) call
-// in flight on a synthetic relay conn is NOT failed by the supersede — its
-// response, arriving after the conn swap, is dropped (unknown ID on the new
-// conn), and the call only fails when the CALLER's ctx expires. This is
-// bounded (no hang forever) but the contract never said who fails it.
+// TestPendingCallOrphanedOnSupersede_FailsViaCallerCtx pins the behavior of
+// a conn-level (wsWorkerClient) call in flight on a superseded relay conn.
+//
+// Pre-fix (#201), the supersede path called old.enqueueClose("superseded"),
+// which enqueued a MsgClose frame for the relay to deliver. The relay
+// routed it to the worker's CURRENT socket, the worker disconnected, and the
+// router's synthetic conn was NOT torn down — so the orphaned call's response
+// was dropped (routed to the new conn, unknown ID) and the call only failed
+// when the CALLER's ctx expired. Bounded, but slow and unspecified.
+//
+// Post-fix (#201), the supersede path calls old.discardRelayConnLocked(), which
+// closes doneCh and fails the conn's pending calls with errConnClosed
+// immediately. The orphaned call fast-fails instead of hanging on the caller
+// ctx — the "in-flight relay calls must fast-fail, not hang" contract from
+// the issue. This test now pins THAT behavior.
 func TestPendingCallOrphanedOnSupersede_FailsViaCallerCtx(t *testing.T) {
 	hub := NewWSHub(nil, wsHubTestLogger())
 	received, sendToRelay := startScriptedRelay(t, hub)
@@ -401,23 +410,25 @@ func TestPendingCallOrphanedOnSupersede_FailsViaCallerCtx(t *testing.T) {
 		if err := <-lateRespErr; err != nil {
 			t.Fatalf("build late response: %v", err)
 		}
-		// The call must NOT have been failed by the supersede itself
-		// (errConnClosed would mean the router tore it down). It fails via
-		// the caller's ctx — the pinned, bounded behavior.
+		// The orphaned conn-level call must FAST-FAIL with errConnClosed at
+		// supersede time (the brief: "fail its pending calls — in-flight
+		// relay calls must fast-fail, not hang"). Pre-fix, the call was
+		// orphaned and only failed via the caller's ctx (context.
+		// DeadlineExceeded); the test pinned that UNSPECIFIED behavior.
+		// Post-fix, discardRelayConnLocked closes doneCh and fails the
+		// conn's pending calls immediately, so the call returns before the
+		// caller ctx fires.
 		if outErr == nil {
 			t.Fatalf("orphaned call resolved with success (response leaked to new conn?): %s", out)
 		}
-		if errors.Is(outErr, errConnClosed) {
-			t.Fatalf("supersede tore down the orphaned call with errConnClosed; expected caller-ctx failure: %v", outErr)
-		}
-		if !errors.Is(outErr, context.DeadlineExceeded) {
-			t.Fatalf("expected context.DeadlineExceeded (caller ctx), got %v", outErr)
+		if !errors.Is(outErr, errConnClosed) {
+			t.Fatalf("orphaned call failed with %v, want errConnClosed (fast-fail at supersede)", outErr)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("HANG: orphaned conn-level call never failed after supersede")
 	}
 
-	// After the caller-ctx failure, the pending entry must be reaped from
+	// After the fast-fail, the pending entry must be reaped from
 	// the OLD conn (bounded cleanup, no accumulation).
 	deadline := time.Now().Add(1 * time.Second)
 	for {
