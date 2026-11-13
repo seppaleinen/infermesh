@@ -23,15 +23,23 @@ const DefaultRegisterInterval = 10 * time.Second
 // do not terminate the loop (transient failures are expected).
 // infoFn is called on every tick (including the initial registration) so
 // heartbeats carry fresh capabilities/models instead of a stale startup snapshot.
-func RegisterLoop(ctx context.Context, routerBase string, info protocol.WorkerInfo, interval time.Duration, log *slog.Logger) {
-	RegisterLoopWithRefresh(ctx, routerBase, func() protocol.WorkerInfo { return info }, interval, log)
+//
+// routerAPIKey is the key the router expects on /v1/dev/register (the same
+// --api-key the router was started with). When non-empty, the worker sends
+// X-API-Key so the router's API-key middleware admits the registration.
+// Without it, a key-gated router rejects every fallback registration with 401
+// and the worker never joins the pool (issue #202).
+func RegisterLoop(ctx context.Context, routerBase string, info protocol.WorkerInfo, interval time.Duration, log *slog.Logger, routerAPIKey string) {
+	RegisterLoopWithRefresh(ctx, routerBase, func() protocol.WorkerInfo { return info }, interval, log, routerAPIKey)
 }
 
 // RegisterLoopWithRefresh is RegisterLoop with a dynamic info provider.
 // Use it so each heartbeat reflects currently discovered models/capabilities.
-func RegisterLoopWithRefresh(ctx context.Context, routerBase string, infoFn func() protocol.WorkerInfo, interval time.Duration, log *slog.Logger) {
+//
+// routerAPIKey is threaded through to postRegister (see RegisterLoop).
+func RegisterLoopWithRefresh(ctx context.Context, routerBase string, infoFn func() protocol.WorkerInfo, interval time.Duration, log *slog.Logger, routerAPIKey string) {
 	// Register immediately on start
-	postRegister(ctx, routerBase, infoFn(), log)
+	postRegister(ctx, routerBase, infoFn(), log, routerAPIKey)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -51,7 +59,7 @@ func RegisterLoopWithRefresh(ctx context.Context, routerBase string, infoFn func
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			postRegister(ctx, routerBase, infoFn(), log)
+			postRegister(ctx, routerBase, infoFn(), log, routerAPIKey)
 		}
 	}
 }
@@ -64,7 +72,13 @@ func registerURL(routerBase string) string {
 }
 
 // postRegister sends a single POST to the router's /v1/dev/register endpoint.
-func postRegister(ctx context.Context, routerBase string, info protocol.WorkerInfo, log *slog.Logger) {
+//
+// routerAPIKey is the key the router expects on /v1/dev/register (the same
+// --api-key the router was started with). When non-empty, the worker sends
+// X-API-Key so the router's API-key middleware admits the registration; when
+// empty, no header is sent, preserving the pre-existing behavior for routers
+// that do not gate the endpoint with a key.
+func postRegister(ctx context.Context, routerBase string, info protocol.WorkerInfo, log *slog.Logger, routerAPIKey string) {
 	// Short-circuit if the context is already done: the select in
 	// RegisterLoopWithRefresh may have dequeued a ticker.C before ctx was
 	// cancelled, so a call can be in-flight when cancel() returns. Without
@@ -86,6 +100,9 @@ func postRegister(ctx context.Context, routerBase string, info protocol.WorkerIn
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if routerAPIKey != "" {
+		req.Header.Set("X-API-Key", routerAPIKey)
+	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)

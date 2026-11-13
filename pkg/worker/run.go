@@ -254,7 +254,7 @@ func (h *Handle) launchRegistration(regConfig ReloadableConfig) context.CancelFu
 		if regConfig.RouterBase != "" && !relayReachable(h.rootCtx, regConfig.RelayURL) {
 			h.log.Warn("relay unreachable after reload; falling back to HTTP registration",
 				"relay", regConfig.RelayURL, "router", regConfig.RouterBase)
-			return h.startHTTPRegistration(regConfig)
+			return h.startHTTPRegistration(regConfig, regConfig.RelayAPIKey)
 		}
 		regCtx, regCancel := context.WithCancel(h.rootCtx)
 		h.regCancel = regCancel
@@ -265,7 +265,7 @@ func (h *Handle) launchRegistration(regConfig ReloadableConfig) context.CancelFu
 	}
 	if regConfig.RouterBase != "" {
 		// HTTP registration
-		return h.startHTTPRegistration(regConfig)
+		return h.startHTTPRegistration(regConfig, regConfig.RelayAPIKey)
 	}
 	// mDNS discovery - no registration loop needed
 	return func() {}
@@ -274,12 +274,19 @@ func (h *Handle) launchRegistration(regConfig ReloadableConfig) context.CancelFu
 // startHTTPRegistration starts the HTTP registration loop for the given
 // config. Extracted so the HTTP path is shared by launchRegistration and the
 // relay→HTTP fallback instead of being duplicated inline.
-func (h *Handle) startHTTPRegistration(regConfig ReloadableConfig) context.CancelFunc {
+//
+// routerAPIKey is the key the router expects on /v1/dev/register. It is the
+// same key carried on WorkerInfo.APIKey for the relay path (regConfig.RelayAPIKey):
+// the router gates the dev-register endpoint with its --api-key, so the HTTP
+// fallback must present the same credential the relay path presents in-band
+// (issue #202). Empty means "send nothing" — routers without a key configured
+// admit the registration unconditionally, preserving prior behavior.
+func (h *Handle) startHTTPRegistration(regConfig ReloadableConfig, routerAPIKey string) context.CancelFunc {
 	regCtx, regCancel := context.WithCancel(h.rootCtx)
 	h.regCancel = regCancel
 	go RegisterLoopWithRefresh(regCtx, regConfig.RouterBase, func() protocol.WorkerInfo {
 		return h.buildRegistrationInfo(regConfig)
-	}, DefaultRegisterInterval, h.log)
+	}, DefaultRegisterInterval, h.log, routerAPIKey)
 	return regCancel
 }
 

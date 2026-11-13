@@ -74,7 +74,7 @@ func TestRegisterLoopTrailingSlash(t *testing.T) {
 	defer cancel()
 
 	// Intentionally append a trailing slash
-	go RegisterLoop(ctx, router.URL+"/", info, 50*time.Millisecond, testLogger())
+	go RegisterLoop(ctx, router.URL+"/", info, 50*time.Millisecond, testLogger(), "")
 
 	time.Sleep(200 * time.Millisecond)
 	cancel()
@@ -126,7 +126,7 @@ func TestRegisterLoopSendsPost(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go RegisterLoop(ctx, router.URL, info, 50*time.Millisecond, testLogger())
+	go RegisterLoop(ctx, router.URL, info, 50*time.Millisecond, testLogger(), "")
 
 	// Wait for at least 2 calls (initial + one ticker)
 	time.Sleep(200 * time.Millisecond)
@@ -177,7 +177,7 @@ func TestRegisterLoopContextCancellation(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		RegisterLoop(ctx, router.URL, info, 50*time.Millisecond, testLogger())
+		RegisterLoop(ctx, router.URL, info, 50*time.Millisecond, testLogger(), "")
 		close(done)
 	}()
 
@@ -227,7 +227,7 @@ func TestRegisterLoopNon200DoesNotCrash(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		RegisterLoop(ctx, router.URL, info, 50*time.Millisecond, testLogger())
+		RegisterLoop(ctx, router.URL, info, 50*time.Millisecond, testLogger(), "")
 		close(done)
 	}()
 
@@ -260,7 +260,7 @@ func TestRegisterLoopImmediatePost(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go RegisterLoop(ctx, router.URL, info, 10*time.Second, testLogger()) // long interval
+	go RegisterLoop(ctx, router.URL, info, 10*time.Second, testLogger(), "") // long interval
 
 	// Give enough time for the immediate post, but not enough for the 10s ticker
 	time.Sleep(100 * time.Millisecond)
@@ -269,5 +269,119 @@ func TestRegisterLoopImmediatePost(t *testing.T) {
 
 	if callCount.Load() < 1 {
 		t.Errorf("expected at least 1 immediate call, got %d", callCount.Load())
+	}
+}
+
+// TestRegisterLoopSendsAPIKey verifies the HTTP dev-registration fallback
+// authenticates against a key-gated router (issue #202). Without the fix,
+// postRegister never sent X-API-Key and every fallback registration was
+// rejected with 401, so the worker never joined the pool.
+func TestRegisterLoopSendsAPIKey(t *testing.T) {
+	// gateKey is the key the test router enforces. Empty means the router
+	// admits everything (the pre-existing behavior for unkeyed routers).
+	const gateKey = "router-secret"
+
+	tests := []struct {
+		name       string
+		sentKey    string // what the worker is configured to send
+		gateKey    string // what the router enforces ("" = no gate)
+		wantStatus int    // status the router must return
+		wantHeader bool   // whether the worker must send X-API-Key
+	}{
+		{
+			name:       "no key configured sends no header, unkeyed router admits",
+			sentKey:    "",
+			gateKey:    "",
+			wantStatus: http.StatusOK,
+			wantHeader: false,
+		},
+		{
+			name:       "matching key sends header, key-gated router admits",
+			sentKey:    gateKey,
+			gateKey:    gateKey,
+			wantStatus: http.StatusOK,
+			wantHeader: true,
+		},
+		{
+			name:       "wrong key sends header, key-gated router rejects with 401",
+			sentKey:    "worker-wrong",
+			gateKey:    gateKey,
+			wantStatus: http.StatusUnauthorized,
+			wantHeader: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var gotKey string
+			var gotHeader bool
+			var routerStatus int
+			var callCount atomic.Int64
+
+			router := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				key := r.Header.Get("X-API-Key")
+				status := http.StatusOK
+				if tt.gateKey != "" && key != tt.gateKey {
+					status = http.StatusUnauthorized
+				}
+				mu.Lock()
+				gotKey = key
+				gotHeader = key != ""
+				routerStatus = status
+				mu.Unlock()
+				callCount.Add(1)
+				w.WriteHeader(status)
+				if status != http.StatusOK {
+					_, _ = w.Write([]byte(`{"error":"invalid api key"}`))
+				}
+			}))
+			defer router.Close()
+
+			info := protocol.WorkerInfo{
+				ID:   "key-worker",
+				IP:   "127.0.0.1",
+				Port: 8086,
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			go RegisterLoop(ctx, router.URL, info, 50*time.Millisecond, testLogger(), tt.sentKey)
+
+			// Wait for at least one call to land and settle.
+			waitFor(t, 2*time.Second, func() bool {
+				return callCount.Load() >= 2
+			})
+			cancel()
+			time.Sleep(50 * time.Millisecond)
+
+			if callCount.Load() == 0 {
+				t.Fatal("expected at least one registration call")
+			}
+
+			mu.Lock()
+			got := gotKey
+			headerSent := gotHeader
+			status := routerStatus
+			calls := callCount.Load()
+			mu.Unlock()
+
+			if headerSent != tt.wantHeader {
+				t.Errorf("X-API-Key header presence = %v, want %v (sent %q)", headerSent, tt.wantHeader, tt.sentKey)
+			}
+			if tt.wantHeader && got != tt.sentKey {
+				t.Errorf("X-API-Key = %q, want %q", got, tt.sentKey)
+			}
+			if status != tt.wantStatus {
+				t.Errorf("router status = %d, want %d", status, tt.wantStatus)
+			}
+			// The wrong-key case additionally asserts the worker keeps
+			// retrying (calls >= 2) rather than crashing — the loop must
+			// not terminate on a 401.
+			if calls < 2 {
+				t.Errorf("expected at least 2 registration calls, got %d", calls)
+			}
+		})
 	}
 }
