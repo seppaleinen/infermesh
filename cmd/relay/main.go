@@ -58,6 +58,18 @@ type Relay struct {
 	// channel is never closed (sending to a closed channel panics), so the
 	// writer drains its own snapshot and the old channel is GC'd.
 	routerSendCh chan []byte
+
+	// workerSendCh is the single outbound queue for each worker connection.
+	// workerWriterLoop is the ONLY goroutine that ever calls wsutil.WriteText
+	// on a worker socket, so frames from the read loop's heartbeat echo and
+	// from routerReadLoop's forwardToWorker/broadcastToWorkers cannot be
+	// interleaved (issue #203 — the relay↔worker side was missed by #196).
+	//
+	// The channel is created per connection in handleWorker under r.mu,
+	// atomically with the socket in r.workers, and removed by the writer
+	// loop on exit, so enqueueWorkerFrame never delivers a frame into a
+	// channel whose writer has gone.
+	workerSendCh map[string]chan []byte
 }
 
 func main() {
@@ -75,10 +87,11 @@ func main() {
 	defer cancel()
 
 	relay := &Relay{
-		log:         log,
-		listenAddr:  *relayListen,
-		workers:     make(map[string]*websocket.Conn),
-		workerQueue: make([]protocol.Message, 0),
+		log:          log,
+		listenAddr:   *relayListen,
+		workers:      make(map[string]*websocket.Conn),
+		workerQueue:  make([]protocol.Message, 0),
+		workerSendCh: make(map[string]chan []byte),
 	}
 
 	// Start WebSocket server (both workers and routers connect here)
@@ -227,6 +240,11 @@ func (r *Relay) handleWorker(ws *websocket.Conn, msg protocol.Message) {
 
 	r.mu.Lock()
 	r.workers[workerID] = ws
+	// Publish a fresh outbound queue for this connection, atomically with
+	// the socket, so enqueueWorkerFrame never delivers a frame into a
+	// channel whose writer has exited (issue #203).
+	sendCh := make(chan []byte, wsutil.SendQueueSize)
+	r.workerSendCh[workerID] = sendCh
 	// Stamp a per-connection nonce onto the register so the router can
 	// match a later worker_gone signal to THIS connection specifically.
 	nonce := newRelayNonce()
@@ -237,6 +255,12 @@ func (r *Relay) handleWorker(ws *websocket.Conn, msg protocol.Message) {
 		r.log.Warn("failed to re-marshal register with relay nonce; keeping original payload", "worker_id", workerID, "error", err)
 	}
 	r.mu.Unlock()
+
+	// Start the single writer goroutine for this worker connection BEFORE
+	// flushing or reading: every outbound frame (heartbeat echo from the
+	// read loop, forwarded router frames) enqueues onto sendCh and only
+	// this loop writes them to the socket (issue #203).
+	go r.workerWriterLoop(ws, workerID, sendCh)
 
 	// Forward the register to the router so it knows this worker exists.
 	msg.WorkerID = workerID
@@ -326,10 +350,15 @@ func (r *Relay) handleRouter(ws *websocket.Conn) {
 // the worker_gone signal it emits on disconnect carries it, so the router
 // matches the signal to THIS connection rather than a successor that
 // reconnected under the same worker ID (issue #201).
+//
+// This loop is a READER ONLY (issue #203): its heartbeat echo enqueues onto
+// workerSendCh for the single writer goroutine. Writing the echo directly
+// here would race routerReadLoop's forwardToWorker on the same socket.
 func (r *Relay) workerReadLoop(ws *websocket.Conn, workerID, nonce string) {
 	defer func() {
 		r.mu.Lock()
 		delete(r.workers, workerID)
+		delete(r.workerSendCh, workerID)
 		r.mu.Unlock()
 
 		// Notify the router that this worker's connection is gone so it can
@@ -345,6 +374,9 @@ func (r *Relay) workerReadLoop(ws *websocket.Conn, workerID, nonce string) {
 		r.log.Info("worker disconnected", "worker_id", workerID)
 	}()
 
+	// This loop is a READER ONLY (issue #203): its heartbeat echo enqueues onto
+	// workerSendCh for the single writer goroutine. Writing the echo directly
+	// here would race routerReadLoop's forwardToWorker on the same socket.
 	for {
 		if err := wsutil.SetReadDeadline(ws, time.Now().Add(wsutil.ReadTimeout)); err != nil {
 			return
@@ -366,11 +398,16 @@ func (r *Relay) workerReadLoop(ws *websocket.Conn, workerID, nonce string) {
 		// 60s, well under the worker's 90s read deadline). The worker's
 		// wsReaderLoop sees the echo and resets its read deadline. The echo
 		// is forwarded to the router too, so the registry stays current.
+		//
+		// The echo is ENQUEUED for the single writer goroutine, not written
+		// directly: writing here would race routerReadLoop's forwardToWorker
+		// on the same socket (issue #203).
 		if msg.Type == protocol.MsgHeartbeat {
 			echo := protocol.Message{ID: msg.ID, Type: protocol.MsgHeartbeat}
-			if err := wsutil.WriteJSON(ws, echo); err != nil {
-				r.log.Debug("failed to echo worker heartbeat", "worker_id", workerID, "error", err)
-				return
+			if data, err := json.Marshal(echo); err == nil {
+				r.enqueueWorkerFrame(workerID, data)
+			} else {
+				r.log.Debug("failed to marshal worker heartbeat echo", "worker_id", workerID, "error", err)
 			}
 		}
 
@@ -435,10 +472,14 @@ func (r *Relay) routerReadLoop(ws *websocket.Conn) {
 	}
 }
 
-// forwardToWorker sends a message to a specific worker.
+// forwardToWorker sends a message to a specific worker. It enqueues the
+// marshaled frame onto the worker's outbound queue; workerWriterLoop is the
+// ONLY goroutine that writes the socket, so frames from the read loop's
+// heartbeat echo and from this router-driven path cannot interleave
+// (issue #203).
 func (r *Relay) forwardToWorker(msg protocol.Message) {
 	r.mu.RLock()
-	conn, ok := r.workers[msg.WorkerID]
+	_, ok := r.workers[msg.WorkerID]
 	r.mu.RUnlock()
 
 	if !ok {
@@ -446,23 +487,113 @@ func (r *Relay) forwardToWorker(msg protocol.Message) {
 		return
 	}
 
-	if err := wsutil.WriteJSON(conn, msg); err != nil {
-		r.log.Warn("failed to forward to worker", "worker_id", msg.WorkerID, "error", err)
+	data, err := json.Marshal(msg)
+	if err != nil {
+		r.log.Warn("failed to marshal forward-to-worker frame", "worker_id", msg.WorkerID, "error", err)
+		return
 	}
+	r.enqueueWorkerFrame(msg.WorkerID, data)
 }
 
-// broadcastToWorkers sends a message to all connected workers.
+// broadcastToWorkers sends a message to all connected workers. Each frame is
+// enqueued onto the per-worker outbound queue; only workerWriterLoop writes
+// the sockets (issue #203).
 func (r *Relay) broadcastToWorkers(msg protocol.Message) {
 	r.mu.RLock()
-	workers := make([]*websocket.Conn, 0, len(r.workers))
-	for _, conn := range r.workers {
-		workers = append(workers, conn)
+	workerIDs := make([]string, 0, len(r.workers))
+	for id := range r.workers {
+		workerIDs = append(workerIDs, id)
 	}
 	r.mu.RUnlock()
 
-	for _, conn := range workers {
-		if err := wsutil.WriteJSON(conn, msg); err != nil {
-			r.log.Warn("failed to broadcast to worker", "error", err)
+	data, err := json.Marshal(msg)
+	if err != nil {
+		r.log.Warn("failed to marshal broadcast frame", "error", err)
+		return
+	}
+	for _, id := range workerIDs {
+		r.enqueueWorkerFrame(id, data)
+	}
+}
+
+// enqueueWorkerFrame enqueues a pre-marshaled frame onto workerID's outbound
+// queue for the single writer goroutine. The channel snapshot is obtained
+// under r.mu alongside the socket, so a caller never delivers a frame into a
+// channel whose writer has exited. It is the ONLY path for outbound worker
+// frames: call through this function instead of writing to the worker socket
+// directly (issue #203). On a full queue the oldest buffered frame is dropped
+// (almost always a redundant heartbeat) and the frame is kept — the same
+// pattern as bufferWorkerMessage.
+func (r *Relay) enqueueWorkerFrame(workerID string, data []byte) {
+	r.mu.Lock()
+	sendCh, ok := r.workerSendCh[workerID]
+	r.mu.Unlock()
+	if !ok {
+		// Worker disconnected between the caller's lookup and here; the
+		// frame is lost with the socket, same as a write to a closed conn.
+		r.log.Debug("dropping frame for disconnected worker", "worker_id", workerID)
+		return
+	}
+
+	select {
+	case sendCh <- data:
+		// Delivered to the single writer goroutine.
+	default:
+		// Queue full: drop the oldest buffered frame (almost always a
+		// redundant heartbeat) and enqueue this one, so the link keeps
+		// making progress instead of wedging. Re-enqueue under the lock so
+		// the writer cannot drain between the drop and the re-add.
+		r.mu.Lock()
+		sendCh2, ok := r.workerSendCh[workerID]
+		if !ok {
+			r.mu.Unlock()
+			r.log.Debug("dropping frame for disconnected worker", "worker_id", workerID)
+			return
+		}
+		select {
+		case <-sendCh2:
+			// Drained one oldest frame to make room.
+		default:
+			r.mu.Unlock()
+			return
+		}
+		select {
+		case sendCh2 <- data:
+		default:
+			// Still full after draining one: the writer is stalled; drop
+			// this frame rather than block the read loop.
+			r.log.Warn("worker send queue still full; dropping frame",
+				"worker_id", workerID, "queued", len(sendCh2))
+		}
+		r.mu.Unlock()
+	}
+}
+
+// workerWriterLoop is the ONLY goroutine that writes to a worker connection.
+// It drains the per-connection workerSendCh and applies the per-frame write
+// deadline; on write failure it closes the socket so the read loop exits and
+// the worker is pruned (mirrors routerWriterLoop, issue #203).
+//
+// On exit it removes workerSendCh[workerID] under r.mu so enqueueWorkerFrame
+// (which snapshots the channel under the same lock) can never deliver a
+// frame into a channel whose writer has gone — the frame would otherwise sit
+// buffered forever and be silently lost.
+func (r *Relay) workerWriterLoop(ws *websocket.Conn, workerID string, sendCh chan []byte) {
+	defer func() {
+		r.mu.Lock()
+		if r.workerSendCh[workerID] == sendCh {
+			delete(r.workerSendCh, workerID)
+		}
+		r.mu.Unlock()
+	}()
+
+	for data := range sendCh {
+		if err := wsutil.WriteText(ws, data); err != nil {
+			r.log.Debug("failed to send to worker", "worker_id", workerID, "error", err)
+			// On write failure close the socket so the read loop exits
+			// and the worker is pruned (mirrors routerWriterLoop).
+			_ = ws.Close()
+			return
 		}
 	}
 }
