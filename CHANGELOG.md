@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Cold model load flapping loop (three-phase fix):**
+  - Phase 1: Dev-mode worker registration no longer inflates `Loaded=true` for all backend-advertised models. Only manual `--model-path` models and recently-completed-inference models (10-min rolling window) are marked loaded. LM Studio `/v1/models` now correctly reflects reality (only the loaded model shows `Loaded=true`).
+  - Phase 2: Worker `--stream-grace` (default 30s, was 5s) now uses **non-destructive fallback** — on grace expiry with zero chunks, keeps waiting on the same stream until backend idle timeout or caller cancellation. No longer cancels and retries non-streaming (which aborted LM Studio engine switches). Circuit breaker `isBackendFailure()` guard: `context.Canceled` / `DeadlineExceeded` no longer count as backend failures.
+  - Phase 3: Router `--relay-call-timeout` (default 300s, was 60s const) makes the relay hard cap configurable and injectable. Unloaded-model requests in relay mode now fail fast (<1s, 503) instead of hanging 60s. Timeout budget ordering documented: `proxy-timeout` (idle, 120s) < `relay-call-timeout` (total, 300s) < worker `backend-timeout` (120s idle).
+  - Security: Circuit-breaker error messages no longer leak internal backend URL in client-facing responses (retained in worker logs).
+  - Fixed pre-existing data race on `Server.chatHistory` (new `chatHistoryMu`).
+
 ### Added
+- Worker: `--stream-grace` flag (default 30s) for configurable streaming grace period with non-destructive fallback.
+- Router: `--relay-call-timeout` flag (default 300s, 0 = legacy 60s) for configurable relay call total timeout.
 - Worker: `--health-check-interval` flag for tuning the backend health check cadence (default 30s, mirrors `--model-refresh-interval`)
 - Dashboard enrichment in the Wails desktop app (Issue #79 v1):
   - Router health indicator (reachable/unreachable) in Dashboard header
