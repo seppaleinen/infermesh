@@ -242,6 +242,15 @@ func (s *Server) SetModelLoadTimeout(d time.Duration) {
 	s.modelLoadTimeout = d
 }
 
+// SetRelayCallTimeout overrides the hard cap on in-flight relay call duration.
+// Delegates to the hub's SetRelayCallTimeout. A value <= 0 falls back to
+// the package default maxRelayCallTimeout (60s).
+func (s *Server) SetRelayCallTimeout(d time.Duration) {
+	if s.hub != nil {
+		s.hub.SetRelayCallTimeout(d)
+	}
+}
+
 // SetAutoRouting configures the model="auto" alias. When cfg is nil or
 // has no tier models configured, the alias is disabled and "auto" is
 // treated as a literal model name (backward compatible).

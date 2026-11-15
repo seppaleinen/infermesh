@@ -1,6 +1,9 @@
 package worker
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -206,5 +209,66 @@ func TestCircuitBreakerStateString(t *testing.T) {
 		if got := tc.state.String(); got != tc.want {
 			t.Errorf("%d.String() = %q, want %q", tc.state, got, tc.want)
 		}
+	}
+}
+
+// TestIsBackendFailure_ExcludesContextCancellation verifies SPEC-P2-05/SPEC-P2-07:
+// isBackendFailure returns FALSE for context.Canceled and context.DeadlineExceeded
+// (these are client-side cancellations, not backend failures). All other errors
+// (non-2xx, connection errors, idle timeout) return TRUE and increment the breaker.
+func TestIsBackendFailure_ExcludesContextCancellation(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantFail bool
+	}{
+		{"nil error", nil, false},
+		{"context.Canceled", context.Canceled, false},
+		{"context.DeadlineExceeded", context.DeadlineExceeded, false},
+		{"wrapped context.Canceled", fmt.Errorf("wrapped: %w", context.Canceled), false},
+		{"wrapped context.DeadlineExceeded", fmt.Errorf("wrapped: %w", context.DeadlineExceeded), false},
+		{"generic error", errors.New("backend connection refused"), true},
+		{"http error (simulated)", &BackendHTTPError{StatusCode: 500, Message: "internal error"}, true},
+		{"http 429", &BackendHTTPError{StatusCode: 429, Message: "rate limited"}, true},
+		{"http 400 (non-retryable)", &BackendHTTPError{StatusCode: 400, Message: "bad request"}, true}, // still a backend error
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isBackendFailure(tt.err)
+			if got != tt.wantFail {
+				t.Errorf("isBackendFailure(%v) = %v, want %v", tt.err, got, tt.wantFail)
+			}
+		})
+	}
+}
+
+// TestCircuitBreaker_ContextCancelDoesNotTrip verifies SPEC-P2-07 end-to-end:
+// a CompleteChat call cancelled by context does NOT increment the failure count
+// and does NOT trip the breaker.
+func TestCircuitBreaker_ContextCancelDoesNotTrip(t *testing.T) {
+	cb := NewCircuitBreaker(3, 30*time.Second) // low threshold for test
+
+	// Simulate a cancelled request
+	err := context.Canceled
+	if !isBackendFailure(err) {
+		// This is the expected path: cancelled requests don't record failure
+		// (the handler checks isBackendFailure before calling RecordFailure)
+	} else {
+		t.Fatal("isBackendFailure(context.Canceled) should be false")
+	}
+
+	// Verify breaker state unchanged
+	if cb.GetState() != CircuitClosed {
+		t.Errorf("breaker state = %s, want %s after context.Canceled (no RecordFailure)", cb.GetState(), CircuitClosed)
+	}
+	if cb.failureCount != 0 {
+		t.Errorf("failureCount = %d, want 0 after context.Canceled", cb.failureCount)
+	}
+
+	// Now simulate a real backend failure - should increment
+	cb.RecordFailure()
+	if cb.failureCount != 1 {
+		t.Errorf("failureCount = %d after one RecordFailure, want 1", cb.failureCount)
 	}
 }

@@ -145,6 +145,10 @@ type RunConfig struct {
 	// Threads is the llama-cpp thread count (default 4). Other backends
 	// ignore it (issue #139).
 	Threads int
+	// StreamGrace is the grace period for streaming requests before
+	// the non-destructive wait loop kicks in. Default 30s. 0 means
+	// no grace period (immediate wait).
+	StreamGrace time.Duration
 }
 
 // ReloadableConfig holds configuration values that can be re-read from
@@ -317,10 +321,17 @@ func (h *Handle) buildRegistrationInfo(regConfig ReloadableConfig) protocol.Work
 	info := h.regInfoBase
 	info.Capabilities = h.regCaps
 	models := h.srv.GetModels()
-	if h.regDevMode {
-		for i := range models {
-			if models[i].Name != "" {
-				models[i].Loaded = true
+	// No dev-mode Loaded inflation: advertise Loaded exactly as the backend reports it.
+	// The optional heuristic below marks models with recent successful inference as Loaded=true.
+	if h.regDevMode && h.srv != nil {
+		tracker := h.srv.GetInferenceTracker()
+		if tracker != nil {
+			for i := range models {
+				if models[i].Name != "" && !models[i].Loaded {
+					if _, ok := tracker.Snapshot(models[i].Name); ok {
+						models[i].Loaded = true
+					}
+				}
 			}
 		}
 	}
@@ -508,6 +519,11 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 	// Configure the inference-stats rolling window before Start (startup-only
 	// setter; values <= 0 fall back to DefaultInferenceWindow).
 	srv.SetInferenceWindow(cfg.InferenceWindow)
+
+	// Configure streaming grace period (default 30s; 0 = no grace).
+	if cfg.StreamGrace > 0 {
+		streamingGracePeriod = cfg.StreamGrace
+	}
 
 	// Set up backend adapter based on --backend flag
 	backendImpl, err := NewBackendFromName(cfg.Backend, cfg.ModelPath, cfg.BackendURL, cfg.BackendTimeout, cfg.MaxTokens, cfg.Threads)

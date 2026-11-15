@@ -32,7 +32,8 @@ var errRelayQueueFull = errors.New("relay send queue full")
 // maxRelayCallTimeout is the hard cap on in-flight relay call duration.
 // Even if the relay link stays technically alive but the worker stops responding,
 // calls are failed within this timeout to prevent indefinite hangs (issue #197).
-const maxRelayCallTimeout = 60 * time.Second
+// It is a var (not a const) so the WSHub can override it via SetRelayCallTimeout.
+var maxRelayCallTimeout = 60 * time.Second
 
 // canonicalConnectPath is the WebSocket endpoint the relay mounts for
 // worker and router connections (see cmd/relay/main.go startWSServer). It is

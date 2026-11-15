@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -167,5 +168,65 @@ func TestBuildCandidatesAutoLoadPreserved(t *testing.T) {
 
 	if candidates[0].ID != "worker-advertiser" {
 		t.Errorf("expected worker-advertiser in candidates, got %s", candidates[0].ID)
+	}
+}
+
+// TestDispatchUnloadedRelayModeFailsFast verifies SPEC-P1-07/SPEC-AC-02:
+// unloaded model in relay mode fails fast (<1s, 503), doesn't hang 60s.
+// This is the acceptance-critical test for the cold load timeout fix.
+func TestDispatchUnloadedRelayModeFailsFast(t *testing.T) {
+	// Worker advertising model with Loaded=false (relay mode)
+	worker := protocol.WorkerInfo{
+		ID:       "relay-unloaded",
+		Hostname: "relay-host",
+		IP:       "127.0.0.1",
+		Port:     8081,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+		Transport: protocol.TransportWS, // relay mode
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "cold-model", Backend: "llama-cpp", Loaded: false},
+			},
+		},
+	}
+
+	tr := testRegistry(t, []protocol.WorkerInfo{worker})
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+	srv := tr.Server()
+
+	srv.cache = NewCapabilityCache(tr.reg, testLogger())
+	srv.cache.Start(tr.ctx)
+	srv.cache.mu.Lock()
+	srv.cache.cache[worker.ID] = worker
+	srv.cache.mu.Unlock()
+
+	// Mock client that fails fast for unloaded models (simulates relay worker
+	// returning error immediately for cold model)
+	fc := newMockWorkerClient()
+	fc.results["relay-unloaded"] = mockResult{
+		err: errRelayDisconnected, // worker not responding (cold load)
+	}
+	srv.clientFactory = func(w protocol.WorkerInfo) WorkerClient { return fc }
+
+	// Request the cold model
+	ctx := context.Background()
+	body := []byte(`{"model":"cold-model","messages":[{"role":"user","content":"hi"}],"stream":false}`)
+
+	// dispatchWithFailover should fail fast (<1s), not hang 60s
+	start := time.Now()
+	_, err := srv.dispatchWithFailover(ctx, "cold-model", body, "chat", 1, 1*time.Second)
+	elapsed := time.Since(start)
+
+	// Should fail (no workers available for cold model in relay mode)
+	if err == nil {
+		t.Fatal("expected error for unloaded model in relay mode, got success")
+	}
+
+	// Should fail FAST (<1s), not hang for 60s
+	if elapsed > 1*time.Second {
+		t.Fatalf("dispatch took %v, expected <1s (fails fast, not 60s hang)", elapsed)
 	}
 }

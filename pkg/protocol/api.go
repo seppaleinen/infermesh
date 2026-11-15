@@ -9,9 +9,19 @@
 package protocol
 
 // ChatMessage represents a single message in a chat conversation.
+//
+// Reasoning carries the model's internal chain-of-thought when the backend
+// emits it under the OpenAI-compatible "reasoning_content" key (LM Studio
+// reasoning models, DeepSeek-R1-style backends). It is omitted when empty so
+// non-reasoning responses stay wire-compatible. Without this field the
+// unmarshal→marshal round-trip through the worker silently strips it, and
+// reasoning-only models (e.g. gpt-oss-20b, which emits reasoning tokens but
+// an empty content delta) arrive at the client as an empty response (issue
+// #204).
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	Reasoning string `json:"reasoning_content,omitempty"`
 }
 
 // ChatRequest represents a request to the chat completions endpoint.

@@ -86,6 +86,13 @@ type WSHub struct {
 	// nil until SetMaxConnections is called (or until the first handshake,
 	// which lazily initialises it from the default).
 	connSem chan struct{}
+
+	// relayCallTimeout is the hard cap on in-flight relay call duration.
+	// Even if the relay link stays technically alive but the worker stops
+	// responding, calls are failed within this timeout to prevent indefinite
+	// hangs (issue #197). It is settable via SetRelayCallTimeout; a value
+	// <= 0 falls back to maxRelayCallTimeout (60s).
+	relayCallTimeout time.Duration
 }
 
 // defaultMaxInFlight is the per-worker concurrent-call cap applied when the
@@ -151,6 +158,25 @@ func (h *WSHub) SetMaxInFlight(n int) {
 		return
 	}
 	h.maxInFlight = n
+}
+
+// SetRelayCallTimeout overrides the hard cap on in-flight relay call duration.
+// A value <= 0 falls back to the package default maxRelayCallTimeout (60s).
+func (h *WSHub) SetRelayCallTimeout(d time.Duration) {
+	if d <= 0 {
+		h.relayCallTimeout = maxRelayCallTimeout
+		return
+	}
+	h.relayCallTimeout = d
+}
+
+// relayCallTimeoutValue returns the effective relay call timeout.
+// If not explicitly set via SetRelayCallTimeout, falls back to maxRelayCallTimeout (60s).
+func (h *WSHub) relayCallTimeoutValue() time.Duration {
+	if h.relayCallTimeout <= 0 {
+		return maxRelayCallTimeout
+	}
+	return h.relayCallTimeout
 }
 
 // SetWorkerMaxInFlight sets the concurrency cap for a specific worker.

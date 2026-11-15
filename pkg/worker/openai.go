@@ -155,7 +155,9 @@ func (b *OpenAICompatibleBackend) CompleteChat(ctx context.Context, model string
 		var err error
 		resp, err = b.completeChatInternal(ctx, model, req)
 		if err != nil {
-			b.circuitBreaker.RecordFailure()
+			if isBackendFailure(err) {
+				b.circuitBreaker.RecordFailure()
+			}
 			return err
 		}
 		b.circuitBreaker.RecordSuccess()
@@ -225,6 +227,28 @@ func (b *OpenAICompatibleBackend) completeChatInternal(ctx context.Context, mode
 
 // CompleteCompletions generates a completion via the backend.
 func (b *OpenAICompatibleBackend) CompleteCompletions(ctx context.Context, model string, req protocol.CompletionRequest) (protocol.CompletionResponse, error) {
+	// Check circuit breaker
+	if !b.circuitBreaker.CanExecute() {
+		return protocol.CompletionResponse{}, fmt.Errorf("circuit breaker is open for backend %s", b.baseURL)
+	}
+
+	var resp protocol.CompletionResponse
+	err := retryWithBackoff(ctx, 3, func() error {
+		var err error
+		resp, err = b.completeCompletionsInternal(ctx, model, req)
+		if err != nil {
+			if isBackendFailure(err) {
+				b.circuitBreaker.RecordFailure()
+			}
+			return err
+		}
+		b.circuitBreaker.RecordSuccess()
+		return nil
+	})
+	return resp, err
+}
+
+func (b *OpenAICompatibleBackend) completeCompletionsInternal(ctx context.Context, model string, req protocol.CompletionRequest) (protocol.CompletionResponse, error) {
 	url := b.baseURL + "/v1/completions"
 
 	// Set default max_tokens if not specified. Use backend-configured default,
@@ -323,7 +347,7 @@ func (b *OpenAICompatibleBackend) ListModels() ([]protocol.ModelInfo, error) {
 		if name == "" {
 			continue
 		}
-		loaded := true
+		loaded := false
 		if m.Loaded != nil {
 			loaded = *m.Loaded
 		}

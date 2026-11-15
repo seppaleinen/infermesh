@@ -309,8 +309,9 @@ func (c *relayWorkerClient) Complete(ctx context.Context, worker protocol.Worker
 	// writing to relayConn directly from this HTTP-handler goroutine
 	// (issue #196).
 	// Apply a hard cap on in-flight call duration so no call hangs beyond
-	// 60s even if the relay link stays alive but the worker stops responding.
-	ctx, cancel := context.WithTimeout(ctx, maxRelayCallTimeout)
+	// the configured timeout even if the relay link stays alive but the
+	// worker stops responding.
+	ctx, cancel := context.WithTimeout(ctx, c.hub.relayCallTimeoutValue())
 	defer cancel()
 	if err := c.hub.enqueueRelay(ctx, msg); err != nil {
 		pc.fail(err)
@@ -374,7 +375,7 @@ func (c *relayWorkerClient) Stream(ctx context.Context, worker protocol.WorkerIn
 		// cancelled), so it can never pre-empt the response-wait the way a
 		// caller-side `defer cancel()` did. The timer starts after the
 		// frame is enqueued.
-		callCtx, callCancel := context.WithTimeout(ctx, maxRelayCallTimeout)
+		callCtx, callCancel := context.WithTimeout(ctx, c.hub.relayCallTimeoutValue())
 		defer callCancel()
 		select {
 		case <-callCtx.Done():
@@ -404,8 +405,9 @@ func (c *relayWorkerClient) LoadModel(ctx context.Context, worker protocol.Worke
 	// writing to relayConn directly from this HTTP-handler goroutine
 	// (issue #196).
 	// Apply a hard cap on in-flight call duration so no call hangs beyond
-	// 60s even if the relay link stays alive but the worker stops responding.
-	ctx, cancel := context.WithTimeout(ctx, maxRelayCallTimeout)
+	// the configured timeout even if the relay link stays alive but the
+	// worker stops responding.
+	ctx, cancel := context.WithTimeout(ctx, c.hub.relayCallTimeoutValue())
 	defer cancel()
 	if err := c.hub.enqueueRelay(ctx, msg); err != nil {
 		pc.fail(err)

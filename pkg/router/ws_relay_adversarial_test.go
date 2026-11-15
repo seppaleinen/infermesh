@@ -932,3 +932,142 @@ func TestSweepAndReconnectRace(t *testing.T) {
 	_ = err // response delivery is timing-dependent vs the relay drain; the
 	// invariant under test is conn survival, asserted above.
 }
+
+// =============================================================================
+// ACCEPTANCE-CRITICAL TEST: SPEC-AC-04 (SPEC-P3-01/02/03)
+// Injectable relay call timeout via WSHub.SetRelayCallTimeout
+// =============================================================================
+
+// TestRelayCallTimeoutInjectableCap verifies that the relay call timeout is
+// injectable via WSHub.SetRelayCallTimeout and that the cap actually fires
+// when exceeded. This test injects a 100ms cap and verifies the timeout fires
+// for a call that would otherwise hang.
+//
+// Previously, maxRelayCallTimeout was a const (60s) which could not be
+// unit-tested without waiting real time. The fix (SPEC-P3-01) made it an
+// injectable field on WSHub.
+func TestRelayCallTimeoutInjectableCap(t *testing.T) {
+	hub := NewWSHub(nil, wsHubTestLogger())
+	received, _ := startScriptedRelay(t, hub)
+
+	// Inject a SHORT timeout (100ms) for the test - this is the key acceptance
+	// criterion: the cap is injectable and actually fires.
+	hub.SetRelayCallTimeout(100 * time.Millisecond)
+
+	const workerID = "timeout-worker"
+	worker := protocol.WorkerInfo{
+		ID: workerID, Hostname: "host", IP: "127.0.0.1", Port: 8081,
+		Status: protocol.StatusAvailable, Version: "v1",
+	}
+	hub.handleRelayRegister(relayRegisterMsg(t, worker))
+
+	client := newRelayWorkerClient(hub, wsHubTestLogger())
+
+	// Make a Complete call with a generous caller context (5s)
+	// The relayCallTimeout (100ms) should fire FIRST, returning 504.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := client.Complete(ctx, worker, "chat", []byte(`{"model":"m"}`))
+
+	// The call should fail with context.DeadlineExceeded (from the injected cap)
+	// NOT with the caller's 5s context timeout.
+	if err == nil {
+		t.Fatal("expected call to fail due to injected 100ms relay call timeout, got success")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context.DeadlineExceeded from injected cap, got %v", err)
+	}
+
+	// Verify the request frame was sent (frame-send uses caller ctx, not the cap)
+	req := expectFrame(t, received, protocol.MsgInferenceRequest)
+	if req.WorkerID != workerID {
+		t.Fatalf("frame not routed to correct worker: %q", req.WorkerID)
+	}
+
+	// Note: 504 counter is incremented in the HTTP handler path (handlers_chat.go),
+	// not in the unit test path via client.Complete().
+}
+
+// TestRelayCallTimeoutZeroBackCompat verifies SPEC-BV-02:
+// --relay-call-timeout=0 maps to 60s back-compat default (maxRelayCallTimeout).
+func TestRelayCallTimeoutZeroBackCompat(t *testing.T) {
+	hub := NewWSHub(nil, wsHubTestLogger())
+	// Default should be maxRelayCallTimeout (60s)
+	if hub.relayCallTimeoutValue() != maxRelayCallTimeout {
+		t.Errorf("default relayCallTimeoutValue = %v, want %v", hub.relayCallTimeoutValue(), maxRelayCallTimeout)
+	}
+
+	// Explicitly set to 0 -> should fall back to 60s
+	hub.SetRelayCallTimeout(0)
+	if hub.relayCallTimeoutValue() != maxRelayCallTimeout {
+		t.Errorf("SetRelayCallTimeout(0) = %v, want %v (back-compat)", hub.relayCallTimeoutValue(), maxRelayCallTimeout)
+	}
+}
+
+// TestRelayCallTimeoutNegativeRejected verifies SPEC-NEG-02:
+// negative relay call timeout is rejected at flag validation (not here;
+// this test documents that SetRelayCallTimeout accepts negative but
+// clamps to 60s; flag validation is in cmd/router).
+func TestRelayCallTimeoutNegativeRejected(t *testing.T) {
+	hub := NewWSHub(nil, wsHubTestLogger())
+	// SetRelayCallTimeout treats <=0 as "use default" (60s)
+	hub.SetRelayCallTimeout(-1 * time.Second)
+	if hub.relayCallTimeoutValue() != maxRelayCallTimeout {
+		t.Errorf("SetRelayCallTimeout(-1s) = %v, want %v (clamped to default)", hub.relayCallTimeoutValue(), maxRelayCallTimeout)
+	}
+}
+
+// TestRelayCallTimeoutThreeCallSites verifies SPEC-P3-03:
+// all three ws_stats.go call sites (Complete, Stream, LoadModel) use
+// the hub's relay-call-timeout value.
+func TestRelayCallTimeoutThreeCallSites(t *testing.T) {
+	hub := NewWSHub(nil, wsHubTestLogger())
+	received, _ := startScriptedRelay(t, hub)
+
+	hub.SetRelayCallTimeout(100 * time.Millisecond)
+
+	const workerID = "three-sites-worker"
+	worker := protocol.WorkerInfo{
+		ID: workerID, Hostname: "host", IP: "127.0.0.1", Port: 8081,
+		Status: protocol.StatusAvailable, Version: "v1",
+	}
+	hub.handleRelayRegister(relayRegisterMsg(t, worker))
+
+	client := newRelayWorkerClient(hub, wsHubTestLogger())
+
+	// 1. Complete call
+	ctx := context.Background()
+	_, err := client.Complete(ctx, worker, "chat", []byte(`{"model":"m"}`))
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Complete: expected DeadlineExceeded from 100ms cap, got %v", err)
+	}
+
+	// Re-register for clean state (previous call reaped pending)
+	hub.handleRelayRegister(relayRegisterMsg(t, worker))
+
+	// 2. Stream call
+	ctx = context.Background()
+	chunkCh, errCh := client.Stream(ctx, worker, "chat", []byte(`{"model":"m"}`))
+	// Wait for request frame (must be sent even though caller ctx is background)
+	expectFrame(t, received, protocol.MsgInferenceRequest)
+
+	// Stream should also timeout at the cap
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Stream: expected DeadlineExceeded, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stream: call did not timeout at injected cap")
+	}
+	_ = chunkCh
+
+	// 3. LoadModel call
+	hub.handleRelayRegister(relayRegisterMsg(t, worker))
+	ctx = context.Background()
+	_, err = client.LoadModel(ctx, worker, "test-model")
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("LoadModel: expected DeadlineExceeded, got %v", err)
+	}
+}

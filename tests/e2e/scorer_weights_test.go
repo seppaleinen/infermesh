@@ -202,7 +202,7 @@ func startMarkerBackend(t *testing.T, modelName, marker string) *httptest.Server
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"data": []map[string]any{{"id": modelName, "object": "model"}},
+			"data": []map[string]any{{"id": modelName, "object": "model", "loaded": true}},
 		})
 	})
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {

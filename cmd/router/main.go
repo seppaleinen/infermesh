@@ -46,6 +46,10 @@ type RouterFlags struct {
 	// Model load timeout: HTTP POST timeout for /v1/models/load auto-load.
 	ModelLoadTimeout time.Duration
 
+	// Relay call timeout: hard cap on in-flight relay call duration.
+	// Default 300s (5 minutes). 0 means no timeout (uses hub default 60s).
+	RelayCallTimeout time.Duration
+
 	// Weighted scorer settings. Zero values keep the built-in defaults (no-op).
 	ScorerQuantMatch       float64
 	ScorerVRAMFree         float64
@@ -181,6 +185,7 @@ func registerRouterFlags(fs *flag.FlagSet, f *RouterFlags) {
 	// not bounded by this value. First-byte wait is also bounded by it.
 	fs.DurationVar(&f.ProxyTimeout, "proxy-timeout", 120*time.Second, "idle timeout for streaming proxy: abort if no chunk arrives for this long (does not count against active streaming; first-byte wait also bounded by this value)")
 	fs.DurationVar(&f.ModelLoadTimeout, "model-load-timeout", 120*time.Second, "timeout for HTTP POST to worker /v1/models/load; controls how long router waits for model-load acknowledgment (does not bound the backend inference load itself)")
+	fs.DurationVar(&f.RelayCallTimeout, "relay-call-timeout", 300*time.Second, "hard cap on in-flight relay call duration (default 300s); 0 = use hub default of 60s")
 	fs.Float64Var(&f.ScorerQuantMatch, "scorer-quant-match", 0, "weight for quantization match in weighted scoring (0 = keep default of 0.40)")
 	fs.Float64Var(&f.ScorerVRAMFree, "scorer-vram-free", 0, "weight for free VRAM ratio in weighted scoring (0 = keep default of 0.25)")
 	fs.Float64Var(&f.ScorerGPUUtil, "scorer-gpu-util", 0, "weight for GPU utilization in weighted scoring (0 = keep default of 0.15)")
@@ -361,6 +366,9 @@ func runRouter(args []string) int {
 
 	// Configure model-load HTTP POST timeout.
 	srv.SetModelLoadTimeout(f.ModelLoadTimeout)
+
+	// Configure relay call hard cap (default 300s; 0 = hub default 60s).
+	srv.SetRelayCallTimeout(f.RelayCallTimeout)
 
 	// Configure the model="auto" alias (disabled by default).
 	if autoCfg := f.buildAutoRoutingConfig(); autoCfg != nil {

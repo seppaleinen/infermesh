@@ -2,6 +2,7 @@ package router
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -264,5 +265,85 @@ func TestChatCompletionsNonStreamingProxiesToWorker(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestUnloadedModelRelayModeFailsFast verifies SPEC-P1-07/SPEC-AC-02:
+// unloaded model in relay mode fails fast (<1s) with 503, does NOT hang for 60s.
+// This is the acceptance-critical test for the "cold load timeout" fix.
+func TestUnloadedModelRelayModeFailsFast(t *testing.T) {
+	// Relay-mode worker advertising model with Loaded=false
+	worker := protocol.WorkerInfo{
+		ID:       "relay-unloaded-worker",
+		Hostname: "relay-host",
+		IP:       "127.0.0.1",
+		Port:     8081,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "cold-model", Backend: "llama-cpp", Loaded: false}, // NOT loaded
+			},
+		},
+	}
+
+	tr := testRegistry(t, []protocol.WorkerInfo{worker})
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+	server := tr.Server()
+
+	server.cache = NewCapabilityCache(tr.reg, testLogger())
+	server.cache.Start(tr.ctx)
+	server.cache.mu.Lock()
+	server.cache.cache[worker.ID] = worker
+	server.cache.mu.Unlock()
+
+	// Mock worker client that simulates relay-mode behavior:
+	// When Loaded=false, the worker would need to load the model (cold load).
+	// In relay mode, this should fail fast with 503, not hang 60s.
+	fc := newMockWorkerClient()
+	fc.results["relay-unloaded-worker"] = mockResult{
+		err: errRelayDisconnected, // simulates relay worker not responding (cold load)
+	}
+	server.clientFactory = func(w protocol.WorkerInfo) WorkerClient { return fc }
+
+	// Request cold model
+	chatReq := protocol.ChatRequest{
+		Model:  "cold-model",
+		Stream: false,
+		Messages: []protocol.ChatMessage{
+			{Role: "user", Content: "Hello"},
+		},
+	}
+
+	body, err := json.Marshal(chatReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Use a short timeout to prove it fails fast (<1s)
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req = req.WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+
+	w := httptest.NewRecorder()
+
+	// Measure execution time - should be <1s, not 60s
+	start := time.Now()
+	server.handleChatCompletions(w, req)
+	elapsed := time.Since(start)
+
+	// Should return 503 (no workers available / model not loaded)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 (no workers), got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Should fail FAST (<1s), not hang for 60s
+	if elapsed > 1*time.Second {
+		t.Fatalf("request took %v, expected <1s (fails fast, not 60s hang)", elapsed)
 	}
 }

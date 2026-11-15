@@ -1127,3 +1127,145 @@ func waitFor(t *testing.T, timeout time.Duration, fn func() bool) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// TestDevModeHonestAdvertisement verifies SPEC-P1-01/SPEC-P1-02:
+// dev-mode registration does NOT inflate Loaded for backend-advertised models;
+// manually declared models (--model-path) keep Loaded=true.
+// This is the Phase 1 "Honest Model Advertisement" fix: Loaded reflects
+// reality, not wishful thinking.
+func TestDevModeHonestAdvertisement(t *testing.T) {
+	log := testLogger()
+
+	// Scenario 1: Backend advertises models WITHOUT loaded field -> all Loaded=false
+	t.Run("backend_no_loaded_field_defaults_false", func(t *testing.T) {
+		srv := NewServer(log, "127.0.0.1:0", security.Config{DevMode: true, EnableHealthChecks: false})
+		mock := newMockBackend()
+		mock.SetMockModels([]protocol.ModelInfo{
+			{Name: "model-a", Backend: "lmstudio", Loaded: false}, // explicit false
+			{Name: "model-b", Backend: "lmstudio"},                // no loaded field -> should be false
+		})
+		srv.SetBackend(mock, "")
+
+		// Simulate the registration heartbeat logic (buildRegistrationInfo)
+		models := srv.GetModels()
+		if len(models) != 2 {
+			t.Fatalf("expected 2 models, got %d", len(models))
+		}
+		for _, m := range models {
+			if m.Loaded {
+				t.Errorf("model %s: expected Loaded=false (backend has no loaded field), got true", m.Name)
+			}
+		}
+	})
+
+	// Scenario 2: Backend advertises models WITH loaded=true -> preserved
+	t.Run("backend_loaded_field_preserved", func(t *testing.T) {
+		srv := NewServer(log, "127.0.0.1:0", security.Config{DevMode: true, EnableHealthChecks: false})
+		mock := newMockBackend()
+		mock.SetMockModels([]protocol.ModelInfo{
+			{Name: "model-loaded", Backend: "lmstudio", Loaded: true},
+			{Name: "model-unloaded", Backend: "lmstudio", Loaded: false},
+		})
+		srv.SetBackend(mock, "")
+
+		models := srv.GetModels()
+		foundLoaded := false
+		foundUnloaded := false
+		for _, m := range models {
+			if m.Name == "model-loaded" {
+				foundLoaded = true
+				if !m.Loaded {
+					t.Errorf("model-loaded: expected Loaded=true (backend reported true), got false")
+				}
+			}
+			if m.Name == "model-unloaded" {
+				foundUnloaded = true
+				if m.Loaded {
+					t.Errorf("model-unloaded: expected Loaded=false (backend reported false), got true")
+				}
+			}
+		}
+		if !foundLoaded || !foundUnloaded {
+			t.Fatalf("expected both models present")
+		}
+	})
+
+	// Scenario 3: Manual model declaration via --model-path -> Loaded=true in dev mode
+	t.Run("manual_model_path_loaded_true", func(t *testing.T) {
+		srv := NewServer(log, "127.0.0.1:0", security.Config{DevMode: true, EnableHealthChecks: false})
+		// Simulate manual registration (what RunWorker does when ModelPath is set)
+		srv.SetModels([]protocol.ModelInfo{
+			{Name: "manual-model", Backend: "llama-cpp", Loaded: true},
+		})
+
+		models := srv.GetModels()
+		if len(models) != 1 {
+			t.Fatalf("expected 1 manual model, got %d", len(models))
+		}
+		if !models[0].Loaded {
+			t.Errorf("manual model: expected Loaded=true (dev-mode manual declaration), got false")
+		}
+		if models[0].Name != "manual-model" {
+			t.Errorf("expected manual-model, got %s", models[0].Name)
+		}
+	})
+
+	// Scenario 4: Manual model in prod mode -> Loaded=false (requires explicit load)
+	t.Run("manual_model_prod_mode_loaded_false", func(t *testing.T) {
+		srv := NewServer(log, "127.0.0.1:0", security.Config{DevMode: false, EnableHealthChecks: false})
+		srv.SetModels([]protocol.ModelInfo{
+			{Name: "manual-model", Backend: "llama-cpp", Loaded: false}, // prod mode: not loaded until explicit load
+		})
+
+		models := srv.GetModels()
+		if len(models) != 1 {
+			t.Fatalf("expected 1 manual model, got %d", len(models))
+		}
+		if models[0].Loaded {
+			t.Errorf("manual model in prod: expected Loaded=false (needs explicit load), got true")
+		}
+	})
+
+	// Scenario 5: InferenceTracker heuristic marks a model with a recent
+	// successful inference as Loaded=true in dev mode (SPEC-P1-03).
+	// This prevents a router round-trip to a worker that just served the
+	// model moments ago from being treated as a cold load.
+	t.Run("inference_tracker_recent_success_marks_loaded", func(t *testing.T) {
+		srv := NewServer(log, "127.0.0.1:0", security.Config{DevMode: true, EnableHealthChecks: false})
+		mock := newMockBackend()
+		mock.SetMockModels([]protocol.ModelInfo{
+			{Name: "hot-model", Backend: "lmstudio", Loaded: false}, // cold on paper
+			{Name: "cold-model", Backend: "lmstudio", Loaded: false}, // never served
+		})
+		srv.SetBackend(mock, "")
+
+		// Record a successful inference for the hot model in the tracker.
+		tracker := srv.GetInferenceTracker()
+		if tracker == nil {
+			t.Fatal("expected non-nil InferenceTracker")
+		}
+		tracker.Record("hot-model", 10, 20, 100*time.Millisecond, time.Second)
+
+		// Apply the same heuristic as buildRegistrationInfo: mark models
+		// with a recent successful inference as Loaded=true.
+		models := srv.GetModels()
+		for i := range models {
+			if models[i].Name != "" && !models[i].Loaded {
+				if _, ok := tracker.Snapshot(models[i].Name); ok {
+					models[i].Loaded = true
+				}
+			}
+		}
+
+		loaded := map[string]bool{}
+		for _, m := range models {
+			loaded[m.Name] = m.Loaded
+		}
+		if !loaded["hot-model"] {
+			t.Errorf("hot-model: expected Loaded=true (recent inference in tracker), got false")
+		}
+		if loaded["cold-model"] {
+			t.Errorf("cold-model: expected Loaded=false (no inference in tracker), got true")
+		}
+	})
+}

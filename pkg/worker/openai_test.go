@@ -203,3 +203,87 @@ func TestOpenAICompatibleBackendStreamChatIdleTimeoutNeverResponds(t *testing.T)
 	for range ch {
 	}
 }
+
+// TestStreamChatPreservesReasoningContent verifies that the worker's
+// unmarshal→marshal round-trip (backend SSE → protocol.ChatChunk →
+// inference_chunk frame) does NOT silently drop delta.reasoning_content.
+//
+// Reasoning models (LM Studio gpt-oss-20b, DeepSeek-R1-style backends) emit
+// their chain-of-thought under the OpenAI-compatible "reasoning_content" key
+// with an empty content delta. Without a Reasoning field on ChatMessage the
+// worker's json.Unmarshal discards it and the client receives an empty
+// response — the model appears broken even though the backend works.
+func TestStreamChatPreservesReasoningContent(t *testing.T) {
+	const reasoning = "The user wants me to say hello, so I should greet them."
+	const content = "Hello!"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		// First chunk carries reasoning only (the shape reasoning models emit).
+		_, _ = w.Write([]byte("data: " + mustMarshal(map[string]any{
+			"id": "chatcmpl-test", "object": "chat.completion.chunk",
+			"created": time.Now().Unix(), "model": "reason-model",
+			"choices": []map[string]any{{"index": 0, "delta": map[string]any{
+				"role": "assistant", "reasoning_content": reasoning,
+			}, "finish_reason": nil}},
+		}) + "\n\n"))
+		flusher.Flush()
+		// Second chunk carries the visible answer.
+		_, _ = w.Write([]byte("data: " + mustMarshal(map[string]any{
+			"id": "chatcmpl-test", "object": "chat.completion.chunk",
+			"created": time.Now().Unix(), "model": "reason-model",
+			"choices": []map[string]any{{"index": 0, "delta": map[string]any{
+				"content": content,
+			}, "finish_reason": nil}},
+		}) + "\n\n"))
+		flusher.Flush()
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	backend := NewOpenAICompatibleBackend(server.URL, "", 30*time.Second, 0)
+	req := protocol.ChatRequest{
+		Model:     "reason-model",
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: "hi"}},
+		MaxTokens: 100,
+	}
+
+	ch, errCh := backend.StreamChat(context.Background(), "reason-model", req)
+	var gotReasoning, gotContent string
+	for c := range ch {
+		if len(c.Choices) == 0 {
+			continue
+		}
+		delta := c.Choices[0].Delta
+		if delta.Reasoning != "" {
+			gotReasoning = delta.Reasoning
+		}
+		if delta.Content != "" {
+			gotContent = delta.Content
+		}
+	}
+	// errCh is closed by the stream goroutine; a nil sentinel may be sent
+	// before close, so drain it rather than selecting on it.
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("unexpected stream error: %v", err)
+		}
+	}
+
+	if gotReasoning != reasoning {
+		t.Errorf("reasoning_content lost in round-trip: want %q, got %q", reasoning, gotReasoning)
+	}
+	if gotContent != content {
+		t.Errorf("content lost in round-trip: want %q, got %q", content, gotContent)
+	}
+}
+
+func mustMarshal(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}

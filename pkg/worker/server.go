@@ -220,6 +220,12 @@ func (s *Server) SetInferenceWindow(d time.Duration) {
 	s.inferenceStats = NewInferenceTracker(d)
 }
 
+// GetInferenceTracker returns the inference stats tracker for heuristic
+// Loaded detection in registration heartbeats. Used by Handle.buildRegistrationInfo.
+func (s *Server) GetInferenceTracker() *InferenceTracker {
+	return s.inferenceStats
+}
+
 // recordInference records a completed inference call for the given
 // model into the inference tracker. It is a no-op when no backend is
 // configured (inferenceStats is nil), so callers can invoke it

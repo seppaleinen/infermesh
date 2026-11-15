@@ -22,14 +22,18 @@ const (
 	// WebSocket connection (then 2s, 4s, ... capped at the configured max).
 	wsRegisterBackoffBase = time.Second
 
-	// streamingGracePeriod is how long the worker waits for a backend's
-	// StreamChat/StreamCompletions to produce its first chunk before falling
-	// back to the non-streaming completion path. Most backend adapters do not
-	// implement real streaming and close immediately; this preserves the
-	// existing HTTP handler behavior of "streaming requested but falling back
-	// to non-streaming" without blocking on channels that never close.
-	streamingGracePeriod = 5 * time.Second
+	// defaultStreamingGracePeriod is the default grace period for streaming
+	// requests. It is a var (not a const) so tests can override it and the
+	// worker CLI can configure it via --stream-grace.
+	defaultStreamingGracePeriod = 30 * time.Second
 )
+
+// streamingGracePeriod is the grace period for streaming fallback.
+// Default 30s; configurable via --stream-grace flag.
+// When the grace period expires with zero chunks, the request keeps waiting
+// on the same stream until the backend's idle timeout or caller ctx cancels
+// (non-destructive fallback).
+var streamingGracePeriod = defaultStreamingGracePeriod
 
 // WSConfig configures the outbound worker→router WebSocket registration loop.
 type WSConfig struct {
@@ -374,10 +378,18 @@ func dispatchCompletion(ctx context.Context, id string, p protocol.InferenceRequ
 }
 
 // streamOrFallback relays a backend streaming response as inference_chunk
-// messages terminated by an inference_response(Done=true). Backends without
-// real streaming never deliver a first chunk inside the grace window, so the
-// request falls back to the non-streaming completion path (the same behavior
-// the HTTP handlers exhibit).
+// messages terminated by an inference_response(Done=true).
+//
+// Non-destructive fallback (Phase 2 fix): when the grace period expires with
+// zero chunks, we do NOT cancel and retry non-streaming. Instead, we keep
+// waiting on the SAME stream until the backend's own idle timeout (applied
+// via context in StreamChat/StreamCompletions) or the caller ctx cancels.
+// This prevents aborting engine switches on cold model loads (LM Studio:
+// "Engine protocol startup was aborted" 400), which would trip the circuit
+// breaker and cause a flapping loop.
+//
+// The grace period is still useful as a signal: if no chunk arrives within
+// streamingGracePeriod, we log a debug message but continue waiting.
 func streamOrFallback[T any](ctx context.Context, id, kind string,
 	stream func(context.Context) (<-chan T, <-chan error),
 	complete func(context.Context) (interface{}, error),
@@ -402,22 +414,19 @@ func streamOrFallback[T any](ctx context.Context, id, kind string,
 		_ = sendInferenceDone(out, id, nil)
 		return
 	case <-time.After(streamingGracePeriod):
-		respBody, err := complete(ctx)
-		if err != nil {
-			_ = sendBackendError(out, id, err)
-			return
-		}
-		raw, err := json.Marshal(respBody)
-		if err != nil {
-			_ = sendError(out, id, fmt.Errorf("marshal response: %w", err))
-			return
-		}
-		_ = sendInferenceDone(out, id, raw)
-		return
+		// Grace period expired with no first chunk yet. Do NOT fall back to
+		// non-streaming completion, which would cancel the engine switch.
+		// Instead, continue waiting on the same stream. The backend's idle
+		// timeout (--backend-timeout) will fire if truly stuck, or the
+		// caller ctx will cancel on client hangup. This prevents aborting
+		// in-progress engine loads (LM Studio: "Engine protocol startup was
+		// aborted"). No frame sent; fall through to the wait loop below.
 	case <-ctx.Done():
 		return
 	}
 
+	// If we received the first chunk during the grace period, we already
+	// sent it above. Now continue relaying the rest of the stream.
 	for {
 		select {
 		case chunk, ok := <-chunkCh:

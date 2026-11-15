@@ -61,6 +61,7 @@ type WorkerFlags struct {
 	// check. Empty means "present nothing" (the router only rejects relay
 	// registrations when it has configured its own key).
 	RelayAPIKey string
+	StreamGrace time.Duration
 }
 
 // parseWorkerFlags parses args into WorkerFlags. It uses ContinueOnError so
@@ -108,6 +109,10 @@ func registerWorkerFlags(fs *flag.FlagSet, f *WorkerFlags) {
 	fs.IntVar(&f.MaxTokens, "max-tokens", 4096, "default max_tokens to send to the backend when the incoming request omits it")
 	fs.IntVar(&f.Threads, "threads", 4, "number of threads for the llama-cpp backend (default 4); ignored by other backends")
 	fs.StringVar(&f.RelayAPIKey, "relay-api-key", "", "key presented to the router during relay registration; distinct from --api-key, which gates client inference requests")
+	// Grace period for streaming requests before non-destructive wait loop
+	// kicks in (default 30s). When grace expires with zero chunks, the request
+	// keeps waiting on the same stream until backend idle timeout or ctx cancels.
+	fs.DurationVar(&f.StreamGrace, "stream-grace", 30*time.Second, "grace period for streaming fallback: wait this long for first chunk before entering non-destructive wait loop (0 = no grace, immediate wait)")
 }
 
 // main runs the worker process and returns the process exit code.
@@ -198,6 +203,7 @@ func main() {
 		BackendTimeout:       f.BackendTimeout,
 		Threads:              f.Threads,
 		RelayAPIKey:          f.RelayAPIKey,
+		StreamGrace:          f.StreamGrace,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "worker: %v\n", err)

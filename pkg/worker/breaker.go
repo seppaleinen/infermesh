@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -96,6 +97,20 @@ func (cb *CircuitBreaker) GetState() CircuitState {
 	cb.mu.RLock()
 	defer cb.mu.RUnlock()
 	return cb.state
+}
+
+// isBackendFailure reports whether err represents a backend failure
+// that should increment the circuit breaker failure count.
+// Returns false for context cancellation/timeout (not a backend fault),
+// true for all other errors (non-2xx, connection errors, idle timeout, etc.).
+func isBackendFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	return true
 }
 
 // retryWithBackoff implements exponential backoff retry logic.
