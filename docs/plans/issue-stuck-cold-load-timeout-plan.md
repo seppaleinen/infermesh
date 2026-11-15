@@ -10,7 +10,14 @@ Completed work:
 - Stream grace period: Configured via --stream-grace (default 30s), non-destructive fallback implemented
 - Relay call timeout: Configurable via --relay-call-timeout (default 300s)
 
-All acceptance criteria met. See acceptance-tests.md for verification.
+All acceptance criteria met. See test files for verification:
+- `pkg/worker/run_test.go` (dev-mode honest advertisement)
+- `pkg/worker/ws_client_test.go` (grace non-destructive, ctx-cancel)
+- `pkg/worker/circuit_breaker_test.go` (breaker ctx-cancellation)
+- `pkg/router/ws_relay_adversarial_test.go` (injectable relay cap)
+- `pkg/router/server_chat_test.go` (unloaded model fails fast)
+- `pkg/worker/server_streaming_test.go` (stream grace behavior)
+- `pkg/worker/cold_load_adversarial_test.go` (race conditions)
 Diagnosed from: live logs 2026-11-15 (router `/meta/requests/inflight`, `avg_wait_ms: 60002`,
 LM Studio server log, relay/router pod logs). See "Diagnosis" below for the evidence chain.
 

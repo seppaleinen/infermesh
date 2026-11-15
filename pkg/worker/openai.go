@@ -44,7 +44,7 @@ func (b *OpenAICompatibleBackend) IsHealthy() bool {
 // HealthCheck performs a health check on the backend.
 func (b *OpenAICompatibleBackend) HealthCheck() error {
 	if !b.circuitBreaker.CanExecute() {
-		return fmt.Errorf("circuit breaker is open for backend %s", b.baseURL)
+		return fmt.Errorf("circuit breaker is open")
 	}
 	_, err := b.client.Get(b.healthProbeURL())
 	if err != nil {
@@ -58,7 +58,7 @@ func (b *OpenAICompatibleBackend) HealthCheck() error {
 // HealthCheckDetails performs a detailed health check returning status and metrics.
 func (b *OpenAICompatibleBackend) HealthCheckDetails() (HealthStatus, ModelMetrics, error) {
 	if !b.circuitBreaker.CanExecute() {
-		return Unhealthy, ModelMetrics{}, fmt.Errorf("circuit breaker is open for backend %s", b.baseURL)
+		return Unhealthy, ModelMetrics{}, fmt.Errorf("circuit breaker is open")
 	}
 	start := time.Now()
 	_, err := b.client.Get(b.healthProbeURL())
@@ -147,7 +147,7 @@ func (b *OpenAICompatibleBackend) UnloadModel() error {
 func (b *OpenAICompatibleBackend) CompleteChat(ctx context.Context, model string, req protocol.ChatRequest) (protocol.ChatResponse, error) {
 	// Check circuit breaker
 	if !b.circuitBreaker.CanExecute() {
-		return protocol.ChatResponse{}, fmt.Errorf("circuit breaker is open for backend %s", b.baseURL)
+		return protocol.ChatResponse{}, fmt.Errorf("circuit breaker is open")
 	}
 
 	var resp protocol.ChatResponse
@@ -229,7 +229,7 @@ func (b *OpenAICompatibleBackend) completeChatInternal(ctx context.Context, mode
 func (b *OpenAICompatibleBackend) CompleteCompletions(ctx context.Context, model string, req protocol.CompletionRequest) (protocol.CompletionResponse, error) {
 	// Check circuit breaker
 	if !b.circuitBreaker.CanExecute() {
-		return protocol.CompletionResponse{}, fmt.Errorf("circuit breaker is open for backend %s", b.baseURL)
+		return protocol.CompletionResponse{}, fmt.Errorf("circuit breaker is open")
 	}
 
 	var resp protocol.CompletionResponse
@@ -305,6 +305,9 @@ func (b *OpenAICompatibleBackend) completeCompletionsInternal(ctx context.Contex
 }
 
 // ListModels returns available models from the backend.
+// The `loaded` field is set from the backend's response when present;
+// when absent (LM Studio, most dev backends) it defaults to false.
+// This gives the router an honest signal for dispatch (Phase 1 fix).
 func (b *OpenAICompatibleBackend) ListModels() ([]protocol.ModelInfo, error) {
 	url := b.baseURL + "/v1/models"
 
