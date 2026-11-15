@@ -169,10 +169,12 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Store in history for debugging (capped at maxChatHistory to prevent unbounded growth)
 	const maxChatHistory = 1000
+	s.chatHistoryMu.Lock()
 	s.chatHistory = append(s.chatHistory, req)
 	if len(s.chatHistory) > maxChatHistory {
 		s.chatHistory = s.chatHistory[len(s.chatHistory)-maxChatHistory:]
 	}
+	s.chatHistoryMu.Unlock()
 
 	// Check if backend is configured
 	if s.backend == nil {

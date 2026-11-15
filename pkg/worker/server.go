@@ -79,6 +79,11 @@ type Server struct {
 	// apply to subsequent requests without restarting the HTTP server.
 	apiKeyMu sync.RWMutex
 	apiKey   string
+
+	// chatHistoryMu protects chatHistory, which is appended to by
+	// chatCompletions (per-request) and read by any diagnostic endpoint
+	// that might expose history. Both read and write must hold this lock.
+	chatHistoryMu sync.Mutex
 }
 
 // SetAPIKey replaces the worker's inference API key at runtime. It is called
