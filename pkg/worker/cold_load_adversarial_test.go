@@ -5,6 +5,7 @@
 // Every test is designed to find a defect. If all pass, that is a negative finding
 // — it means the probes did not break the implementation, not that the code is
 // proven correct.
+//
 //nolint:unused
 package worker
 
@@ -193,7 +194,7 @@ type blockingStreamBackend struct {
 	done atomic.Bool
 }
 
-func (b *blockingStreamBackend) IsDone() bool { return b.done.Load() }
+func (b *blockingStreamBackend) IsDone() bool                        { return b.done.Load() }
 func (b *blockingStreamBackend) Name() string                        { return "blocking-mock" }
 func (b *blockingStreamBackend) LoadModel(path string) (bool, error) { return true, nil }
 func (b *blockingStreamBackend) UnloadModel() error                  { return nil }
@@ -856,6 +857,7 @@ func (d *timeoutSimBackend) StreamCompletions(ctx context.Context, model string,
 }
 
 // deadStreamBackend never sends any chunk or error
+//
 //nolint:unused
 type deadStreamBackend struct{}
 
@@ -869,14 +871,17 @@ func (d *deadStreamBackend) GetMetrics() (Metrics, error)  { return Metrics{}, n
 func (d *deadStreamBackend) IsHealthy() bool               { return true }
 func (d *deadStreamBackend) HealthCheck() error            { return nil }
 func (d *deadStreamBackend) GetCircuitState() CircuitState { return CircuitClosed }
+
 //nolint:unused
 func (d *deadStreamBackend) CompleteChat(ctx context.Context, model string, req protocol.ChatRequest) (protocol.ChatResponse, error) {
 	return protocol.ChatResponse{}, errors.New("not implemented")
 }
+
 //nolint:unused
 func (d *deadStreamBackend) CompleteCompletions(ctx context.Context, model string, req protocol.CompletionRequest) (protocol.CompletionResponse, error) {
 	return protocol.CompletionResponse{}, errors.New("not implemented")
 }
+
 //nolint:unused
 func (d *deadStreamBackend) StreamChat(ctx context.Context, model string, req protocol.ChatRequest) (<-chan protocol.ChatChunk, <-chan error) {
 	chatCh := make(chan protocol.ChatChunk)
@@ -889,6 +894,7 @@ func (d *deadStreamBackend) StreamChat(ctx context.Context, model string, req pr
 	}()
 	return chatCh, errCh
 }
+
 //nolint:unused
 func (d *deadStreamBackend) StreamCompletions(ctx context.Context, model string, req protocol.CompletionRequest) (<-chan protocol.CompletionChunk, <-chan error) {
 	compCh := make(chan protocol.CompletionChunk)

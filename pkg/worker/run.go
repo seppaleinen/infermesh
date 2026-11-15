@@ -181,18 +181,18 @@ func newReloadableConfig(cfg RunConfig) ReloadableConfig {
 // Handle represents a running worker: HTTP server, registration loop (or
 // mDNS announcer), and cancellation. Use Stop to shut it down.
 type Handle struct {
-	log         *slog.Logger
-	cancel      context.CancelFunc
-	announcer   discovery.Announcer
-	done        chan struct{}
-	regMu       sync.Mutex
-	regCancel   context.CancelFunc
-	regConfig   ReloadableConfig
-	regInfoBase protocol.WorkerInfo
+	log          *slog.Logger
+	cancel       context.CancelFunc
+	announcer    discovery.Announcer
+	done         chan struct{}
+	regMu        sync.Mutex
+	regCancel    context.CancelFunc
+	regConfig    ReloadableConfig
+	regInfoBase  protocol.WorkerInfo
 	regDevMode   bool
 	regModelPath string
 	regCaps      protocol.Capabilities
-	srv         *Server
+	srv          *Server
 	// mTLS registration parameters, captured at startup and replayed by
 	// ReloadConfig when the worker registered over mTLS. ReloadConfig must
 	// re-launch RegisterLoopWithRefreshMTLS with these stored values because
