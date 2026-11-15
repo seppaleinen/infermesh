@@ -1234,7 +1234,7 @@ func TestDevModeHonestAdvertisement(t *testing.T) {
 		srv := NewServer(log, "127.0.0.1:0", security.Config{DevMode: true, EnableHealthChecks: false})
 		mock := newMockBackend()
 		mock.SetMockModels([]protocol.ModelInfo{
-			{Name: "hot-model", Backend: "lmstudio", Loaded: false}, // cold on paper
+			{Name: "hot-model", Backend: "lmstudio", Loaded: false},  // cold on paper
 			{Name: "cold-model", Backend: "lmstudio", Loaded: false}, // never served
 		})
 		srv.SetBackend(mock, "")

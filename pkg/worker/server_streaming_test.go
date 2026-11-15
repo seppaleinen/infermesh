@@ -351,9 +351,9 @@ func (d *delayedStreamBackend) ListModels() ([]protocol.ModelInfo, error) {
 	defer d.mu.Unlock()
 	return []protocol.ModelInfo{{Name: "test-model", Backend: "mock", Loaded: true}}, nil
 }
-func (d *delayedStreamBackend) GetMetrics() (Metrics, error) { return Metrics{}, nil }
-func (d *delayedStreamBackend) IsHealthy() bool              { return true }
-func (d *delayedStreamBackend) HealthCheck() error           { return nil }
+func (d *delayedStreamBackend) GetMetrics() (Metrics, error)  { return Metrics{}, nil }
+func (d *delayedStreamBackend) IsHealthy() bool               { return true }
+func (d *delayedStreamBackend) HealthCheck() error            { return nil }
 func (d *delayedStreamBackend) GetCircuitState() CircuitState { return CircuitClosed }
 func (d *delayedStreamBackend) CompleteChat(ctx context.Context, model string, req protocol.ChatRequest) (protocol.ChatResponse, error) {
 	return protocol.ChatResponse{}, errors.New("not implemented")

@@ -177,13 +177,13 @@ func TestBuildCandidatesAutoLoadPreserved(t *testing.T) {
 func TestDispatchUnloadedRelayModeFailsFast(t *testing.T) {
 	// Worker advertising model with Loaded=false (relay mode)
 	worker := protocol.WorkerInfo{
-		ID:       "relay-unloaded",
-		Hostname: "relay-host",
-		IP:       "127.0.0.1",
-		Port:     8081,
-		Status:   protocol.StatusAvailable,
-		Version:  "v1",
-		LastSeen: time.Now(),
+		ID:        "relay-unloaded",
+		Hostname:  "relay-host",
+		IP:        "127.0.0.1",
+		Port:      8081,
+		Status:    protocol.StatusAvailable,
+		Version:   "v1",
+		LastSeen:  time.Now(),
 		Transport: protocol.TransportWS, // relay mode
 		Capabilities: protocol.Capabilities{
 			Models: []protocol.ModelInfo{
