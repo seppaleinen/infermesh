@@ -47,7 +47,8 @@ type RouterFlags struct {
 	ModelLoadTimeout time.Duration
 
 	// Relay call timeout: hard cap on in-flight relay call duration.
-	// Default 300s (5 minutes). 0 means no timeout (uses hub default 60s).
+	// Default 300s (5 minutes). 0 means "not set" and the hub default
+	// of 60s is used (there is no code path that disables the cap).
 	RelayCallTimeout time.Duration
 
 	// Weighted scorer settings. Zero values keep the built-in defaults (no-op).
