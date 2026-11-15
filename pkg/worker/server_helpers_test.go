@@ -29,6 +29,12 @@ type mockBackend struct {
 	// mock blocks on the chunk send until the handler reads it.
 	streamError             error
 	streamErrorBeforeChunks bool
+
+	// usage is the *protocol.Usage returned by CompleteChat/CompleteCompletions
+	// when set. It lets handler tests assert that reasoning-token details
+	// survive the worker's unmarshal→marshal round-trip (issue #204
+	// follow-up). Nil means "use the default mock usage".
+	usage *protocol.Usage
 }
 
 func newMockBackend() *mockBackend {
@@ -84,7 +90,34 @@ func (m *mockBackend) SetThreads(threads int) {
 	defer m.mu.Unlock()
 	m.threads = threads
 }
+
+// SetUsage replaces the *protocol.Usage the mock returns from
+// CompleteChat/CompleteCompletions. Nil restores the default. Used by
+// handler tests that assert reasoning-token details survive the worker
+// round-trip.
+func (m *mockBackend) SetUsage(u *protocol.Usage) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.usage = u
+}
 func (m *mockBackend) CompleteChat(ctx context.Context, model string, req protocol.ChatRequest) (protocol.ChatResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.usage != nil {
+		return protocol.ChatResponse{
+			ID:      "chatcmpl-test",
+			Object:  "chat.completion",
+			Created: time.Now().Unix(),
+			Choices: []protocol.Choice{
+				{
+					Index:        0,
+					Message:      protocol.ChatMessage{Role: "assistant", Content: "Mock response"},
+					FinishReason: "stop",
+				},
+			},
+			Usage: m.usage,
+		}, nil
+	}
 	return protocol.ChatResponse{
 		ID:      "chatcmpl-test",
 		Object:  "chat.completion",
@@ -99,6 +132,23 @@ func (m *mockBackend) CompleteChat(ctx context.Context, model string, req protoc
 	}, nil
 }
 func (m *mockBackend) CompleteCompletions(ctx context.Context, model string, req protocol.CompletionRequest) (protocol.CompletionResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.usage != nil {
+		return protocol.CompletionResponse{
+			ID:      "cmpl-test",
+			Object:  "text_completion",
+			Created: time.Now().Unix(),
+			Choices: []protocol.Choice{
+				{
+					Index:        0,
+					Text:         "Mock completion",
+					FinishReason: "stop",
+				},
+			},
+			Usage: m.usage,
+		}, nil
+	}
 	return protocol.CompletionResponse{
 		ID:      "cmpl-test",
 		Object:  "text_completion",

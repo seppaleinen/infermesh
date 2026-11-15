@@ -280,6 +280,79 @@ func TestStreamChatPreservesReasoningContent(t *testing.T) {
 	}
 }
 
+// TestCompleteChatPreservesReasoningTokens verifies that a non-streaming
+// backend response carrying usage.completion_tokens_details.reasoning_tokens
+// survives the worker's unmarshal→marshal round-trip (backend JSON →
+// protocol.ChatResponse → client JSON). Reasoning models (LM Studio
+// gpt-oss-20b, DeepSeek-R1-style backends) report reasoning tokens here;
+// without TokenDetails fields the worker's json.Unmarshal discards them and
+// the client cannot see reasoning-token cost (issue #204 follow-up).
+func TestCompleteChatPreservesReasoningTokens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(mustMarshal(map[string]any{
+			"id":      "chatcmpl-test",
+			"object":  "chat.completion",
+			"created": time.Now().Unix(),
+			"model":   "reason-model",
+			"choices": []map[string]any{{
+				"index": 0,
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": "ok",
+				},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{
+				"prompt_tokens":             10,
+				"completion_tokens":         5,
+				"total_tokens":              15,
+				"prompt_tokens_details":     map[string]any{"cached_tokens": 4},
+				"completion_tokens_details": map[string]any{"reasoning_tokens": 3},
+			},
+		})))
+	}))
+	defer server.Close()
+
+	backend := NewOpenAICompatibleBackend(server.URL, "", 30*time.Second, 0)
+	req := protocol.ChatRequest{
+		Model:     "reason-model",
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: "hi"}},
+		MaxTokens: 100,
+	}
+	resp, err := backend.CompleteChat(context.Background(), "reason-model", req)
+	if err != nil {
+		t.Fatalf("CompleteChat failed: %v", err)
+	}
+	if resp.Usage == nil {
+		t.Fatal("usage is nil")
+	}
+	if resp.Usage.CompletionTokensDetails == nil || resp.Usage.CompletionTokensDetails.ReasoningTokens != 3 {
+		t.Errorf("completion_tokens_details.reasoning_tokens lost: %+v", resp.Usage.CompletionTokensDetails)
+	}
+	if resp.Usage.PromptTokensDetails == nil || resp.Usage.PromptTokensDetails.CachedTokens != 4 {
+		t.Errorf("prompt_tokens_details.cached_tokens lost: %+v", resp.Usage.PromptTokensDetails)
+	}
+
+	// Re-marshal exactly as the worker's dispatchNonStreaming does, to prove
+	// the details survive to the client wire payload.
+	out, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var check map[string]any
+	if err := json.Unmarshal(out, &check); err != nil {
+		t.Fatalf("re-unmarshal: %v", err)
+	}
+	usage := check["usage"].(map[string]any)
+	if d, ok := usage["completion_tokens_details"].(map[string]any); !ok || d["reasoning_tokens"] != float64(3) {
+		t.Errorf("round-trip lost completion_tokens_details: %v", usage["completion_tokens_details"])
+	}
+	if d, ok := usage["prompt_tokens_details"].(map[string]any); !ok || d["cached_tokens"] != float64(4) {
+		t.Errorf("round-trip lost prompt_tokens_details: %v", usage["prompt_tokens_details"])
+	}
+}
+
 func mustMarshal(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {

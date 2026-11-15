@@ -450,3 +450,133 @@ func TestChatCompletionsHandler_StreamingChunkFormat(t *testing.T) {
 		t.Errorf("expected at least one chunk frame, got: %s", respBody)
 	}
 }
+
+// TestChatCompletionsHandler_NonStreamingReasoningUsage verifies that a
+// non-streaming backend response carrying usage.completion_tokens_details
+// and prompt_tokens_details survives the worker's HTTP handler
+// unmarshal→marshal round-trip and reaches the client. Reasoning models
+// (LM Studio gpt-oss-20b, DeepSeek-R1-style backends) report reasoning tokens
+// here; without TokenDetails fields the worker's json.Unmarshal discards them
+// and the client cannot see reasoning-token cost (issue #204 follow-up).
+func TestChatCompletionsHandler_NonStreamingReasoningUsage(t *testing.T) {
+	server := NewServer(testLogger(), "", security.Config{DevMode: true})
+
+	reasoning := 3
+	cached := 4
+	server.SetBackend(func() *mockBackend {
+		m := newMockBackend()
+		m.SetUsage(&protocol.Usage{
+			PromptTokens:            10,
+			CompletionTokens:        5,
+			TotalTokens:             15,
+			PromptTokensDetails:     &protocol.TokenDetails{CachedTokens: cached},
+			CompletionTokensDetails: &protocol.TokenDetails{ReasoningTokens: reasoning},
+		})
+		return m
+	}(), "gpt-4")
+
+	chatReq := protocol.ChatRequest{
+		Model:    "gpt-4",
+		Messages: []protocol.ChatMessage{{Role: "user", Content: "Hello"}},
+		Stream:   false,
+	}
+	body, err := json.Marshal(chatReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.chatCompletions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	var chatResp protocol.ChatResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &chatResp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if chatResp.Usage == nil {
+		t.Fatal("usage is nil")
+	}
+	if chatResp.Usage.CompletionTokensDetails == nil || chatResp.Usage.CompletionTokensDetails.ReasoningTokens != reasoning {
+		t.Errorf("completion_tokens_details.reasoning_tokens lost: %+v", chatResp.Usage.CompletionTokensDetails)
+	}
+	if chatResp.Usage.PromptTokensDetails == nil || chatResp.Usage.PromptTokensDetails.CachedTokens != cached {
+		t.Errorf("prompt_tokens_details.cached_tokens lost: %+v", chatResp.Usage.PromptTokensDetails)
+	}
+
+	// Re-marshal the handler's wire payload to prove the details survive to
+	// the client (the router re-marshals this exact body).
+	out, err := json.Marshal(chatResp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var check map[string]any
+	if err := json.Unmarshal(out, &check); err != nil {
+		t.Fatalf("re-unmarshal: %v", err)
+	}
+	usage := check["usage"].(map[string]any)
+	if d, ok := usage["completion_tokens_details"].(map[string]any); !ok || d["reasoning_tokens"] != float64(reasoning) {
+		t.Errorf("round-trip lost completion_tokens_details: %v", usage["completion_tokens_details"])
+	}
+	if d, ok := usage["prompt_tokens_details"].(map[string]any); !ok || d["cached_tokens"] != float64(cached) {
+		t.Errorf("round-trip lost prompt_tokens_details: %v", usage["prompt_tokens_details"])
+	}
+}
+
+// TestCompletionsHandler_NonStreamingReasoningUsage mirrors the chat handler
+// test for the /v1/completions endpoint.
+func TestCompletionsHandler_NonStreamingReasoningUsage(t *testing.T) {
+	server := NewServer(testLogger(), "", security.Config{DevMode: true})
+
+	reasoning := 7
+	cached := 2
+	server.SetBackend(func() *mockBackend {
+		m := newMockBackend()
+		m.SetUsage(&protocol.Usage{
+			PromptTokens:            8,
+			CompletionTokens:        6,
+			TotalTokens:             14,
+			PromptTokensDetails:     &protocol.TokenDetails{CachedTokens: cached},
+			CompletionTokensDetails: &protocol.TokenDetails{ReasoningTokens: reasoning},
+		})
+		return m
+	}(), "gpt-4")
+
+	completionReq := protocol.CompletionRequest{
+		Model:     "gpt-4",
+		Prompt:    "Hello",
+		MaxTokens: 100,
+		Stream:    false,
+	}
+	body, err := json.Marshal(completionReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("POST", "/v1/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.completions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	var compResp protocol.CompletionResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &compResp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if compResp.Usage == nil {
+		t.Fatal("usage is nil")
+	}
+	if compResp.Usage.CompletionTokensDetails == nil || compResp.Usage.CompletionTokensDetails.ReasoningTokens != reasoning {
+		t.Errorf("completion_tokens_details.reasoning_tokens lost: %+v", compResp.Usage.CompletionTokensDetails)
+	}
+	if compResp.Usage.PromptTokensDetails == nil || compResp.Usage.PromptTokensDetails.CachedTokens != cached {
+		t.Errorf("prompt_tokens_details.cached_tokens lost: %+v", compResp.Usage.PromptTokensDetails)
+	}
+}

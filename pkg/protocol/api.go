@@ -107,11 +107,28 @@ type CompletionResponse struct {
 	Usage   *Usage   `json:"usage,omitempty"`
 }
 
+// TokenDetails carries a breakdown of tokens by sub-category within a usage
+// block. OpenAI-compatible backends emit these under "completion_tokens_details"
+// (e.g. reasoning_tokens) and "prompt_tokens_details" (e.g. cached_tokens).
+//
+// Both fields are nil when the backend omits them, so non-reasoning responses
+// stay wire-compatible: the zero-value Usage marshals without the details key
+// entirely. Reasoning models (LM Studio gpt-oss-20b, DeepSeek-R1-style
+// backends) report reasoning_tokens here; without these fields the worker's
+// unmarshal→marshal round-trip silently drops them and clients cannot see
+// reasoning-token cost (issue #204 follow-up).
+type TokenDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	CachedTokens    int `json:"cached_tokens,omitempty"`
+}
+
 // Usage represents token usage statistics.
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens            int           `json:"prompt_tokens"`
+	CompletionTokens        int           `json:"completion_tokens"`
+	TotalTokens             int           `json:"total_tokens"`
+	PromptTokensDetails     *TokenDetails `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *TokenDetails `json:"completion_tokens_details,omitempty"`
 }
 
 // InferenceRequest is implemented by every wire-protocol request type the
