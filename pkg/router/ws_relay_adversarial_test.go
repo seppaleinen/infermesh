@@ -37,10 +37,10 @@ import (
 //     fast-fails at supersede time. Pinned by
 //     TestPendingCallOrphanedOnSupersede_FailsViaCallerCtx.
 //
-//  2. maxRelayCallTimeout is a CONST (60s), not injectable. The 60s cap
-//     boundary cannot be unit-tested without waiting real time; the scaled
-//     analogs below use the caller-ctx deadline, which exercises the same
-//     cap-ownership machinery (callCtx is derived from the caller ctx).
+//  2. maxRelayCallTimeout is now a var (injectable via WSHub.SetRelayCallTimeout)
+//     instead of a CONST (60s). Tests can inject short caps and verify the
+//     timeout fires. Prior to this change, the injectable test used caller-ctx
+//     deadlines as a scaled analog.
 //
 //  3. relaySendCh is read lock-free in ws_conn.go (send/enqueue relay
 //     branches) relying on the write-once invariant. A future reassignment

@@ -525,7 +525,7 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 	srv.SetInferenceWindow(cfg.InferenceWindow)
 
 	// Configure streaming grace period (default 30s; 0 = no grace).
-	if cfg.StreamGrace > 0 {
+	if cfg.StreamGrace >= 0 {
 		streamingGracePeriod = cfg.StreamGrace
 	}
 

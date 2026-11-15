@@ -326,10 +326,6 @@ func dispatchChat(ctx context.Context, id string, p protocol.InferenceRequestPay
 			func(c context.Context) (<-chan protocol.ChatChunk, <-chan error) {
 				return backend.StreamChat(c, req.Model, req)
 			},
-			func(c context.Context) (interface{}, error) {
-				resp, err := backend.CompleteChat(c, req.Model, req)
-				return resp, err
-			},
 			out)
 		return
 	}
@@ -356,10 +352,6 @@ func dispatchCompletion(ctx context.Context, id string, p protocol.InferenceRequ
 		streamOrFallback(ctx, id, "completion",
 			func(c context.Context) (<-chan protocol.CompletionChunk, <-chan error) {
 				return backend.StreamCompletions(c, req.Model, req)
-			},
-			func(c context.Context) (interface{}, error) {
-				resp, err := backend.CompleteCompletions(c, req.Model, req)
-				return resp, err
 			},
 			out)
 		return
@@ -392,7 +384,6 @@ func dispatchCompletion(ctx context.Context, id string, p protocol.InferenceRequ
 // streamingGracePeriod, we log a debug message but continue waiting.
 func streamOrFallback[T any](ctx context.Context, id, kind string,
 	stream func(context.Context) (<-chan T, <-chan error),
-	complete func(context.Context) (interface{}, error),
 	out *wsOutbound) {
 
 	chunkCh, errCh := stream(ctx)
