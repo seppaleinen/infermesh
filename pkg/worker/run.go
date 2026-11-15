@@ -189,8 +189,9 @@ type Handle struct {
 	regCancel   context.CancelFunc
 	regConfig   ReloadableConfig
 	regInfoBase protocol.WorkerInfo
-	regDevMode  bool
-	regCaps     protocol.Capabilities
+	regDevMode   bool
+	regModelPath string
+	regCaps      protocol.Capabilities
 	srv         *Server
 	// mTLS registration parameters, captured at startup and replayed by
 	// ReloadConfig when the worker registered over mTLS. ReloadConfig must
@@ -321,8 +322,11 @@ func (h *Handle) buildRegistrationInfo(regConfig ReloadableConfig) protocol.Work
 	info := h.regInfoBase
 	info.Capabilities = h.regCaps
 	models := h.srv.GetModels()
-	// No dev-mode Loaded inflation: advertise Loaded exactly as the backend reports it.
-	// The optional heuristic below marks models with recent successful inference as Loaded=true.
+	// The manually declared model (--model-path) is already marked Loaded in
+	// s.models at startup (see RunWorker), so no per-heartbeat correction is
+	// needed here. No dev-mode Loaded inflation for backend-advertised models:
+	// Loaded exactly as the backend reports it. The optional heuristic below
+	// marks models with recent successful inference as Loaded=true.
 	if h.regDevMode && h.srv != nil {
 		tracker := h.srv.GetInferenceTracker()
 		if tracker != nil {
@@ -544,21 +548,10 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 			// Auto-discovery failed. For backends that auto-discover models from
 			// the runtime (ollama, lmstudio, vllm), starting the worker without a
 			// model-path is OK — the next capability refresh cycle will retry
-			// discovery. If a model-path is provided, fall back to manual model
-			// registration. Otherwise, start the worker with no models; they will
-			// be discovered on the next refresh cycle.
-			if cfg.ModelPath != "" {
-				// Fall back to manual model registration if model path provided
-				srv.SetModels([]protocol.ModelInfo{
-					{
-						Name:    filepath.Base(cfg.ModelPath),
-						Backend: cfg.Backend,
-						Loaded:  cfg.DevMode,
-					},
-				})
-				log.Info("registered model from model-path",
-					"model", filepath.Base(cfg.ModelPath))
-			} else {
+			// discovery. If a model-path is provided, the manual-registration
+			// block below handles it. Otherwise, start the worker with no
+			// models; they will be discovered on the next refresh cycle.
+			if cfg.ModelPath == "" {
 				// Auto-discovery failed but ModelPath is empty; start the worker
 				// anyway. Models will be discovered on the next capability refresh
 				// cycle (aggregator Detect() re-reads model config, or restart the
@@ -567,6 +560,38 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 					"start the backend (LM Studio, Ollama, vLLM) and restart the " +
 					"worker, or use --model-path to manually specify a model")
 			}
+		}
+
+		// Manually declared models (--model-path) are loaded by the backend
+		// process by definition. The backend's /v1/models catalogue may omit or
+		// report Loaded=false for them (e.g. the mock backend auto-discovers
+		// model.bin without a `loaded` field), so ensure the declared model is
+		// present and marked Loaded regardless of whether auto-discovery
+		// succeeded. This is the source of truth for dev-mode "loaded" state and
+		// feeds both the /capabilities payload (router capability cache) and the
+		// registration heartbeat. See
+		// docs/plans/issue-stuck-cold-load-timeout-plan.md Phase 1.
+		if cfg.ModelPath != "" {
+			base := filepath.Base(cfg.ModelPath)
+			existing := srv.GetModels()
+			found := false
+			for i := range existing {
+				if existing[i].Name == base {
+					existing[i].Loaded = cfg.DevMode
+					found = true
+					break
+				}
+			}
+			if !found {
+				existing = append(existing, protocol.ModelInfo{
+					Name:    base,
+					Backend: cfg.Backend,
+					Loaded:  cfg.DevMode,
+				})
+			}
+			srv.SetModels(existing)
+			log.Info("ensured manually declared model is registered",
+				"model", base, "loaded", cfg.DevMode)
 		}
 
 		// Start the health check loop
@@ -616,6 +641,7 @@ func RunWorker(ctx context.Context, cfg RunConfig) (*Handle, error) {
 	h.srv = srv
 	h.regInfoBase = info
 	h.regDevMode = cfg.DevMode
+	h.regModelPath = cfg.ModelPath
 	h.regCaps = caps
 	// mTLS registration parameters are static (SIGHUP cannot change certs,
 	// out of scope for issue #188) but must be replayed by ReloadConfig,
