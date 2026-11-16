@@ -186,12 +186,31 @@ func parseSSEStream[TChunk any](
 }
 
 func buildChatRequest(req protocol.ChatRequest, model string, maxTokens int) map[string]interface{} {
-	return map[string]interface{}{
+	backendReq := map[string]interface{}{
 		"model":       model,
 		"messages":    req.Messages,
 		"stream":      true,
 		"max_tokens":  maxTokens,
 		"temperature": req.Temperature,
+	}
+	applyToolRequest(backendReq, req)
+	return backendReq
+}
+
+// applyToolRequest forwards the OpenAI tool-calling request fields onto the
+// backend map when present. It is a no-op when the client sent no tools, so
+// plain-chat requests stay byte-identical (no "tools":null key). tool_choice
+// is forwarded as any so both the string form ("auto"/"none"/"required") and
+// the object form ({type:"function",function:{name}}) round-trip unchanged.
+func applyToolRequest(backendReq map[string]interface{}, req protocol.ChatRequest) {
+	if len(req.Tools) > 0 {
+		backendReq["tools"] = req.Tools
+	}
+	if req.ToolChoice != nil {
+		backendReq["tool_choice"] = req.ToolChoice
+	}
+	if req.ParallelToolCalls != nil {
+		backendReq["parallel_tool_calls"] = req.ParallelToolCalls
 	}
 }
 

@@ -3,12 +3,14 @@ package worker
 import (
 	"context"
 	"encoding/json"
-	"github.com/seppaleinen/infermesh/pkg/protocol"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/seppaleinen/infermesh/pkg/protocol"
 )
 
 // TestOpenAICompatibleBackendStreamChatIdleTimeoutSlowActive verifies the core
@@ -350,6 +352,291 @@ func TestCompleteChatPreservesReasoningTokens(t *testing.T) {
 	}
 	if d, ok := usage["prompt_tokens_details"].(map[string]any); !ok || d["cached_tokens"] != float64(4) {
 		t.Errorf("round-trip lost prompt_tokens_details: %v", usage["prompt_tokens_details"])
+	}
+}
+
+// TestCompleteChatForwardsToolsToBackend verifies the request side of
+// tool-call pass-through: a client request with tools/tool_choice/
+// parallel_tool_calls must reach the backend as real JSON keys, not be
+// silently dropped by the worker's request-builder map. Without this the
+// backend never sees the tool definitions and emits tool invocations as
+// literal text inside content.
+func TestCompleteChatForwardsToolsToBackend(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &gotBody); err != nil {
+			t.Errorf("backend request is not valid JSON: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","created":1,"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	backend := NewOpenAICompatibleBackend(server.URL, "", 30*time.Second, 0)
+	parallel := true
+	req := protocol.ChatRequest{
+		Model:     "test-model",
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: "What is the weather in Oslo?"}},
+		MaxTokens: 100,
+		Tools: []protocol.Tool{{
+			Type: "function",
+			Function: protocol.FunctionSpec{
+				Name:        "get_weather",
+				Description: "Get the current weather",
+				Parameters:  map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}},
+			},
+		}},
+		ToolChoice:        "auto",
+		ParallelToolCalls: &parallel,
+	}
+	if _, err := backend.CompleteChat(context.Background(), "test-model", req); err != nil {
+		t.Fatalf("CompleteChat failed: %v", err)
+	}
+
+	tools, ok := gotBody["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools not forwarded to backend: %v", gotBody["tools"])
+	}
+	fn := tools[0].(map[string]any)["function"].(map[string]any)
+	if fn["name"] != "get_weather" {
+		t.Errorf("tool function.name lost in backend request: %v", fn)
+	}
+	if params, ok := fn["parameters"].(map[string]any); !ok || params["type"] != "object" {
+		t.Errorf("tool parameters lost in backend request: %v", fn["parameters"])
+	}
+	if gotBody["tool_choice"] != "auto" {
+		t.Errorf("tool_choice not forwarded to backend: %v", gotBody["tool_choice"])
+	}
+	if gotBody["parallel_tool_calls"] != true {
+		t.Errorf("parallel_tool_calls not forwarded to backend: %v", gotBody["parallel_tool_calls"])
+	}
+}
+
+// TestCompleteChatPlainRequestHasNoToolsKey verifies the wire-compat half of
+// tool-call pass-through: a plain-chat request must not acquire a
+// "tools" key in the backend request (no null values, byte-compatible
+// behavior for non-tool clients).
+func TestCompleteChatPlainRequestHasNoToolsKey(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &gotBody); err != nil {
+			t.Errorf("backend request is not valid JSON: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","created":1,"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	backend := NewOpenAICompatibleBackend(server.URL, "", 30*time.Second, 0)
+	req := protocol.ChatRequest{
+		Model:     "test-model",
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: "hi"}},
+		MaxTokens: 100,
+	}
+	if _, err := backend.CompleteChat(context.Background(), "test-model", req); err != nil {
+		t.Fatalf("CompleteChat failed: %v", err)
+	}
+	for _, key := range []string{"tools", "tool_choice", "parallel_tool_calls"} {
+		if _, ok := gotBody[key]; ok {
+			t.Errorf("plain-chat backend request must not carry %q, got: %v", key, gotBody)
+		}
+	}
+}
+
+// TestCompleteChatPreservesToolCalls verifies that a non-streaming backend
+// response carrying structured tool_calls survives the worker's
+// unmarshal→marshal round-trip (backend JSON → protocol.ChatResponse →
+// client JSON). Without ToolCalls on ChatMessage the worker's
+// json.Unmarshal discards the calls and the client only sees the (empty)
+// content.
+func TestCompleteChatPreservesToolCalls(t *testing.T) {
+	const args = `{"city":"Oslo"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(mustMarshal(map[string]any{
+			"id":      "chatcmpl-test",
+			"object":  "chat.completion",
+			"created": time.Now().Unix(),
+			"choices": []map[string]any{{
+				"index": 0,
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": "",
+					"tool_calls": []map[string]any{{
+						"id":   "call_abc123",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "get_weather",
+							"arguments": args,
+						},
+					}},
+				},
+				"finish_reason": "tool_calls",
+			}},
+		})))
+	}))
+	defer server.Close()
+
+	backend := NewOpenAICompatibleBackend(server.URL, "", 30*time.Second, 0)
+	req := protocol.ChatRequest{
+		Model:     "test-model",
+		Messages:  []protocol.ChatMessage{{Role: "user", Content: "What is the weather in Oslo?"}},
+		MaxTokens: 100,
+	}
+	resp, err := backend.CompleteChat(context.Background(), "test-model", req)
+	if err != nil {
+		t.Fatalf("CompleteChat failed: %v", err)
+	}
+	if len(resp.Choices) != 1 {
+		t.Fatalf("expected 1 choice, got %d", len(resp.Choices))
+	}
+	msg := resp.Choices[0].Message
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("tool_calls lost in round-trip: %+v", msg.ToolCalls)
+	}
+	tc := msg.ToolCalls[0]
+	if tc.ID != "call_abc123" || tc.Function.Name != "get_weather" || tc.Function.Arguments != args {
+		t.Errorf("tool_call fields lost: %+v", tc)
+	}
+	if resp.Choices[0].FinishReason != "tool_calls" {
+		t.Errorf("finish_reason: want %q, got %q", "tool_calls", resp.Choices[0].FinishReason)
+	}
+
+	// Re-marshal exactly as dispatchNonStreaming does, to prove the calls
+	// survive to the client wire payload.
+	out, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var check map[string]any
+	if err := json.Unmarshal(out, &check); err != nil {
+		t.Fatalf("re-unmarshal: %v", err)
+	}
+	toolCalls := check["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)["tool_calls"].([]any)
+	fn := toolCalls[0].(map[string]any)["function"].(map[string]any)
+	if fn["arguments"] != args {
+		t.Errorf("round-trip lost tool_call arguments: %v", fn)
+	}
+}
+
+// TestStreamChatPreservesToolCalls verifies that a streaming backend that
+// emits a tool_calls delta sequence (first chunk id+name, subsequent chunks
+// arguments fragments, final chunk finish_reason:"tool_calls") survives the
+// worker's unmarshal→marshal round-trip per SSE frame. It also asserts the
+// stream request itself forwards tools to the backend.
+func TestStreamChatPreservesToolCalls(t *testing.T) {
+	var streamBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &streamBody); err != nil {
+			t.Errorf("stream request is not valid JSON: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		// First chunk opens the tool call (id + name).
+		_, _ = w.Write([]byte("data: " + mustMarshal(map[string]any{
+			"id": "chatcmpl-test", "object": "chat.completion.chunk",
+			"created": time.Now().Unix(), "model": "test-model",
+			"choices": []map[string]any{{"index": 0, "delta": map[string]any{
+				"role": "assistant",
+				"tool_calls": []map[string]any{{
+					"id":       "call_abc123",
+					"type":     "function",
+					"index":    0,
+					"function": map[string]any{"name": "get_weather", "arguments": ""},
+				}},
+			}, "finish_reason": nil}},
+		}) + "\n\n"))
+		flusher.Flush()
+		// Second chunk carries an arguments fragment (no id/name).
+		_, _ = w.Write([]byte("data: " + mustMarshal(map[string]any{
+			"id": "chatcmpl-test", "object": "chat.completion.chunk",
+			"created": time.Now().Unix(), "model": "test-model",
+			"choices": []map[string]any{{"index": 0, "delta": map[string]any{
+				"tool_calls": []map[string]any{{
+					"index":    0,
+					"function": map[string]any{"arguments": "{\"cit"},
+				}},
+			}, "finish_reason": nil}},
+		}) + "\n\n"))
+		flusher.Flush()
+		// Final chunk completes the arguments and sets finish_reason.
+		_, _ = w.Write([]byte("data: " + mustMarshal(map[string]any{
+			"id": "chatcmpl-test", "object": "chat.completion.chunk",
+			"created": time.Now().Unix(), "model": "test-model",
+			"choices": []map[string]any{{"index": 0, "delta": map[string]any{
+				"tool_calls": []map[string]any{{
+					"index":    0,
+					"function": map[string]any{"arguments": "y\":\"Oslo\"}"},
+				}},
+			}, "finish_reason": "tool_calls"}},
+		}) + "\n\n"))
+		flusher.Flush()
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	backend := NewOpenAICompatibleBackend(server.URL, "", 30*time.Second, 0)
+	req := protocol.ChatRequest{
+		Model:    "test-model",
+		Messages: []protocol.ChatMessage{{Role: "user", Content: "What is the weather in Oslo?"}},
+		Tools: []protocol.Tool{{
+			Type: "function",
+			Function: protocol.FunctionSpec{
+				Name:       "get_weather",
+				Parameters: map[string]any{"type": "object"},
+			},
+		}},
+	}
+
+	ch, errCh := backend.StreamChat(context.Background(), "test-model", req)
+	var gotID, gotName string
+	var gotArgs string
+	finishReason := ""
+	for c := range ch {
+		if len(c.Choices) == 0 {
+			continue
+		}
+		choice := c.Choices[0]
+		if choice.FinishReason != "" {
+			finishReason = choice.FinishReason
+		}
+		for _, tc := range choice.Delta.ToolCalls {
+			if tc.ID != "" {
+				gotID = tc.ID
+			}
+			if tc.Function.Name != "" {
+				gotName = tc.Function.Name
+			}
+			gotArgs += tc.Function.Arguments
+		}
+	}
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("unexpected stream error: %v", err)
+		}
+	}
+
+	if gotID != "call_abc123" {
+		t.Errorf("tool_call id lost in stream: got %q", gotID)
+	}
+	if gotName != "get_weather" {
+		t.Errorf("tool_call name lost in stream: got %q", gotName)
+	}
+	if gotArgs != `{"city":"Oslo"}` {
+		t.Errorf("tool_call arguments fragments lost in stream: got %q", gotArgs)
+	}
+	if finishReason != "tool_calls" {
+		t.Errorf("finish_reason: want %q, got %q", "tool_calls", finishReason)
+	}
+
+	// Request-side: the stream request must forward tools to the backend.
+	tools, ok := streamBody["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Errorf("tools not forwarded in stream request: %v", streamBody["tools"])
 	}
 }
 

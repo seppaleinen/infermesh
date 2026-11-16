@@ -188,6 +188,7 @@ func (b *OpenAICompatibleBackend) completeChatInternal(ctx context.Context, mode
 		"max_tokens":  maxTokens,
 		"temperature": req.Temperature,
 	}
+	applyToolRequest(backendReq, req)
 
 	jsonBody, err := json.Marshal(backendReq)
 	if err != nil {

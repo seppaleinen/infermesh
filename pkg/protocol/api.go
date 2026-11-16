@@ -8,6 +8,48 @@
 // single wire-format change propagates without drift.
 package protocol
 
+// FunctionSpec describes a single tool's callable signature, matching the
+// OpenAI "function" tool shape: {type:"function", function:{name,
+// description, parameters}}. Parameters is an arbitrary JSON Schema object.
+type FunctionSpec struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Parameters  any    `json:"parameters,omitempty"`
+}
+
+// Tool wraps a FunctionSpec in the OpenAI "tool" envelope, where Type is
+// almost always "function" (the only value the OpenAI API accepts today).
+// Type is omitempty so a zero-value Tool still marshals as
+// {"type":"function","function":{...}} only when Type is explicitly set;
+// most clients omit it and backends default it to "function".
+type Tool struct {
+	Type     string       `json:"type,omitempty"`
+	Function FunctionSpec `json:"function"`
+}
+
+// FunctionCall carries a tool invocation returned by the model: the tool
+// name and its arguments as a **string-encoded JSON** object (this is the
+// OpenAI wire contract — arguments is never a raw object, always a string).
+type FunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments,omitempty"`
+}
+
+// ToolCall represents a single structured tool invocation in a chat message,
+// matching the OpenAI response shape. In non-streaming responses the full
+// ToolCall appears inside message.tool_calls with id+type+function; in
+// streaming deltas the same shape appears inside choices[i].delta.tool_calls
+// where the first chunk of a call carries id+index+function.name and
+// subsequent chunks carry only index+function.arguments fragments. Index is
+// the position within the delta's tool_calls array and is omitted when zero
+// (the array position IS the index, so it is redundant for the first call).
+type ToolCall struct {
+	ID       string       `json:"id,omitempty"`
+	Type     string       `json:"type,omitempty"`
+	Index    int          `json:"index,omitempty"`
+	Function FunctionCall `json:"function"`
+}
+
 // ChatMessage represents a single message in a chat conversation.
 //
 // Reasoning carries the model's internal chain-of-thought when the backend
@@ -18,19 +60,40 @@ package protocol
 // reasoning-only models (e.g. gpt-oss-20b, which emits reasoning tokens but
 // an empty content delta) arrive at the client as an empty response (issue
 // #204).
+//
+// ToolCalls carries structured tool invocations returned by the backend.
+// ToolCallID + Name identify a tool result message (role:"tool") the client
+// sends back to feed a tool's output into the conversation. All three are
+// omitted when empty so plain-chat messages stay wire-compatible: without
+// these fields the worker's unmarshal→marshal round-trip silently strips
+// tool_calls, and tool-using models (e.g. ornith-1.5-35b via LM Studio)
+// emit their invocations as literal text inside content instead of as
+// structured calls (tool-call pass-through, issue #31 follow-up).
 type ChatMessage struct {
-	Role      string `json:"role"`
-	Content   string `json:"content"`
-	Reasoning string `json:"reasoning_content,omitempty"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	Reasoning  string     `json:"reasoning_content,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Name       string     `json:"name,omitempty"`
 }
 
 // ChatRequest represents a request to the chat completions endpoint.
+//
+// Tools, ToolChoice and ParallelToolCalls carry the OpenAI tool-calling
+// request shape. All three are omitted when absent so plain-chat requests
+// marshal byte-identically (no new null/empty keys). They are forwarded
+// verbatim to the backend by the worker's request builders; the router
+// passes the whole body through, so no router-side handling is needed.
 type ChatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
-	Stream      bool          `json:"stream"`
-	MaxTokens   int           `json:"max_tokens"`
-	Temperature float64       `json:"temperature"`
+	Model             string        `json:"model"`
+	Messages          []ChatMessage `json:"messages"`
+	Stream            bool          `json:"stream"`
+	MaxTokens         int           `json:"max_tokens"`
+	Temperature       float64       `json:"temperature"`
+	Tools             []Tool        `json:"tools,omitempty"`
+	ToolChoice        any           `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool         `json:"parallel_tool_calls,omitempty"`
 }
 
 // CompletionRequest represents a request to the completions endpoint.
