@@ -683,11 +683,14 @@ func (pc *pendingCall) completeCall() {
 // fail terminates the call with err, delivered on errCh.
 func (pc *pendingCall) fail(err error) {
 	pc.closeOnce.Do(func() {
+		// Clean up hub-side state FIRST so tests (and callers) observing
+		// the error can immediately verify the pending map is reaped.
+		// The errCh send is non-blocking (default) to never deadlock.
+		pc.finish()
 		select {
 		case pc.errCh <- err:
 		default:
 		}
-		pc.finish()
 	})
 }
 func (pc *pendingCall) finish() {
