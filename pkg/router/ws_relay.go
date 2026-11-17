@@ -417,8 +417,13 @@ func (h *WSHub) relayReaderLoop(ctx context.Context, done chan struct{}) {
 		if msg.Type == protocol.MsgPing {
 			reply := protocol.Message{ID: msg.ID, Type: protocol.MsgPing}
 			if err := h.enqueueRelay(context.Background(), reply); err != nil {
-				h.log.Debug("relay ping echo failed", "error", err)
-				return
+				// On queue full, drop the echo rather than exiting the reader loop.
+				// The ping is a keepalive; losing one is fine. Only return on
+				// genuine disconnection errors (ctx cancelled, relay disconnected).
+				if !errors.Is(err, errRelayQueueFull) {
+					h.log.Debug("relay ping echo failed", "error", err)
+					return
+				}
 			}
 			continue
 		}

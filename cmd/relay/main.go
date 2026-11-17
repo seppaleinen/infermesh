@@ -22,6 +22,13 @@ import (
 	"golang.org/x/net/websocket"
 )
 
+// flushBatchSize limits how many buffered messages are flushed per batch.
+// This prevents overwhelming the router<->relay link (especially through
+// traefik/TLS) with a burst of 256 frames, which causes immediate EOF.
+// The remaining messages are flushed in subsequent batches by the background
+// flusher (started in handleRouter).
+const flushBatchSize = 50
+
 // --- Flags ---
 
 var (
@@ -49,6 +56,10 @@ type Relay struct {
 	// loop start so tests can configure it at Relay construction time
 	// instead of racing a package-global (issue #203).
 	writeTimeout time.Duration
+
+	// flushCancel is used to cancel the background flush goroutine when
+	// the router disconnects.
+	flushCancel context.CancelFunc
 
 	// routerSendCh is the single outbound queue for the relay's current
 	// router connection. Every goroutine that wants to send to the router —
@@ -313,6 +324,10 @@ func (r *Relay) handleRouter(ws *websocket.Conn) {
 		r.log.Warn("router already connected, closing old connection")
 		_ = old.Close()
 	}
+	// Cancel any previous background flusher before starting a new one.
+	if r.flushCancel != nil {
+		r.flushCancel()
+	}
 	r.routerConn = ws
 	// Publish a fresh outbound queue for this connection, atomically with
 	// the connection. Snapshot callers (sendToRouter, flush, ping) read it
@@ -328,13 +343,24 @@ func (r *Relay) handleRouter(ws *websocket.Conn) {
 	// closed exactly once, after the reader loop returns.
 	done := make(chan struct{})
 
+	// Create a context for the background flusher that is cancelled when
+	// the connection closes.
+	flushCtx, flushCancel := context.WithCancel(context.Background())
+	r.flushCancel = flushCancel
+
 	// Start the single writer goroutine for the router connection BEFORE
 	// flushing buffered messages: the flush enqueues frames onto sendCh,
 	// and only this loop writes them to the socket (issue #196).
 	go r.routerWriterLoop(ws, sendCh, done)
 
-	// Flush buffered messages for all workers when router reconnects
-	r.flushBufferedMessages()
+	// Flush buffered messages for all workers when router reconnects.
+	// This flushes the first batch; remaining messages are flushed by the
+	// background flusher in small batches to avoid overwhelming the
+	// router<->relay link (traefik/TLS path).
+	remaining := r.flushBufferedMessages()
+	if remaining > 0 {
+		r.startBackgroundFlusher(flushCtx)
+	}
 
 	// The relay is otherwise silent between inference requests: the router
 	// only writes to it when dispatching work. Both sides apply a 90s idle
@@ -348,7 +374,9 @@ func (r *Relay) handleRouter(ws *websocket.Conn) {
 	// net/http will close the WebSocket connection immediately).
 	r.routerReadLoop(ws)
 
-	// Connection gone: stop this connection's writer and ping loops.
+	// Connection gone: stop this connection's writer, ping loops, and
+	// background flusher.
+	flushCancel()
 	close(done)
 }
 
@@ -780,24 +808,33 @@ func (r *Relay) relayPingLoop(done chan struct{}) {
 // itself: the channel is created lazily by handleRouter, so without this
 // check a flush would enqueue into an orphaned channel when no router is
 // connected and the buffered register would be silently lost.
-func (r *Relay) flushBufferedMessages() {
+func (r *Relay) flushBufferedMessages() int {
 	r.routerMu.Lock()
 	conn := r.routerConn
 	sendCh := r.routerSendCh
 	r.routerMu.Unlock()
 
 	if conn == nil {
-		return
+		r.mu.Lock()
+		remaining := len(r.workerQueue)
+		r.mu.Unlock()
+		return remaining
 	}
 
 	r.mu.Lock()
 	if len(r.workerQueue) == 0 {
 		r.mu.Unlock()
-		return
+		return 0
 	}
-	workers := make([]protocol.Message, len(r.workerQueue))
-	copy(workers, r.workerQueue)
-	r.workerQueue = r.workerQueue[:0]
+	// Take up to flushBatchSize messages
+	batchSize := flushBatchSize
+	if batchSize > len(r.workerQueue) {
+		batchSize = len(r.workerQueue)
+	}
+	workers := make([]protocol.Message, batchSize)
+	copy(workers, r.workerQueue[:batchSize])
+	r.workerQueue = r.workerQueue[batchSize:]
+	remaining := len(r.workerQueue)
 	r.mu.Unlock()
 
 	flushed := 0
@@ -811,14 +848,37 @@ func (r *Relay) flushBufferedMessages() {
 		case sendCh <- data:
 			flushed++
 		default:
-			// Queue full: keep the rest buffered for the next flush.
+			// Queue full: put the unflushed messages back and stop.
 			r.mu.Lock()
-			r.workerQueue = append(r.workerQueue, workers[flushed:]...)
+			r.workerQueue = append(workers[flushed:], r.workerQueue...)
 			r.mu.Unlock()
-			r.log.Debug("router send queue full during flush; re-buffering", "remaining", len(workers)-flushed)
-			return
+			r.log.Debug("router send queue full during flush; re-buffering", "remaining", len(workers)-flushed+remaining)
+			return len(workers) - flushed + remaining
 		}
 	}
 
-	r.log.Info("flushed buffered messages", "count", flushed)
+	r.log.Info("flushed buffered messages", "count", flushed, "remaining", remaining)
+	return remaining
+}
+
+// startBackgroundFlusher runs a goroutine that continues flushing buffered
+// messages in batches every 100ms until workerQueue is empty or the router
+// disconnects. This prevents a single large burst from overwhelming the
+// router<->relay link (traefik/TLS path).
+func (r *Relay) startBackgroundFlusher(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				remaining := r.flushBufferedMessages()
+				if remaining == 0 {
+					return
+				}
+			}
+		}
+	}()
 }
