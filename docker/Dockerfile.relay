@@ -37,6 +37,7 @@ RUN sed -i '/^replace/d' go.mod || true
 RUN go mod tidy
 
 # Build the relay binary: CGO_ENABLED=0 for a fully static, distroless image
+# Cache-bust: v0.1.74 fix included (router↔relay death-loop batched flush)
 RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /relay ./cmd/relay
 
 # ---------- Relay runtime image ----------
