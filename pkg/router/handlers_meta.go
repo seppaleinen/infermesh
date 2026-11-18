@@ -391,14 +391,18 @@ func (s *Server) handlePopularModels(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Sort by loaded_worker_count desc, then call_count desc, then model
-	// name asc. Loaded models lead; within the loaded tier, more popular
-	// (higher call_count) models rank first; the model-name tiebreak keeps
-	// the order deterministic when counts are equal.
+	// Sort by loaded_worker_count desc, then worker_count desc (common
+	// availability), then call_count desc, then model name asc. Loaded
+	// models lead; within the loaded tier, models on more workers are
+	// preferred; call_count breaks ties within same availability; model-name
+	// tiebreak keeps order deterministic.
 	sort.SliceStable(popularModels, func(i, j int) bool {
 		a, b := popularModels[i], popularModels[j]
 		if a.LoadedWorkerCount != b.LoadedWorkerCount {
 			return a.LoadedWorkerCount > b.LoadedWorkerCount
+		}
+		if a.WorkerCount != b.WorkerCount {
+			return a.WorkerCount > b.WorkerCount
 		}
 		if a.CallCount != b.CallCount {
 			return a.CallCount > b.CallCount

@@ -537,3 +537,152 @@ func TestPopularModelsAliasMerging(t *testing.T) {
 		t.Error("canonical-model appeared in response but should have been replaced by alias-model")
 	}
 }
+
+func TestPopularModelsSortByWorkerCount(t *testing.T) {
+	// Test that when loaded counts are equal, models with more workers (higher worker_count) rank higher.
+	// worker-1: has model-a (loaded), model-b (not loaded)
+	worker1 := protocol.WorkerInfo{
+		ID:       "worker-1",
+		Hostname: "worker-1",
+		IP:       "127.0.0.1",
+		Port:     8081,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "model-a", Quantization: "Q4_K_M", Loaded: true},
+				{Name: "model-b", Quantization: "Q4_K_M", Loaded: false},
+			},
+			VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 20480},
+		},
+	}
+
+	// worker-2: has model-a (loaded), model-c (loaded)
+	worker2 := protocol.WorkerInfo{
+		ID:       "worker-2",
+		Hostname: "worker-2",
+		IP:       "127.0.0.1",
+		Port:     8082,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "model-a", Quantization: "Q4_K_M", Loaded: true},
+				{Name: "model-c", Quantization: "Q4_K_M", Loaded: true},
+			},
+			VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 20480},
+		},
+	}
+
+	// worker-3: has model-b (not loaded), model-c (not loaded)
+	worker3 := protocol.WorkerInfo{
+		ID:       "worker-3",
+		Hostname: "worker-3",
+		IP:       "127.0.0.1",
+		Port:     8083,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "model-b", Quantization: "Q4_K_M", Loaded: false},
+				{Name: "model-c", Quantization: "Q4_K_M", Loaded: false},
+			},
+			VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 20480},
+		},
+	}
+
+	tr := testRegistry(t, []protocol.WorkerInfo{worker1, worker2, worker3})
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+	server := tr.Server()
+
+	server.cache = NewCapabilityCache(tr.reg, testLogger())
+	server.cache.Start(tr.ctx)
+	server.cache.mu.Lock()
+	server.cache.cache[worker1.ID] = worker1
+	server.cache.cache[worker2.ID] = worker2
+	server.cache.cache[worker3.ID] = worker3
+	server.cache.mu.Unlock()
+
+	// Expected order:
+	// model-a: loaded_count=2, worker_count=2 (on workers 1, 2)
+	// model-b: loaded_count=0, worker_count=2 (on workers 1, 3)  <- same worker_count, but lower loaded_count
+	// model-c: loaded_count=1, worker_count=2 (on workers 2, 3)
+	//
+	// Since model-a and model-c have same loaded_count (2 vs 1), model-a leads.
+	// model-b has loaded_count=0, so it ranks after both model-a and model-c.
+	// model-c and model-a both have loaded_count > 0, but model-a has loaded_count=2 vs model-c=1.
+	//
+	// Actually let's reconsider:
+	// model-a: loaded_count=2, worker_count=2
+	// model-c: loaded_count=1, worker_count=2
+	// model-b: loaded_count=0, worker_count=2
+	//
+	// Sort: loaded_count desc → worker_count desc → call_count desc → name asc
+	// model-a (loaded=2, workers=2) comes first
+	// model-c (loaded=1, workers=2) comes second
+	// model-b (loaded=0, workers=2) comes third
+
+	req := httptest.NewRequest(http.MethodGet, "/meta/models/popular", nil)
+	w := httptest.NewRecorder()
+	server.handlePopularModels(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	var resp PopularModelsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify ordering: model-a (loaded_count=2), model-c (loaded_count=1), model-b (loaded_count=0)
+	want := []string{"model-a", "model-c", "model-b"}
+	for i, expected := range want {
+		if i >= len(resp.Models) {
+			t.Fatalf("missing model at position %d, expected %s", i, expected)
+		}
+		if resp.Models[i].Model != expected {
+			t.Errorf("position %d: expected %s, got %s (full: %+v)", i, expected, resp.Models[i].Model, resp.Models)
+		}
+	}
+
+	// Verify counts
+	modelMap := make(map[string]PopularModelInfo)
+	for _, m := range resp.Models {
+		modelMap[m.Model] = m
+	}
+
+	// model-a: on workers 1 and 2, both loaded
+	if m, ok := modelMap["model-a"]; ok {
+		if m.LoadedWorkerCount != 2 {
+			t.Errorf("model-a loaded_worker_count: expected 2, got %d", m.LoadedWorkerCount)
+		}
+		if m.WorkerCount != 2 {
+			t.Errorf("model-a worker_count: expected 2, got %d", m.WorkerCount)
+		}
+	}
+
+	// model-c: on workers 2 and 3, only worker 2 loaded
+	if m, ok := modelMap["model-c"]; ok {
+		if m.LoadedWorkerCount != 1 {
+			t.Errorf("model-c loaded_worker_count: expected 1, got %d", m.LoadedWorkerCount)
+		}
+		if m.WorkerCount != 2 {
+			t.Errorf("model-c worker_count: expected 2, got %d", m.WorkerCount)
+		}
+	}
+
+	// model-b: on workers 1 and 3, neither loaded
+	if m, ok := modelMap["model-b"]; ok {
+		if m.LoadedWorkerCount != 0 {
+			t.Errorf("model-b loaded_worker_count: expected 0, got %d", m.LoadedWorkerCount)
+		}
+		if m.WorkerCount != 2 {
+			t.Errorf("model-b worker_count: expected 2, got %d", m.WorkerCount)
+		}
+	}
+}
