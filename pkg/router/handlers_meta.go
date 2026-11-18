@@ -299,9 +299,29 @@ func (s *Server) handlePopularModels(w http.ResponseWriter, r *http.Request) {
 
 	// Get capabilities from cache
 	s.cache.mu.RLock()
-	defer s.cache.mu.RUnlock()
-
 	counts := s.counter.Snapshot()
+
+	// Build a set of canonical model names that are targets of an active
+	// alias. These models have stats that need to be merged onto the alias
+	// entry so the Popular Models table shows only one row.
+	// modelAliases is protected by its own mutex, so we read it under RLock
+	// before acquiring the cache RLock.
+	var hideCanonical map[string]bool
+	var aliasToCanonical map[string]string
+	s.modelAliasesMu.RLock()
+	if modelAliasesActive(s.modelAliases) {
+		hideCanonical = make(map[string]bool, len(s.modelAliases.Aliases))
+		aliasToCanonical = make(map[string]string, len(s.modelAliases.Aliases))
+		for alias, target := range s.modelAliases.Aliases {
+			if target.Canonical != "" {
+				hideCanonical[target.Canonical] = true
+				aliasToCanonical[alias] = target.Canonical
+			}
+		}
+	}
+	s.modelAliasesMu.RUnlock()
+
+	defer s.cache.mu.RUnlock()
 
 	// Map to accumulate counts per model
 	// Key: model name, Value: struct with counts
@@ -326,6 +346,31 @@ func (s *Server) handlePopularModels(w http.ResponseWriter, r *http.Request) {
 			if m.Loaded {
 				statsMap[m.Name].loadedCount++
 			}
+		}
+	}
+
+	// Merge stats from canonical models onto their aliases, then delete
+	// the canonical entries. This ensures the Popular Models table shows
+	// the user-facing alias name with the canonical's stats (worker count,
+	// call count, loaded count).
+	for alias, canonical := range aliasToCanonical {
+		if stat, ok := statsMap[canonical]; ok {
+			// Ensure alias entry exists in statsMap
+			if aliasStat, exists := statsMap[alias]; exists {
+				aliasStat.workerCount += stat.workerCount
+				aliasStat.loadedCount += stat.loadedCount
+				aliasStat.callCount += stat.callCount
+			} else {
+				// Create alias entry with canonical's stats
+				statsMap[alias] = &modelStats{
+					model:         alias,
+					workerCount:   stat.workerCount,
+					loadedCount:   stat.loadedCount,
+					callCount:     stat.callCount,
+				}
+			}
+			// Delete the canonical entry
+			delete(statsMap, canonical)
 		}
 	}
 

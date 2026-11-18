@@ -436,3 +436,104 @@ func TestPopularModelsLoadedVsAdvertised(t *testing.T) {
 		}
 	}
 }
+
+func TestPopularModelsAliasMerging(t *testing.T) {
+	// worker-1: has "canonical-model" loaded
+	worker1 := protocol.WorkerInfo{
+		ID:       "worker-1",
+		Hostname: "worker-1",
+		IP:       "127.0.0.1",
+		Port:     8081,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "canonical-model", Loaded: true, MaxTokens: 8192},
+			},
+		},
+	}
+
+	// worker-2: has "canonical-model" NOT loaded (cold load scenario)
+	worker2 := protocol.WorkerInfo{
+		ID:       "worker-2",
+		Hostname: "worker-2",
+		IP:       "127.0.0.1",
+		Port:     8082,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "canonical-model", Loaded: false, MaxTokens: 8192},
+			},
+		},
+	}
+
+	tr := testRegistry(t, []protocol.WorkerInfo{worker1, worker2})
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+	server := tr.Server()
+
+	server.cache = NewCapabilityCache(tr.reg, testLogger())
+	server.cache.Start(tr.ctx)
+	server.cache.mu.Lock()
+	server.cache.cache[worker1.ID] = worker1
+	server.cache.cache[worker2.ID] = worker2
+	server.cache.mu.Unlock()
+
+	// Set up alias: "alias-model" -> "canonical-model"
+	server.modelAliasesMu.Lock()
+	server.modelAliases = &ModelAliasConfig{
+		Aliases: map[string]AliasTarget{
+			"alias-model": {Canonical: "canonical-model"},
+		},
+	}
+	server.modelAliasesMu.Unlock()
+
+	// Record some calls to canonical-model
+	server.counter.Record("canonical-model")
+	server.counter.Record("canonical-model")
+
+	req := httptest.NewRequest(http.MethodGet, "/meta/models/popular", nil)
+	w := httptest.NewRecorder()
+	server.handlePopularModels(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+
+	var resp PopularModelsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Build map for assertions
+	modelMap := make(map[string]PopularModelInfo)
+	for _, m := range resp.Models {
+		modelMap[m.Model] = m
+	}
+
+	// "alias-model" should appear with aggregated stats
+	if m, ok := modelMap["alias-model"]; !ok {
+		t.Fatal("alias-model not found in response")
+	} else {
+		// Worker count: 2 workers advertise canonical-model, stats merged onto alias
+		if m.WorkerCount != 2 {
+			t.Errorf("alias-model worker_count: expected 2, got %d", m.WorkerCount)
+		}
+		// Loaded count: 1 worker has it loaded
+		if m.LoadedWorkerCount != 1 {
+			t.Errorf("alias-model loaded_worker_count: expected 1, got %d", m.LoadedWorkerCount)
+		}
+		// Call count: 2 calls recorded
+		if m.CallCount != 2 {
+			t.Errorf("alias-model call_count: expected 2, got %d", m.CallCount)
+		}
+	}
+
+	// "canonical-model" should NOT appear (it's shadowed by alias)
+	if _, ok := modelMap["canonical-model"]; ok {
+		t.Error("canonical-model appeared in response but should have been replaced by alias-model")
+	}
+}
