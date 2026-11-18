@@ -27,13 +27,15 @@ const defaultRouterURL = "http://127.0.0.1:8080"
 // pass-through, and adds a Loaded flag the Vue side uses to distinguish
 // models that are actually in VRAM from models that are merely advertised
 // (e.g. LM Studio, which reports Loaded=false for every model — issue #205).
+// ConcurrencyCap is the per-model concurrency budget (issue #206).
 type ModelView struct {
-	Name         string `json:"name"`
-	Size         int64  `json:"size_bytes"`
-	Quantization string `json:"quantization"`
-	MaxTokens    int    `json:"max_tokens"`
-	Backend      string `json:"backend"`
-	Loaded       bool   `json:"loaded"`
+	Name           string `json:"name"`
+	Size           int64  `json:"size_bytes"`
+	Quantization   string `json:"quantization"`
+	MaxTokens      int    `json:"max_tokens"`
+	Backend        string `json:"backend"`
+	Loaded         bool   `json:"loaded"`
+	ConcurrencyCap int    `json:"concurrency_cap,omitempty"`
 }
 
 // WorkerView is the slim projection the desktop UI renders. It mirrors
@@ -293,12 +295,13 @@ func toWorkerView(w router.WorkerInfo) WorkerView {
 		views = make([]ModelView, 0, len(advertised))
 		for _, m := range advertised {
 			views = append(views, ModelView{
-				Name:         m.Name,
-				Size:         m.Size,
-				Quantization: m.Quantization,
-				MaxTokens:    m.MaxTokens,
-				Backend:      m.Backend,
-				Loaded:       m.Loaded,
+				Name:           m.Name,
+				Size:           m.Size,
+				Quantization:   m.Quantization,
+				MaxTokens:      m.MaxTokens,
+				Backend:        m.Backend,
+				Loaded:         m.Loaded,
+				ConcurrencyCap: m.ConcurrencyCap,
 			})
 		}
 	}

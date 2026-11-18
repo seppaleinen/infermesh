@@ -72,6 +72,7 @@ export interface InflightRequestView {
  * pass-through, and adds a Loaded flag the Vue side uses to distinguish
  * models that are actually in VRAM from models that are merely advertised
  * (e.g. LM Studio, which reports Loaded=false for every model — issue #205).
+ * ConcurrencyCap is the per-model concurrency budget (issue #206).
  */
 export interface ModelView {
     "name": string;
@@ -80,6 +81,7 @@ export interface ModelView {
     "max_tokens": number;
     "backend": string;
     "loaded": boolean;
+    "concurrency_cap"?: number;
 }
 
 /**

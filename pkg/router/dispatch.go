@@ -597,6 +597,14 @@ func (s *Server) toSchedulerWorker(w protocol.WorkerInfo, load WorkerQueueStats,
 			sw.TokensPerSecond = stats.TokensPerSecond
 		}
 	}
+	// Populate per-model concurrency caps from the worker's advertised models.
+	// This enables the scheduler to use per-model caps for in-flight ratio calculation.
+	sw.ModelMaxInFlight = make(map[string]int)
+	for _, m := range w.Capabilities.Models {
+		if m.ConcurrencyCap > 0 {
+			sw.ModelMaxInFlight[m.Name] = m.ConcurrencyCap
+		}
+	}
 	return sw
 }
 

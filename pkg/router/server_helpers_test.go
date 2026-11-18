@@ -451,3 +451,113 @@ func makeCompletionRequest(model string, prompt string, maxTokens int) (*httptes
 	w := httptest.NewRecorder()
 	return w, req
 }
+
+// TestToSchedulerWorkerPopulatesModelMaxInFlight verifies that
+// toSchedulerWorker correctly populates the ModelMaxInFlight map
+// from the worker's advertised models with per-model concurrency caps.
+func TestToSchedulerWorkerPopulatesModelMaxInFlight(t *testing.T) {
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+	srv := tr.Server()
+
+	// Create a worker with multiple models, some with concurrency caps
+	worker := protocol.WorkerInfo{
+		ID:       "test-worker",
+		Hostname: "test-host",
+		IP:       "127.0.0.1",
+		Port:     8081,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "model-12b", Quantization: "Q4", Loaded: true, ConcurrencyCap: 2},
+				{Name: "model-4b", Quantization: "Q4", Loaded: true, ConcurrencyCap: 8},
+				{Name: "model-no-cap", Quantization: "Q4", Loaded: true}, // no cap
+				{Name: "model-zero-cap", Quantization: "Q4", Loaded: true, ConcurrencyCap: 0}, // zero cap
+			},
+			VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 16384},
+			ConcurrencyCap: 4, // worker-wide fallback
+		},
+	}
+
+	load := WorkerQueueStats{WorkerID: worker.ID, InFlight: 2, MaxInFlight: 4}
+	sw := srv.toSchedulerWorker(worker, load, true, "model-12b")
+
+	// Verify ModelMaxInFlight is populated
+	if sw.ModelMaxInFlight == nil {
+		t.Fatal("ModelMaxInFlight is nil")
+	}
+
+	// Check model-12b has cap 2
+	if cap, ok := sw.ModelMaxInFlight["model-12b"]; !ok || cap != 2 {
+		t.Errorf("expected model-12b cap=2, got %d (ok=%v)", cap, ok)
+	}
+
+	// Check model-4b has cap 8
+	if cap, ok := sw.ModelMaxInFlight["model-4b"]; !ok || cap != 8 {
+		t.Errorf("expected model-4b cap=8, got %d (ok=%v)", cap, ok)
+	}
+
+	// Check model-no-cap is NOT in the map (no cap set)
+	if _, ok := sw.ModelMaxInFlight["model-no-cap"]; ok {
+		t.Error("model-no-cap should not be in ModelMaxInFlight (no cap set)")
+	}
+
+	// Check model-zero-cap is NOT in the map (zero cap is treated as unset)
+	if _, ok := sw.ModelMaxInFlight["model-zero-cap"]; ok {
+		t.Error("model-zero-cap should not be in ModelMaxInFlight (zero cap)")
+	}
+
+	// Verify worker-wide MaxInFlight is set from capabilities (or load)
+	// With haveLoad=true and load.MaxInFlight=4, it should use load.MaxInFlight
+	if sw.MaxInFlight != 4 {
+		t.Errorf("expected MaxInFlight=4 from load, got %d", sw.MaxInFlight)
+	}
+
+	// Verify Models are copied
+	if len(sw.Models) != 4 {
+		t.Errorf("expected 4 models copied, got %d", len(sw.Models))
+	}
+}
+
+// TestToSchedulerWorkerWithoutLoad verifies behavior when haveLoad=false.
+func TestToSchedulerWorkerWithoutLoad(t *testing.T) {
+	tr := testRegistry(t, nil)
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+	srv := tr.Server()
+
+	worker := protocol.WorkerInfo{
+		ID:       "test-worker",
+		Hostname: "test-host",
+		IP:       "127.0.0.1",
+		Port:     8081,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "model-a", Quantization: "Q4", Loaded: true, ConcurrencyCap: 3},
+			},
+			ConcurrencyCap: 4,
+			VRAM:           protocol.MemoryInfo{TotalMB: 24576, FreeMB: 16384},
+		},
+	}
+
+	sw := srv.toSchedulerWorker(worker, WorkerQueueStats{}, false, "model-a")
+
+	// ModelMaxInFlight should still be populated from advertised models
+	if sw.ModelMaxInFlight == nil {
+		t.Fatal("ModelMaxInFlight is nil")
+	}
+	if cap, ok := sw.ModelMaxInFlight["model-a"]; !ok || cap != 3 {
+		t.Errorf("expected model-a cap=3, got %d (ok=%v)", cap, ok)
+	}
+
+	// MaxInFlight should come from worker-wide ConcurrencyCap (no load override)
+	if sw.MaxInFlight != 4 {
+		t.Errorf("expected MaxInFlight=4 from worker-wide cap, got %d", sw.MaxInFlight)
+	}
+}

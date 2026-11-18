@@ -279,3 +279,109 @@ func TestWorkersListNoHubKeepsStatus(t *testing.T) {
 		t.Errorf("unavailable worker status = %s, want %s", got, protocol.StatusUnavailable)
 	}
 }
+
+// TestWorkersListAdvertisedModelsConcurrencyCap verifies that the
+// /v1/workers endpoint includes per-model concurrency caps in
+// AdvertisedModels.
+func TestWorkersListAdvertisedModelsConcurrencyCap(t *testing.T) {
+	worker := protocol.WorkerInfo{
+		ID:       "cap-worker",
+		Hostname: "cap-host",
+		IP:       "127.0.0.1",
+		Port:     8081,
+		Status:   protocol.StatusAvailable,
+		Version:  "v1",
+		LastSeen: time.Now(),
+		Capabilities: protocol.Capabilities{
+			Models: []protocol.ModelInfo{
+				{Name: "model-12b", Quantization: "Q4", Loaded: true, ConcurrencyCap: 2},
+				{Name: "model-4b", Quantization: "Q4", Loaded: true, ConcurrencyCap: 8},
+				{Name: "model-no-cap", Quantization: "Q4", Loaded: true}, // no cap
+				{Name: "model-zero-cap", Quantization: "Q4", Loaded: true, ConcurrencyCap: 0}, // zero cap
+				{Name: "model-unloaded", Quantization: "Q4", Loaded: false, ConcurrencyCap: 4}, // unloaded
+			},
+			VRAM:           protocol.MemoryInfo{TotalMB: 24576, FreeMB: 16384},
+			ConcurrencyCap: 4,
+		},
+	}
+
+	tr, srv := busyTestServer(t, []protocol.WorkerInfo{worker})
+	defer tr.cancel()
+	defer func() { _ = tr.reg.Stop() }()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/workers", nil)
+	w := httptest.NewRecorder()
+	srv.handleWorkersList(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+	var resp WorkersResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(resp.Workers) != 1 {
+		t.Fatalf("expected 1 worker, got %d", len(resp.Workers))
+	}
+
+	rw := resp.Workers[0]
+
+	// Check AdvertisedModels is populated
+	if rw.AdvertisedModels == nil {
+		t.Fatal("AdvertisedModels is nil")
+	}
+	if len(rw.AdvertisedModels) != 5 {
+		t.Errorf("expected 5 advertised models, got %d", len(rw.AdvertisedModels))
+	}
+
+	// Map by name for easy lookup
+	adByName := make(map[string]protocol.ModelInfo, len(rw.AdvertisedModels))
+	for _, m := range rw.AdvertisedModels {
+		adByName[m.Name] = m
+	}
+
+	// Check model-12b has cap 2
+	if m, ok := adByName["model-12b"]; !ok {
+		t.Error("model-12b missing from AdvertisedModels")
+	} else if m.ConcurrencyCap != 2 {
+		t.Errorf("model-12b: expected ConcurrencyCap=2, got %d", m.ConcurrencyCap)
+	} else if !m.Loaded {
+		t.Error("model-12b should be loaded")
+	}
+
+	// Check model-4b has cap 8
+	if m, ok := adByName["model-4b"]; !ok {
+		t.Error("model-4b missing from AdvertisedModels")
+	} else if m.ConcurrencyCap != 8 {
+		t.Errorf("model-4b: expected ConcurrencyCap=8, got %d", m.ConcurrencyCap)
+	}
+
+	// Check model-no-cap has no cap (omitempty should omit)
+	if m, ok := adByName["model-no-cap"]; !ok {
+		t.Error("model-no-cap missing from AdvertisedModels")
+	} else if m.ConcurrencyCap != 0 {
+		t.Errorf("model-no-cap: expected ConcurrencyCap=0 (unset), got %d", m.ConcurrencyCap)
+	}
+
+	// Check model-zero-cap has no cap (zero is treated as unset)
+	if m, ok := adByName["model-zero-cap"]; !ok {
+		t.Error("model-zero-cap missing from AdvertisedModels")
+	} else if m.ConcurrencyCap != 0 {
+		t.Errorf("model-zero-cap: expected ConcurrencyCap=0 (unset), got %d", m.ConcurrencyCap)
+	}
+
+	// Check model-unloaded has cap but Loaded=false
+	if m, ok := adByName["model-unloaded"]; !ok {
+		t.Error("model-unloaded missing from AdvertisedModels")
+	} else if m.ConcurrencyCap != 4 {
+		t.Errorf("model-unloaded: expected ConcurrencyCap=4, got %d", m.ConcurrencyCap)
+	} else if m.Loaded {
+		t.Error("model-unloaded should not be loaded")
+	}
+
+	// LoadedModels should only contain loaded model names
+	if len(rw.LoadedModels) != 4 {
+		t.Errorf("expected 4 loaded models, got %d: %v", len(rw.LoadedModels), rw.LoadedModels)
+	}
+}

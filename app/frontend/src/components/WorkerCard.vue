@@ -44,9 +44,19 @@ const statusLabel = computed(() => props.status || 'unknown')
 const advertised = computed(() => props.advertisedModels ?? [])
 const hasAdvertised = computed(() => advertised.value.length > 0)
 
-const chips = computed(() => {
+interface ModelChip {
+  name: string
+  loaded: boolean
+  concurrencyCap?: number
+}
+
+const chips = computed((): ModelChip[] => {
   if (hasAdvertised.value) {
-    return advertised.value.map(m => ({ name: m.name, loaded: m.loaded }))
+    return advertised.value.map(m => ({
+      name: m.name,
+      loaded: m.loaded,
+      concurrencyCap: m.concurrency_cap || undefined,
+    }))
   }
   return (props.loadedModels ?? []).map(name => ({ name, loaded: true }))
 })
@@ -104,8 +114,11 @@ const throughput = computed(() => {
               :key="m.name"
               class="model-chip"
               :class="{ 'model-chip-advertised': !m.loaded }"
-              :title="m.loaded ? 'loaded in VRAM' : 'advertised, not yet loaded'"
-            >{{ m.name }}</span>
+              :title="m.loaded ? (m.concurrencyCap ? `loaded in VRAM • concurrency: ${m.concurrencyCap}` : 'loaded in VRAM') : (m.concurrencyCap ? `advertised, not yet loaded • concurrency: ${m.concurrencyCap}` : 'advertised, not yet loaded')"
+            >
+              {{ m.name }}
+              <span v-if="m.concurrencyCap !== undefined && m.concurrencyCap > 0" class="model-chip-concurrency">{{ m.concurrencyCap }}</span>
+            </span>
           </template>
           <template v-else>—</template>
         </span>
@@ -293,11 +306,30 @@ const throughput = computed(() => {
   border: 1px solid rgba(93, 252, 190, 0.28);
   border-radius: 999px;
   background: var(--accent-dim);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .model-chip-advertised {
   color: var(--text-muted);
   border-color: var(--border);
   background: transparent;
+}
+
+.model-chip-concurrency {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--surface);
+  background: var(--accent-strong);
+  border-radius: 999px;
+  padding: 0 5px;
+  line-height: 1.2;
+}
+
+.model-chip-advertised .model-chip-concurrency {
+  color: var(--text);
+  background: var(--text-muted);
 }
 </style>

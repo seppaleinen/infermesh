@@ -41,6 +41,9 @@ type WorkerInfo struct {
 	QueueDepth    int
 	InFlight      int     // active inference calls dispatched to this worker
 	MaxInFlight   int     // configured per-worker cap (0 = unknown)
+	// ModelMaxInFlight is the per-model concurrency cap. Key is model name.
+	// When set for the requested model, it takes precedence over MaxInFlight.
+	ModelMaxInFlight map[string]int
 	AvgLatencyMS  float64 // Moving average
 	LastHeartbeat time.Time
 
@@ -281,8 +284,19 @@ func (s *WeightedScorer) Score(ctx context.Context, request ModelRequest, worker
 	// a busy-but-idle worker is still deprioritised. Unknown cap (0) or
 	// unknown in-flight (-1) leaves the component untouched — existing
 	// callers that never populate these fields are byte-for-byte unchanged.
-	if worker.InFlight >= 0 && worker.MaxInFlight > 0 {
-		inFlightRatio := math.Min(float64(worker.InFlight)/float64(worker.MaxInFlight), 1.0)
+	// Use per-model cap if available, otherwise fall back to worker-wide cap.
+	modelCap := 0
+	if worker.ModelMaxInFlight != nil {
+		if cap, ok := worker.ModelMaxInFlight[request.Model]; ok && cap > 0 {
+			modelCap = cap
+		}
+	}
+	effectiveMaxInFlight := modelCap
+	if effectiveMaxInFlight == 0 {
+		effectiveMaxInFlight = worker.MaxInFlight
+	}
+	if worker.InFlight >= 0 && effectiveMaxInFlight > 0 {
+		inFlightRatio := math.Min(float64(worker.InFlight)/float64(effectiveMaxInFlight), 1.0)
 		inFlightScore := 1.0 - inFlightRatio
 		if inFlightScore < 0 {
 			inFlightScore = 0

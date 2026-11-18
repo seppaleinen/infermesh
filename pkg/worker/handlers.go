@@ -183,17 +183,17 @@ func (s *Server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check circuit breaker state
+	ctx := r.Context()
+
+	// Check circuit breaker state (after parsing request to have model)
 	if !s.backend.IsHealthy() {
 		if s.concurrencyEstimator != nil {
-			s.concurrencyEstimator.RecordCircuitOpen()
+			s.concurrencyEstimator.RecordCircuitOpen(req.Model)
 		}
 		s.log.Error("backend is unhealthy")
 		http.Error(w, "backend is unhealthy", http.StatusServiceUnavailable)
 		return
 	}
-
-	ctx := r.Context()
 
 	// Non-streaming: return the full response as application/json.
 	// dispatchNonStreaming handles the shared backend-call → record → encode
@@ -243,7 +243,7 @@ func (s *Server) dispatchNonStreaming[T any](
 
 	if s.concurrencyEstimator != nil {
 		statusCode := deriveStatusCode(err)
-		s.concurrencyEstimator.RecordRequest(start, statusCode)
+		s.concurrencyEstimator.RecordRequest(start, statusCode, model)
 	}
 	if err != nil {
 		s.log.Error("backend error", "error", err)
@@ -279,17 +279,17 @@ func (s *Server) completions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check circuit breaker state
+	ctx := r.Context()
+
+	// Check circuit breaker state (after parsing request to have model)
 	if !s.backend.IsHealthy() {
 		if s.concurrencyEstimator != nil {
-			s.concurrencyEstimator.RecordCircuitOpen()
+			s.concurrencyEstimator.RecordCircuitOpen(req.Model)
 		}
 		s.log.Error("backend is unhealthy")
 		http.Error(w, "backend is unhealthy", http.StatusServiceUnavailable)
 		return
 	}
-
-	ctx := r.Context()
 
 	// Non-streaming: return the full response as application/json.
 	if !req.Stream {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/seppaleinen/infermesh/pkg/capabilities"
+	"github.com/seppaleinen/infermesh/pkg/platform"
 	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/pkg/security"
 )
@@ -43,9 +44,9 @@ type Server struct {
 	backend       Backend // Backend adapter for model inference
 	healthTracker *ModelHealthTracker
 
-	// concurrencyEstimator tracks backend 429s/latency to infer per-worker cap.
+	// concurrencyEstimator tracks backend 429s/latency to infer per-model caps.
 	// Nil when no backend is configured.
-	concurrencyEstimator *ConcurrencyEstimator
+	concurrencyEstimator *PerModelConcurrencyEstimator
 
 	// inferenceStats records completed inference calls per model over a
 	// rolling window and feeds the /capabilities payload so the router's
@@ -135,17 +136,25 @@ func NewServer(log *slog.Logger, addr string, cfg security.Config) *Server {
 func (s *Server) SetBackend(backend Backend, model string) {
 	s.backend = backend
 
-	// Initialize concurrency estimator, seeded with the backend's thread
+	// Initialize per-model concurrency estimator, seeded with the backend's thread
 	// count when available (llama-cpp). Backends without a thread concept
 	// leave threads = 0, so the estimator falls back to defaultInitCap = 4
 	// (backward compatible, issue #139).
+	//
+	// The persist path is the per-user state dir (platform.StatePath) so the
+	// cache is never written to a world-writable location like /tmp. If the
+	// state dir cannot be determined, persistence is disabled and the
+	// estimator runs in-memory only (issue #206).
 	initCap := defaultInitCap
 	if metrics, err := backend.GetMetrics(); err == nil && metrics.Threads > 0 {
 		initCap = metrics.Threads
 	}
-	if e := NewConcurrencyEstimatorWithInit("/tmp/infermesh-concurrency-cache.json", initCap); e != nil {
-		s.concurrencyEstimator = e
+	persistPath, err := platform.StatePath("concurrency-cache.json")
+	if err != nil {
+		s.log.Warn("concurrency cache persistence disabled", "reason", err)
+		persistPath = ""
 	}
+	s.concurrencyEstimator = NewPerModelConcurrencyEstimator(persistPath, initCap)
 
 	// Try to dynamically discover models from the backend
 	if discoveredModels, err := backend.ListModels(); err == nil && len(discoveredModels) > 0 {
@@ -482,8 +491,13 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	// CapabilityCache hydrates them and the scheduler can honour them.
 	s.ApplyModelFilters(&worker.Capabilities)
 
+	// Populate per-model concurrency caps from the estimator.
 	if s.concurrencyEstimator != nil {
-		worker.Capabilities.ConcurrencyCap = s.concurrencyEstimator.Cap()
+		for i := range worker.Capabilities.Models {
+			worker.Capabilities.Models[i].ConcurrencyCap = s.concurrencyEstimator.Cap(worker.Capabilities.Models[i].Name)
+		}
+		// Also keep worker-wide cap as fallback for backward compatibility.
+		worker.Capabilities.ConcurrencyCap = s.concurrencyEstimator.Cap("")
 	}
 	if s.backend != nil {
 		if metrics, err := s.backend.GetMetrics(); err == nil && metrics.Threads > 0 {
@@ -608,10 +622,22 @@ func (s *Server) StartHealthCheckLoop(ctx context.Context, interval time.Duratio
 				s.log.Info("backend health check passed")
 			}
 			state := s.backend.GetCircuitState()
-			if state == CircuitOpen && s.concurrencyEstimator != nil {
-				s.concurrencyEstimator.RecordCircuitOpen()
-			} else if state == CircuitClosed && s.concurrencyEstimator != nil {
-				s.concurrencyEstimator.RecordCircuitClosed()
+			if s.concurrencyEstimator != nil {
+				s.modelsMu.Lock()
+				models := make([]string, len(s.models))
+				for i, m := range s.models {
+					models[i] = m.Name
+				}
+				s.modelsMu.Unlock()
+				if state == CircuitOpen {
+					for _, m := range models {
+						s.concurrencyEstimator.RecordCircuitOpen(m)
+					}
+				} else if state == CircuitClosed {
+					for _, m := range models {
+						s.concurrencyEstimator.RecordCircuitClosed(m)
+					}
+				}
 			}
 		}
 	}

@@ -1041,3 +1041,95 @@ func TestScoreEdgeCases(t *testing.T) {
 		t.Errorf("score with unknown VRAM = %f, want ~0.86 (clamped to 1.0)", score)
 	}
 }
+
+// TestScoreUsesPerModelConcurrencyCap verifies that the scorer uses
+// ModelMaxInFlight for the requested model when available, and falls
+// back to worker-wide MaxInFlight when not.
+func TestScoreUsesPerModelConcurrencyCap(t *testing.T) {
+	ctx := context.Background()
+
+	// Worker with two models having different concurrency caps
+	baseWorker := WorkerInfo{
+		ID:            "worker-1",
+		Addr:          "127.0.0.1:8080",
+		VRAMTotalMB:   24576,
+		VRAMFreeMB:    16384,
+		GPUUtilPct:    10.0,
+		QueueDepth:    0,
+		AvgLatencyMS:  50.0,
+		LastHeartbeat: time.Now(),
+		InFlight:      2, // 2 in-flight requests
+		MaxInFlight:   4, // worker-wide fallback
+		ModelMaxInFlight: map[string]int{
+			"model-12b": 2, // 12b model saturates at 2
+			"model-4b":  8, // 4b model can handle 8
+		},
+		Models: []protocol.ModelInfo{
+			{Name: "model-12b", Quantization: "Q4", Loaded: true},
+			{Name: "model-4b", Quantization: "Q4", Loaded: true},
+		},
+	}
+
+	s := NewWeightedScorer()
+
+	// Request for model-12b (cap=2, in-flight=2 -> ratio=1.0 -> inFlightScore=0.0)
+	// This should heavily penalize the worker
+	score12b, err := s.Score(ctx, ModelRequest{Model: "model-12b", Quantization: "Q4"}, baseWorker)
+	if err != nil {
+		t.Fatalf("unexpected error for model-12b: %v", err)
+	}
+
+	// Request for model-4b (cap=8, in-flight=2 -> ratio=0.25 -> inFlightScore=0.75)
+	// This should be much less penalized
+	score4b, err := s.Score(ctx, ModelRequest{Model: "model-4b", Quantization: "Q4"}, baseWorker)
+	if err != nil {
+		t.Fatalf("unexpected error for model-4b: %v", err)
+	}
+
+	// model-4b should score significantly higher because its per-model cap is larger
+	if score4b <= score12b {
+		t.Errorf("expected model-4b (cap=8) to score higher than model-12b (cap=2): 4b=%.4f, 12b=%.4f", score4b, score12b)
+	}
+
+	// Test fallback: worker without ModelMaxInFlight uses worker-wide MaxInFlight
+	workerNoPerModel := baseWorker
+	workerNoPerModel.ModelMaxInFlight = nil
+	scoreFallback, err := s.Score(ctx, ModelRequest{Model: "model-12b", Quantization: "Q4"}, workerNoPerModel)
+	if err != nil {
+		t.Fatalf("unexpected error for fallback: %v", err)
+	}
+	// Should use MaxInFlight=4, so in-flight ratio = 2/4 = 0.5, inFlightScore = 0.5
+	// This should be between the two scores above
+	if scoreFallback <= score12b || scoreFallback >= score4b {
+		t.Errorf("expected fallback score (cap=4) to be between per-model scores: 12b=%.4f, fallback=%.4f, 4b=%.4f", score12b, scoreFallback, score4b)
+	}
+
+	// Test that ModelMaxInFlight=0 for a model falls back to worker-wide cap
+	workerZeroCap := baseWorker
+	workerZeroCap.ModelMaxInFlight = map[string]int{
+		"model-12b": 0, // zero means unknown, should fall back
+	}
+	scoreZeroCap, err := s.Score(ctx, ModelRequest{Model: "model-12b", Quantization: "Q4"}, workerZeroCap)
+	if err != nil {
+		t.Fatalf("unexpected error for zero cap: %v", err)
+	}
+	if scoreZeroCap != scoreFallback {
+		t.Errorf("expected zero per-model cap to fall back to worker-wide: got %.4f, want %.4f", scoreZeroCap, scoreFallback)
+	}
+
+	// Test that unknown model (not in ModelMaxInFlight) falls back to worker-wide
+	// Need to add the unknown model to worker's Models list
+	workerWithUnknown := baseWorker
+	workerWithUnknown.Models = append(workerWithUnknown.Models, protocol.ModelInfo{
+		Name:     "unknown-model",
+		Quantization: "Q4",
+		Loaded:   true,
+	})
+	scoreUnknown, err := s.Score(ctx, ModelRequest{Model: "unknown-model", Quantization: "Q4"}, workerWithUnknown)
+	if err != nil {
+		t.Fatalf("unexpected error for unknown model: %v", err)
+	}
+	if scoreUnknown != scoreFallback {
+		t.Errorf("expected unknown model to fall back to worker-wide: got %.4f, want %.4f", scoreUnknown, scoreFallback)
+	}
+}

@@ -171,7 +171,7 @@ func TestSetBackend_SeesConcurrencyEstimatorWithThreads(t *testing.T) {
 			if server.concurrencyEstimator == nil {
 				t.Fatal("expected concurrency estimator to be initialized")
 			}
-			if got := server.concurrencyEstimator.Cap(); got != tt.wantCap {
+			if got := server.concurrencyEstimator.Cap("test-model"); got != tt.wantCap {
 				t.Errorf("estimator cap = %d, want %d", got, tt.wantCap)
 			}
 		})

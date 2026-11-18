@@ -35,6 +35,10 @@ type ModelInfo struct {
 	MaxTokens    int    `json:"max_tokens"`   // context window
 	Backend      string `json:"backend"`      // "llama-cpp", "ollama", etc.
 	Loaded       bool   `json:"loaded"`       // whether model is in VRAM
+	// ConcurrencyCap is the maximum concurrent inference calls for THIS model.
+	// Derived from observed backend behavior (429s, latency spikes) per model.
+	// 0 means unknown (fallback to worker-wide ConcurrencyCap in Capabilities).
+	ConcurrencyCap int `json:"concurrency_cap,omitempty"`
 }
 
 // EngineType represents supported backend engines.

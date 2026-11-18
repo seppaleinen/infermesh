@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/seppaleinen/infermesh/pkg/protocol"
 	"github.com/seppaleinen/infermesh/pkg/router"
 )
 
@@ -643,5 +644,99 @@ func TestGetWorkersTruncatedBody(t *testing.T) {
 	// ("read router body"). Both prove a partial body is not decoded.
 	if !strings.Contains(err.Error(), "read router body") && !strings.Contains(err.Error(), "router unreachable") {
 		t.Errorf("error %q should mention the read or unreachable failure", err)
+	}
+}
+
+// TestGetWorkersAdvertisedModelsConcurrencyCap verifies that GetWorkers
+// correctly parses the AdvertisedModels field with per-model ConcurrencyCap
+// (issue #206).
+func TestGetWorkersAdvertisedModelsConcurrencyCap(t *testing.T) {
+	lastSeen := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	workersBody := router.WorkersResponse{Workers: []router.WorkerInfo{
+		{
+			ID:           "w-1",
+			Hostname:     "alpha",
+			IP:           "10.0.0.2",
+			Port:         8081,
+			Status:       "available",
+			Version:      "v1.0.0",
+			LoadedModels: []string{"model-4b"},
+			AdvertisedModels: []protocol.ModelInfo{
+				{Name: "model-12b", Quantization: "Q4", Loaded: true, ConcurrencyCap: 2},
+				{Name: "model-4b", Quantization: "Q4", Loaded: true, ConcurrencyCap: 8},
+				{Name: "model-no-cap", Quantization: "Q4", Loaded: true}, // no cap
+				{Name: "model-unloaded", Quantization: "Q4", Loaded: false, ConcurrencyCap: 4},
+			},
+			LastSeen: lastSeen,
+		},
+	}}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(workersBody); err != nil {
+			t.Errorf("encode workers body: %v", err)
+		}
+	}))
+	defer ts.Close()
+
+	c := NewRouterClient(ts.URL)
+	got, err := c.GetWorkers(context.Background())
+	if err != nil {
+		t.Fatalf("GetWorkers: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("expected 1 worker, got %d", len(got))
+	}
+
+	w := got[0]
+	if w.AdvertisedModels == nil {
+		t.Fatal("AdvertisedModels is nil")
+	}
+	if len(w.AdvertisedModels) != 4 {
+		t.Errorf("expected 4 advertised models, got %d", len(w.AdvertisedModels))
+	}
+
+	// Map by name for easy lookup
+	adByName := make(map[string]ModelView, len(w.AdvertisedModels))
+	for _, m := range w.AdvertisedModels {
+		adByName[m.Name] = m
+	}
+
+	// Check model-12b has cap 2
+	if m, ok := adByName["model-12b"]; !ok {
+		t.Error("model-12b missing from AdvertisedModels")
+	} else if m.ConcurrencyCap != 2 {
+		t.Errorf("model-12b: expected ConcurrencyCap=2, got %d", m.ConcurrencyCap)
+	} else if !m.Loaded {
+		t.Error("model-12b should be loaded")
+	}
+
+	// Check model-4b has cap 8
+	if m, ok := adByName["model-4b"]; !ok {
+		t.Error("model-4b missing from AdvertisedModels")
+	} else if m.ConcurrencyCap != 8 {
+		t.Errorf("model-4b: expected ConcurrencyCap=8, got %d", m.ConcurrencyCap)
+	}
+
+	// Check model-no-cap has no cap (omitempty should omit)
+	if m, ok := adByName["model-no-cap"]; !ok {
+		t.Error("model-no-cap missing from AdvertisedModels")
+	} else if m.ConcurrencyCap != 0 {
+		t.Errorf("model-no-cap: expected ConcurrencyCap=0 (unset), got %d", m.ConcurrencyCap)
+	}
+
+	// Check model-unloaded has cap but Loaded=false
+	if m, ok := adByName["model-unloaded"]; !ok {
+		t.Error("model-unloaded missing from AdvertisedModels")
+	} else if m.ConcurrencyCap != 4 {
+		t.Errorf("model-unloaded: expected ConcurrencyCap=4, got %d", m.ConcurrencyCap)
+	} else if m.Loaded {
+		t.Error("model-unloaded should not be loaded")
+	}
+
+	// LoadedModels should only contain loaded model names
+	if len(w.LoadedModels) != 1 || w.LoadedModels[0] != "model-4b" {
+		t.Errorf("LoadedModels = %v, want [model-4b]", w.LoadedModels)
 	}
 }

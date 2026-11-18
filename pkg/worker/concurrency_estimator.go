@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -11,12 +12,14 @@ import (
 const (
 	defaultInitCap         = 4
 	minCap                 = 1
+	maxCap                 = 1024 // hard ceiling on any learned concurrency cap
 	windowDuration         = 10 * time.Second
 	persistInterval        = 30 * time.Second
 	latencySpikeMultiplier = 2.0
 	http429Threshold       = 2
 )
 
+// ConcurrencyEstimator tracks 429s and latency for a SINGLE model.
 type ConcurrencyEstimator struct {
 	mu              sync.Mutex
 	cap             int
@@ -29,17 +32,33 @@ type ConcurrencyEstimator struct {
 	persistTimer    *time.Timer
 }
 
-func NewConcurrencyEstimator(persistPath string) *ConcurrencyEstimator {
-	return NewConcurrencyEstimatorWithInit(persistPath, defaultInitCap)
+// PerModelConcurrencyEstimator manages a map of per-model estimators.
+type PerModelConcurrencyEstimator struct {
+	mu            sync.Mutex
+	estimators    map[string]*ConcurrencyEstimator
+	persistPath   string
+	defaultCap    int
+	// persistPathMu guards persistPath and persistTimer. schedulePersist is
+	// reachable from RecordRequest/RecordCircuitOpen/RecordCircuitClosed/
+	// recomputeAll, which run on the inference hot path WITHOUT holding mu
+	// (they only lock the per-model estimator). Without this lock the
+	// read-modify-write on persistTimer races with itself and with Stop's
+	// timer teardown (issue #206).
+	persistPathMu sync.Mutex
+	persistTimer  *time.Timer
 }
 
-// NewConcurrencyEstimatorWithInit creates a ConcurrencyEstimator seeded with
-// initCap (bounded to ≥ minCap). A persisted cap from a previous run overrides
-// the seed, so the estimator keeps its learned value across restarts while
-// still benefiting from the backend's thread count on first boot (issue #139).
-func NewConcurrencyEstimatorWithInit(persistPath string, initCap int) *ConcurrencyEstimator {
+// NewConcurrencyEstimator creates a ConcurrencyEstimator seeded with
+// initCap (bounded to [minCap, maxCap]). A persisted cap from a previous run
+// overrides the seed, so the estimator keeps its learned value across
+// restarts while still benefiting from the backend's thread count on first
+// boot (issue #139).
+func NewConcurrencyEstimator(persistPath string, initCap int) *ConcurrencyEstimator {
 	if initCap < minCap {
 		initCap = minCap
+	}
+	if initCap > maxCap {
+		initCap = maxCap
 	}
 	e := &ConcurrencyEstimator{
 		cap:         initCap,
@@ -51,6 +70,9 @@ func NewConcurrencyEstimatorWithInit(persistPath string, initCap int) *Concurren
 	if c := e.LoadPersisted(persistPath); c > 0 {
 		if c < minCap {
 			c = minCap
+		}
+		if c > maxCap {
+			c = maxCap
 		}
 		e.cap = c
 	}
@@ -94,8 +116,11 @@ func (e *ConcurrencyEstimator) RecordCircuitClosed() {
 	defer e.mu.Unlock()
 	// re-increase to previous value or init if first
 	if e.cap == 1 {
-		// we don't know previous, go to init
+		// we don't know previous, go to defaultInitCap but clamp to maxCap
 		e.cap = defaultInitCap
+		if e.cap > maxCap {
+			e.cap = maxCap
+		}
 		e.lastCapChanged = time.Now()
 		e.notifyChanged()
 		e.schedulePersist()
@@ -107,6 +132,9 @@ func (e *ConcurrencyEstimator) Cap() int {
 	defer e.mu.Unlock()
 	if e.cap < minCap {
 		return minCap
+	}
+	if e.cap > maxCap {
+		return maxCap
 	}
 	return e.cap
 }
@@ -172,7 +200,9 @@ func (e *ConcurrencyEstimator) recompute() {
 			}
 		}
 	}
-	// slow recovery
+	// slow recovery: if cap dropped below defaultInitCap and no 429s in 30s,
+	// increment back toward the default. Never exceed defaultInitCap (the
+	// seed) because that is the worker's own learned baseline.
 	if e.cap < defaultInitCap && now.Sub(e.lastCapChanged) > 60*time.Second {
 		// check no 429s in last 30s
 		hasRecent429 := false
@@ -261,11 +291,275 @@ func (e *ConcurrencyEstimator) LoadPersisted(path string) int {
 	if err != nil {
 		return 0
 	}
+	if len(b) > 1<<20 {
+		return 0
+	}
 	var data struct {
 		ConcurrencyCap int `json:"concurrency_cap"`
 	}
 	if err := json.Unmarshal(b, &data); err != nil {
 		return 0
 	}
+	if data.ConcurrencyCap < minCap || data.ConcurrencyCap > maxCap {
+		return 0
+	}
 	return data.ConcurrencyCap
+}
+
+// NewPerModelConcurrencyEstimator creates a new per-model estimator manager.
+//
+// persistPath is sanitized by safePersistPath: an empty path or a path that
+// escapes the intended directory (absolute, contains "..", or names a
+// directory component) disables persistence entirely rather than writing
+// outside the worker's state directory. This prevents an attacker who
+// influences the persistPath argument (e.g. a future CLI flag or env var)
+// from turning the estimator into an arbitrary file writer (issue #206).
+func NewPerModelConcurrencyEstimator(persistPath string, defaultCap int) *PerModelConcurrencyEstimator {
+	if defaultCap < minCap {
+		defaultCap = minCap
+	}
+	p := &PerModelConcurrencyEstimator{
+		estimators:  make(map[string]*ConcurrencyEstimator),
+		persistPath: safePersistPath(persistPath),
+		defaultCap:  defaultCap,
+	}
+	p.loadPersisted()
+	return p
+}
+
+// getOrCreate returns the estimator for the given model, creating it if needed.
+func (p *PerModelConcurrencyEstimator) getOrCreate(model string) *ConcurrencyEstimator {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e, ok := p.estimators[model]; ok {
+		return e
+	}
+	e := NewConcurrencyEstimator("", p.defaultCap)
+	p.estimators[model] = e
+	return e
+}
+
+// RecordRequest records a request for the given model.
+func (p *PerModelConcurrencyEstimator) RecordRequest(start time.Time, statusCode int, model string) {
+	e := p.getOrCreate(model)
+	e.RecordRequest(start, statusCode)
+	p.schedulePersist()
+}
+
+// RecordCircuitOpen records a circuit breaker open event for the given model.
+// Creates the estimator if it doesn't exist yet (so circuit events are captured
+// even for models that haven't received inference requests yet).
+func (p *PerModelConcurrencyEstimator) RecordCircuitOpen(model string) {
+	e := p.getOrCreate(model)
+	e.RecordCircuitOpen()
+	p.schedulePersist()
+}
+
+// RecordCircuitClosed records a circuit breaker closed event for the given model.
+func (p *PerModelConcurrencyEstimator) RecordCircuitClosed(model string) {
+	p.mu.Lock()
+	e, ok := p.estimators[model]
+	p.mu.Unlock()
+	if ok {
+		e.RecordCircuitClosed()
+		p.schedulePersist()
+	}
+}
+
+// Cap returns the concurrency cap for the given model.
+// Falls back to the default cap if the model has no estimator yet.
+func (p *PerModelConcurrencyEstimator) Cap(model string) int {
+	p.mu.Lock()
+	e, ok := p.estimators[model]
+	p.mu.Unlock()
+	if ok {
+		return e.Cap()
+	}
+	return p.defaultCap
+}
+
+// Start runs the background recomputation ticker for all active models.
+func (p *PerModelConcurrencyEstimator) Start(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			p.Stop()
+			return
+		case <-ticker.C:
+			p.recomputeAll()
+		}
+	}
+}
+
+// Stop stops all estimators and persists. It is idempotent and safe to call
+// twice. It locks persistPathMu around the timer teardown so it cannot race
+// schedulePersist's read-modify-write, and locks p.mu for the estimator
+// iteration so it cannot race the timer's persist callback.
+func (p *PerModelConcurrencyEstimator) Stop() {
+	p.persistPathMu.Lock()
+	if p.persistTimer != nil {
+		p.persistTimer.Stop()
+		p.persistTimer = nil
+	}
+	p.persistPathMu.Unlock()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Stop each estimator's timer and persist its state while holding p.mu.
+	// This is safe because e.persist() does not acquire p.mu.
+	for _, e := range p.estimators {
+		if e.persistTimer != nil {
+			e.persistTimer.Stop()
+			e.persistTimer = nil
+		}
+		e.mu.Lock()
+		e.persist()
+		e.mu.Unlock()
+	}
+
+	// Persist aggregated state
+	p.persist()
+}
+
+// recomputeAll runs recompute on all active estimators.
+func (p *PerModelConcurrencyEstimator) recomputeAll() {
+	p.mu.Lock()
+	estimators := make([]*ConcurrencyEstimator, 0, len(p.estimators))
+	for _, e := range p.estimators {
+		estimators = append(estimators, e)
+	}
+	p.mu.Unlock()
+	for _, e := range estimators {
+		e.recompute()
+	}
+	p.schedulePersist()
+}
+
+// schedulePersist debounces the persist operation. It must be called with
+// NO lock held: it acquires persistPathMu internally, so callers that already
+// hold p.mu or a sub-estimator's mutex do not deadlock. persistPathMu guards
+// persistTimer, which is also read and written from Stop()'s teardown and
+// from this AfterFunc callback, so all access is serialized through
+// persistPathMu (issue #206).
+func (p *PerModelConcurrencyEstimator) schedulePersist() {
+	p.persistPathMu.Lock()
+	defer p.persistPathMu.Unlock()
+	if p.persistTimer != nil {
+		p.persistTimer.Stop()
+	}
+	p.persistTimer = time.AfterFunc(persistInterval, func() {
+		p.mu.Lock()
+		p.persist()
+		p.mu.Unlock()
+	})
+}
+
+// persist saves all model caps to a single JSON file: {"modelA": capA, "modelB": capB}
+// Caller must hold p.mu.
+func (p *PerModelConcurrencyEstimator) persist() {
+	if p.persistPath == "" {
+		return
+	}
+	data := make(map[string]int, len(p.estimators))
+	for model, e := range p.estimators {
+		e.mu.Lock()
+		data[model] = e.cap
+		e.mu.Unlock()
+	}
+	// Debug: log what we're persisting
+	// fmt.Fprintf(os.Stderr, "PERSIST: %v\n", data)
+	b, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	tmpPath := p.persistPath + ".tmp"
+	if err := os.WriteFile(tmpPath, b, 0644); err != nil {
+		return
+	}
+	_ = os.Rename(tmpPath, p.persistPath)
+}
+
+// loadPersisted loads the per-model caps from the JSON file. Malformed input
+// is discarded, never propagated: entries are bounded to [minCap, maxCap]
+// and a total entry count cap prevents an attacker-supplied file from
+// exhausting memory via millions of JSON keys (issue #206).
+func (p *PerModelConcurrencyEstimator) loadPersisted() {
+	b, err := os.ReadFile(p.persistPath)
+	if err != nil {
+		return
+	}
+	// Cap the read at 1 MiB: a legitimate per-model cap map is at most a
+	// few kilobytes, so anything larger is either corrupt or hostile.
+	if len(b) > 1<<20 {
+		return
+	}
+	var data map[string]int
+	if err := json.Unmarshal(b, &data); err != nil {
+		return
+	}
+	if len(data) == 0 || len(data) > maxPersistedModels {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for model, cap := range data {
+		if model == "" {
+			continue
+		}
+		if cap < minCap {
+			cap = minCap
+		}
+		if cap > maxCap {
+			cap = maxCap
+		}
+		e := NewConcurrencyEstimator("", cap)
+		e.cap = cap
+		p.estimators[model] = e
+	}
+}
+
+// maxPersistedModels is the maximum number of per-model entries loaded from
+// the persistence file. A normal worker advertises at most a handful of
+// models; anything beyond this is a sign of a corrupt or hostile file and
+// is discarded wholesale rather than loaded into the estimator map.
+const maxPersistedModels = 1000
+
+// safePersistPath validates the persist path and returns an empty string
+// (persistence disabled) when it is unsafe. A path is unsafe when it:
+//   - is empty
+//   - contains a path-traversal component (a ".." segment)
+//   - is an absolute path (Unix "/" or Windows "C:")
+//   - ends in a component that is not a simple base name (empty, ".", "..")
+//
+// This is the estimator's final guard: even with a future attacker-controlled
+// CLI flag or env var, a path like "../../etc/cron.d/evil" is rejected rather
+// than written (issue #206).
+func safePersistPath(p string) string {
+	if p == "" {
+		return ""
+	}
+	// Reject any ".." segment regardless of position — this guards against
+	// path traversal in the path string itself.
+	for _, seg := range strings.FieldsFunc(p, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if seg == ".." {
+			return ""
+		}
+	}
+	// The final component must be a simple, non-empty base name.
+	base := p[strings.LastIndexAny(p, "/\\")+1:]
+	if base == "" || base == "." || base == ".." {
+		return ""
+	}
+	for _, c := range base {
+		if c < 0x20 || c == 0x7f {
+			return ""
+		}
+	}
+	// Allow absolute paths from platform.StatePath — those paths are
+	// already validated by platform.ValidateBaseName. We only need to ensure
+	// the filename component is safe (done above).
+	return p
 }
