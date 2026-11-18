@@ -42,20 +42,20 @@ type ModelView struct {
 // router.WorkerInfo (the /v1/workers projection) but adds a friendly
 // relative "last seen" string computed client-side.
 type WorkerView struct {
-	ID           string      `json:"id"`
-	Hostname     string      `json:"hostname"`
-	IP           string      `json:"ip"`
-	Port         int         `json:"port"`
-	Status       string      `json:"status"`
-	Version      string      `json:"version"`
-	LoadedModels []string    `json:"loaded_models"`
+	ID           string   `json:"id"`
+	Hostname     string   `json:"hostname"`
+	IP           string   `json:"ip"`
+	Port         int      `json:"port"`
+	Status       string   `json:"status"`
+	Version      string   `json:"version"`
+	LoadedModels []string `json:"loaded_models"`
 	// AdvertisedModels is the worker's full per-model capability list,
 	// surfaced separately from LoadedModels so the UI can render models
 	// that are advertised but not yet loaded in VRAM (issue #205). Each
 	// entry carries its own Loaded flag. Nil/empty when the worker
 	// advertises no models; the field serializes as omitted.
 	AdvertisedModels []ModelView `json:"advertised_models,omitempty"`
-	LastSeen     time.Time `json:"last_seen"`
+	LastSeen         time.Time   `json:"last_seen"`
 	// LastSeenRel is "3s ago" / "just now" — derived from LastSeen at render time.
 	LastSeenRel string `json:"last_seen_rel"`
 	// Address is "host:port" for the card title.
@@ -308,19 +308,19 @@ func toWorkerView(w router.WorkerInfo) WorkerView {
 	// views is nil when no advertised models → omitted by omitempty
 
 	return WorkerView{
-		ID:              w.ID,
-		Hostname:        w.Hostname,
-		IP:              w.IP,
-		Port:            w.Port,
-		Status:          status,
-		Version:         w.Version,
-		LoadedModels:    loaded,
+		ID:               w.ID,
+		Hostname:         w.Hostname,
+		IP:               w.IP,
+		Port:             w.Port,
+		Status:           status,
+		Version:          w.Version,
+		LoadedModels:     loaded,
 		AdvertisedModels: views,
-		LastSeen:        w.LastSeen,
-		Address:         address,
-		InFlight:        w.InFlight,
-		MaxInFlight:     w.MaxInFlight,
-		TokensPerSecond: w.TokensPerSecond,
+		LastSeen:         w.LastSeen,
+		Address:          address,
+		InFlight:         w.InFlight,
+		MaxInFlight:      w.MaxInFlight,
+		TokensPerSecond:  w.TokensPerSecond,
 	}
 }
 
@@ -701,12 +701,12 @@ func parseConnectionCountResponse(body []byte) (int, error) {
 // AutoRoutingConfigRequest is the JSON DTO for GET/POST /meta/auto-routing.
 // Mirrors the router's AutoRoutingConfigRequest type.
 type AutoRoutingConfigRequest struct {
-	Enabled           bool              `json:"enabled"`
-	UseFourTier       bool              `json:"use_four_tier"`
-	Models            map[string]string `json:"models"`
-	AutoModelName     string            `json:"auto_model_name,omitempty"`
-	SimpleMaxTokens   int               `json:"simple_max_tokens"`
-	MediumMaxTokens   int               `json:"medium_max_tokens"`
+	Enabled         bool              `json:"enabled"`
+	UseFourTier     bool              `json:"use_four_tier"`
+	Models          map[string]string `json:"models"`
+	AutoModelName   string            `json:"auto_model_name,omitempty"`
+	SimpleMaxTokens int               `json:"simple_max_tokens"`
+	MediumMaxTokens int               `json:"medium_max_tokens"`
 }
 
 // autoRoutingPath builds the full /meta/auto-routing URL for the configured base.

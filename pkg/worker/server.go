@@ -629,11 +629,12 @@ func (s *Server) StartHealthCheckLoop(ctx context.Context, interval time.Duratio
 					models[i] = m.Name
 				}
 				s.modelsMu.Unlock()
-				if state == CircuitOpen {
+				switch state {
+				case CircuitOpen:
 					for _, m := range models {
 						s.concurrencyEstimator.RecordCircuitOpen(m)
 					}
-				} else if state == CircuitClosed {
+				case CircuitClosed:
 					for _, m := range models {
 						s.concurrencyEstimator.RecordCircuitClosed(m)
 					}

@@ -11,9 +11,9 @@ import (
 const (
 	// StateDirName is the per-user state directory name for InferMesh.
 	StateDirName = "infermesh"
-	// maxStateFileSize bounds the persisted concurrency-cache JSON so a
+	// MaxStateFileSize bounds the persisted concurrency-cache JSON so a
 	// corrupt or attacker-inflated file cannot exhaust memory on load.
-	maxStateFileSize = 1 << 20 // 1 MiB
+	MaxStateFileSize = 1 << 20 // 1 MiB
 )
 
 // StateDir returns the per-user state directory for InferMesh, creating it

@@ -1,0 +1,47 @@
+{
+  "archive_metadata": {
+    "task": "OpenAI-compatible tool-calling pass-through",
+    "commit": "82039de8626e9ac057aff779a1ee06600141b0ad",
+    "branch": "main",
+    "timestamp": "2026-11-16T21:41:07+01:00",
+    "status": "COMPLETED",
+    "pipeline": "dev-team-lead → architect/engineer → test-engineer → code-reviewer → ai-security-auditor → docs",
+    "rework_count": 0,
+    "session_export_note": "Parent session ID not identifiable from subagent context; durable artifacts captured below"
+  },
+  "git_state": {
+    "commit_hash": "82039de8626e9ac057aff779a1ee06600141b0ad",
+    "commit_message": "feat(protocol): add OpenAI-compatible tool-calling pass-through",
+    "author": "seppaleinen <davidbaeriksson@gmail.com>",
+    "date": "Mon Nov 16 21:37:15 2026 +0100",
+    "unpushed": true,
+    "files_changed": [
+      "pkg/protocol/api.go",
+      "pkg/protocol/api_test.go",
+      "pkg/worker/openai.go",
+      "pkg/worker/openai_stream.go",
+      "pkg/worker/openai_test.go"
+    ],
+    "stats": "5 files changed, 750 insertions(+), 10 deletions(-)",
+    "working_tree": "clean (except untracked docs/plans/tool-call-passthrough-brief.md)"
+  },
+  "verification": {
+    "unit_tests": "go test ./pkg/... - PASS",
+    "race_tests": "go test -race ./pkg/protocol/... ./pkg/worker/... - PASS",
+    "lint": "golangci-lint v2.13.2 - 0 issues",
+    "gofmt": "clean"
+  },
+  "technical_summary": {
+    "root_cause": "Wire protocol had no tool-calling support — tools/tool_choice/parallel_tool_calls dropped on request unmarshal/marshal; tool_calls/tool_call_id/name dropped on response unmarshal/marshal. Same class of bug as reasoning_content (issue #204).",
+    "solution": "Added wire types to pkg/protocol/api.go (Tool, FunctionSpec, FunctionCall, ToolCall); extended ChatRequest (Tools, ToolChoice, ParallelToolCalls) and ChatMessage (ToolCalls, ToolCallID, Name); all omitempty for wire-compatibility with plain chat. Worker forwards tools via applyToolRequest() in both streaming (openai_stream.go) and non-streaming (openai.go) paths. Router passes body through unchanged.",
+    "key_files": {
+      "pkg/protocol/api.go": "Single wire-protocol location (ADR 0004) — 10 wire types added",
+      "pkg/protocol/api_test.go": "Round-trip tests for request/response/streaming deltas + wire-compat guards",
+      "pkg/worker/openai.go": "Non-streaming applyToolRequest() call in completeChatInternal",
+      "pkg/worker/openai_stream.go": "Streaming applyToolRequest() call in buildChatRequest + shared helper",
+      "pkg/worker/openai_test.go": "Streaming regression test (mock SSE with tool_calls delta sequence) + non-streaming test"
+    },
+    "out_of_scope": "Router-side scheduling awareness, function/agent execution, app/ desktop module, completions endpoint"
+  },
+  "research_brief": "See docs/plans/tool-call-passthrough-brief.md for approved plan with constraints (Go 1.27, no new deps, lint clean, no push to origin)."
+}

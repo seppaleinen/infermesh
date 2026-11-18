@@ -1121,9 +1121,9 @@ func TestScoreUsesPerModelConcurrencyCap(t *testing.T) {
 	// Need to add the unknown model to worker's Models list
 	workerWithUnknown := baseWorker
 	workerWithUnknown.Models = append(workerWithUnknown.Models, protocol.ModelInfo{
-		Name:     "unknown-model",
+		Name:         "unknown-model",
 		Quantization: "Q4",
-		Loaded:   true,
+		Loaded:       true,
 	})
 	scoreUnknown, err := s.Score(ctx, ModelRequest{Model: "unknown-model", Quantization: "Q4"}, workerWithUnknown)
 	if err != nil {

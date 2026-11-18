@@ -474,10 +474,10 @@ func TestToSchedulerWorkerPopulatesModelMaxInFlight(t *testing.T) {
 			Models: []protocol.ModelInfo{
 				{Name: "model-12b", Quantization: "Q4", Loaded: true, ConcurrencyCap: 2},
 				{Name: "model-4b", Quantization: "Q4", Loaded: true, ConcurrencyCap: 8},
-				{Name: "model-no-cap", Quantization: "Q4", Loaded: true}, // no cap
+				{Name: "model-no-cap", Quantization: "Q4", Loaded: true},                      // no cap
 				{Name: "model-zero-cap", Quantization: "Q4", Loaded: true, ConcurrencyCap: 0}, // zero cap
 			},
-			VRAM: protocol.MemoryInfo{TotalMB: 24576, FreeMB: 16384},
+			VRAM:           protocol.MemoryInfo{TotalMB: 24576, FreeMB: 16384},
 			ConcurrencyCap: 4, // worker-wide fallback
 		},
 	}

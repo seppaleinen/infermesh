@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/seppaleinen/infermesh/pkg/platform"
 )
 
 const (
@@ -34,10 +36,10 @@ type ConcurrencyEstimator struct {
 
 // PerModelConcurrencyEstimator manages a map of per-model estimators.
 type PerModelConcurrencyEstimator struct {
-	mu            sync.Mutex
-	estimators    map[string]*ConcurrencyEstimator
-	persistPath   string
-	defaultCap    int
+	mu          sync.Mutex
+	estimators  map[string]*ConcurrencyEstimator
+	persistPath string
+	defaultCap  int
 	// persistPathMu guards persistPath and persistTimer. schedulePersist is
 	// reachable from RecordRequest/RecordCircuitOpen/RecordCircuitClosed/
 	// recomputeAll, which run on the inference hot path WITHOUT holding mu
@@ -291,7 +293,7 @@ func (e *ConcurrencyEstimator) LoadPersisted(path string) int {
 	if err != nil {
 		return 0
 	}
-	if len(b) > 1<<20 {
+	if len(b) > platform.MaxStateFileSize {
 		return 0
 	}
 	var data struct {
@@ -493,7 +495,7 @@ func (p *PerModelConcurrencyEstimator) loadPersisted() {
 	}
 	// Cap the read at 1 MiB: a legitimate per-model cap map is at most a
 	// few kilobytes, so anything larger is either corrupt or hostile.
-	if len(b) > 1<<20 {
+	if len(b) > platform.MaxStateFileSize {
 		return
 	}
 	var data map[string]int

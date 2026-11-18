@@ -296,8 +296,8 @@ func TestWorkersListAdvertisedModelsConcurrencyCap(t *testing.T) {
 			Models: []protocol.ModelInfo{
 				{Name: "model-12b", Quantization: "Q4", Loaded: true, ConcurrencyCap: 2},
 				{Name: "model-4b", Quantization: "Q4", Loaded: true, ConcurrencyCap: 8},
-				{Name: "model-no-cap", Quantization: "Q4", Loaded: true}, // no cap
-				{Name: "model-zero-cap", Quantization: "Q4", Loaded: true, ConcurrencyCap: 0}, // zero cap
+				{Name: "model-no-cap", Quantization: "Q4", Loaded: true},                       // no cap
+				{Name: "model-zero-cap", Quantization: "Q4", Loaded: true, ConcurrencyCap: 0},  // zero cap
 				{Name: "model-unloaded", Quantization: "Q4", Loaded: false, ConcurrencyCap: 4}, // unloaded
 			},
 			VRAM:           protocol.MemoryInfo{TotalMB: 24576, FreeMB: 16384},

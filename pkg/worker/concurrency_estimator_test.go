@@ -19,7 +19,7 @@ func testPersistDir(t *testing.T) string {
 
 func TestConcurrencyEstimator_BackoffOn429(t *testing.T) {
 	dir := testPersistDir(t)
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	path := filepath.Join(dir, "test-concurrency-429.json")
 	e := NewConcurrencyEstimator(path, defaultInitCap)
 	if e.Cap() != defaultInitCap {
@@ -37,7 +37,7 @@ func TestConcurrencyEstimator_BackoffOn429(t *testing.T) {
 
 func TestConcurrencyEstimator_RecoverAfterWindow(t *testing.T) {
 	dir := testPersistDir(t)
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	path := filepath.Join(dir, "test-concurrency-recover.json")
 	e := NewConcurrencyEstimator(path, defaultInitCap)
 	// Force backoff
@@ -54,7 +54,7 @@ func TestConcurrencyEstimator_RecoverAfterWindow(t *testing.T) {
 
 func TestConcurrencyEstimator_PersistAndLoad(t *testing.T) {
 	dir := testPersistDir(t)
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	path := filepath.Join(dir, "test-concurrency-persist.json")
 	e1 := NewConcurrencyEstimator(path, defaultInitCap)
 	e1.mu.Lock()
@@ -73,7 +73,7 @@ func TestConcurrencyEstimator_PersistAndLoad(t *testing.T) {
 func TestConcurrencyEstimator_InitCapFromThreads(t *testing.T) {
 	t.Run("seed with thread count", func(t *testing.T) {
 		dir := testPersistDir(t)
-		defer os.RemoveAll(dir)
+		defer func() { _ = os.RemoveAll(dir) }()
 		path := filepath.Join(dir, "test-concurrency-init.json")
 		e := NewConcurrencyEstimator(path, 8)
 		if got := e.Cap(); got != 8 {
@@ -83,7 +83,7 @@ func TestConcurrencyEstimator_InitCapFromThreads(t *testing.T) {
 
 	t.Run("seed bounded to minCap", func(t *testing.T) {
 		dir := testPersistDir(t)
-		defer os.RemoveAll(dir)
+		defer func() { _ = os.RemoveAll(dir) }()
 		path := filepath.Join(dir, "test-concurrency-init-zero.json")
 		e := NewConcurrencyEstimator(path, 0)
 		if got := e.Cap(); got != minCap {
@@ -93,7 +93,7 @@ func TestConcurrencyEstimator_InitCapFromThreads(t *testing.T) {
 
 	t.Run("seed bounded to maxCap", func(t *testing.T) {
 		dir := testPersistDir(t)
-		defer os.RemoveAll(dir)
+		defer func() { _ = os.RemoveAll(dir) }()
 		path := filepath.Join(dir, "test-concurrency-init-max.json")
 		e := NewConcurrencyEstimator(path, 2000)
 		if got := e.Cap(); got != maxCap {
@@ -103,7 +103,7 @@ func TestConcurrencyEstimator_InitCapFromThreads(t *testing.T) {
 
 	t.Run("persisted cap overrides seed", func(t *testing.T) {
 		dir := testPersistDir(t)
-		defer os.RemoveAll(dir)
+		defer func() { _ = os.RemoveAll(dir) }()
 		path := filepath.Join(dir, "test-concurrency-init-persist.json")
 		e1 := NewConcurrencyEstimator(path, 8)
 		e1.mu.Lock()
@@ -120,7 +120,7 @@ func TestConcurrencyEstimator_InitCapFromThreads(t *testing.T) {
 
 func TestConcurrencyEstimator_CircuitOpen(t *testing.T) {
 	dir := testPersistDir(t)
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	path := filepath.Join(dir, "test-concurrency-circuit.json")
 	e := NewConcurrencyEstimator(path, defaultInitCap)
 	e.RecordCircuitOpen()
@@ -135,7 +135,7 @@ func TestConcurrencyEstimator_CircuitOpen(t *testing.T) {
 
 func TestPerModelConcurrencyEstimator_Basic(t *testing.T) {
 	dir := testPersistDir(t)
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	path := filepath.Join(dir, "test-per-model.json")
 
 	p := NewPerModelConcurrencyEstimator(path, 4)
@@ -164,7 +164,7 @@ func TestPerModelConcurrencyEstimator_Basic(t *testing.T) {
 
 func TestPerModelConcurrencyEstimator_PersistAndLoad(t *testing.T) {
 	dir := testPersistDir(t)
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	path := filepath.Join(dir, "test-per-model-persist.json")
 
 	p1 := NewPerModelConcurrencyEstimator(path, 4)
@@ -191,7 +191,7 @@ func TestPerModelConcurrencyEstimator_PersistAndLoad(t *testing.T) {
 // multiple distinct models in a single JSON file.
 func TestPerModelConcurrencyEstimator_MultipleModelsPersist(t *testing.T) {
 	dir := testPersistDir(t)
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	path := filepath.Join(dir, "test-per-model-multi.json")
 
 	p1 := NewPerModelConcurrencyEstimator(path, 4)
@@ -243,7 +243,7 @@ func TestPerModelConcurrencyEstimator_MultipleModelsPersist(t *testing.T) {
 // cap is respected even when not persisted.
 func TestPerModelConcurrencyEstimator_DefaultCapFallback(t *testing.T) {
 	dir := testPersistDir(t)
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	path := filepath.Join(dir, "test-per-model-fallback.json")
 
 	// Custom default cap of 8
@@ -284,7 +284,7 @@ func TestPerModelConcurrencyEstimator_DefaultCapFallback(t *testing.T) {
 // recording requests for one model does not affect another model's cap.
 func TestPerModelConcurrencyEstimator_ConcurrencyIsolation(t *testing.T) {
 	dir := testPersistDir(t)
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 	path := filepath.Join(dir, "test-per-model-isolation.json")
 
 	p := NewPerModelConcurrencyEstimator(path, 4)

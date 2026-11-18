@@ -53,8 +53,8 @@ type WorkerInfo struct {
 	Port         int                   `json:"port"`
 	Status       protocol.WorkerStatus `json:"status"`
 	Version      string                `json:"version"`
-	LoadedModels     []string              `json:"loaded_models"`
-	LastSeen         time.Time             `json:"last_seen"`
+	LoadedModels []string              `json:"loaded_models"`
+	LastSeen     time.Time             `json:"last_seen"`
 	// AdvertisedModels is the worker's full per-model capability list,
 	// surfaced separately from LoadedModels so the UI can render models
 	// that are advertised but not yet loaded in VRAM (e.g. LM Studio,
@@ -135,18 +135,18 @@ func (s *Server) handleWorkersList(w http.ResponseWriter, r *http.Request) {
 		}
 		sw := s.toSchedulerWorker(w, l, true, firstLoaded)
 		workers = append(workers, WorkerInfo{
-			ID:              w.ID,
-			Hostname:        w.Hostname,
-			IP:              w.IP,
-			Port:            w.Port,
-			Status:          busyStatus(w.Status, l),
-			Version:         w.Version,
-			LoadedModels:    getLoadedModelNames(w.Capabilities.Models),
+			ID:               w.ID,
+			Hostname:         w.Hostname,
+			IP:               w.IP,
+			Port:             w.Port,
+			Status:           busyStatus(w.Status, l),
+			Version:          w.Version,
+			LoadedModels:     getLoadedModelNames(w.Capabilities.Models),
 			AdvertisedModels: advertisedModels(w.Capabilities.Models),
-			LastSeen:        w.LastSeen,
-			InFlight:        l.InFlight,
-			MaxInFlight:     l.MaxInFlight,
-			TokensPerSecond: sw.TokensPerSecond,
+			LastSeen:         w.LastSeen,
+			InFlight:         l.InFlight,
+			MaxInFlight:      l.MaxInFlight,
+			TokensPerSecond:  sw.TokensPerSecond,
 		})
 	}
 
@@ -369,10 +369,10 @@ func (s *Server) handlePopularModels(w http.ResponseWriter, r *http.Request) {
 			} else {
 				// Create alias entry with canonical's stats
 				statsMap[alias] = &modelStats{
-					model:         alias,
-					workerCount:   stat.workerCount,
-					loadedCount:   stat.loadedCount,
-					callCount:     stat.callCount,
+					model:       alias,
+					workerCount: stat.workerCount,
+					loadedCount: stat.loadedCount,
+					callCount:   stat.callCount,
 				}
 			}
 			// Delete the canonical entry

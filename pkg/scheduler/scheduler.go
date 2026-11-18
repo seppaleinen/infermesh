@@ -32,20 +32,20 @@ type ModelRequest struct {
 // WorkerInfo represents a worker with the fields needed for scoring.
 // This is a subset of protocol.WorkerInfo to avoid coupling.
 type WorkerInfo struct {
-	ID            string
-	Addr          string
-	Models        []protocol.ModelInfo
-	VRAMTotalMB   int
-	VRAMFreeMB    int
-	GPUUtilPct    float64 // 0-100
-	QueueDepth    int
-	InFlight      int     // active inference calls dispatched to this worker
-	MaxInFlight   int     // configured per-worker cap (0 = unknown)
+	ID          string
+	Addr        string
+	Models      []protocol.ModelInfo
+	VRAMTotalMB int
+	VRAMFreeMB  int
+	GPUUtilPct  float64 // 0-100
+	QueueDepth  int
+	InFlight    int // active inference calls dispatched to this worker
+	MaxInFlight int // configured per-worker cap (0 = unknown)
 	// ModelMaxInFlight is the per-model concurrency cap. Key is model name.
 	// When set for the requested model, it takes precedence over MaxInFlight.
 	ModelMaxInFlight map[string]int
-	AvgLatencyMS  float64 // Moving average
-	LastHeartbeat time.Time
+	AvgLatencyMS     float64 // Moving average
+	LastHeartbeat    time.Time
 
 	// TokensPerSecond is the worker's advertised throughput for the model
 	// being scheduled (issue #134). -1 means unknown: the scorer treats it
