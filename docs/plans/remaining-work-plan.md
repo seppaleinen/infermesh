@@ -1,18 +1,18 @@
 # Plan: Remaining work after the three-phase cold-load fix
 
-Status: [PROPOSED]
-Baseline: main @ 50df125 (pushed 2026-11-15); latest tag v0.1.69
+Status: [COMPLETE — item 1 done 2026-11-18]
+Baseline: main @ ef84ec5 (pushed 2026-11-18); latest tag v0.1.77
 Scope: infermesh repo only (pkg/, cmd/, tests/). app/ excluded unless noted.
 
-## 1. Tag + release the current push (v0.1.70)
+## 1. Tag + release the current push (v0.1.77)
 
 `main` is green and pushed. The release workflow triggers on push to `main`
-and creates the next patch tag + GHCR images on CI success. Verify the
-pipeline actually completed:
-- [ ] `ci.yml` green on `50df125`
-- [ ] Tag `v0.1.70` created (bumps patch from `v0.1.69`)
-- [ ] GHCR images pushed (`router:v0.1.70`, `worker:v0.1.70`)
-- [ ] Fleet-infra image tags bumped; Flux reconciles; pods roll to new images
+and creates the next patch tag + GHCR images on CI success. Pipeline
+completed:
+- [x] `ci.yml` green on `ef84ec5` (after gofmt fix + test-flake fix + .gitkeep restore)
+- [x] Tag `v0.1.77` created (bumps patch from `v0.1.75`; v0.1.76 was an intermediate artifact)
+- [x] GHCR images pushed (`router:v0.1.77`, `worker:v0.1.77`, `relay:v0.1.77-amd64`, amd64+arm64)
+- [x] Fleet-infra image tags bumped to v0.1.77 (commit `32787dfa`); Flux reconciled; pods rolled to v0.1.77 and are Running
 
 ## 2. Usage.CompletionTokensDetails — reasoning token accounting
 
