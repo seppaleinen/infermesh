@@ -53,6 +53,7 @@ func TestConfigSaveLoadRoundTrip(t *testing.T) {
 		TierComplex:     "large-model",
 		TierHard:        "hard-model",
 		TierHardest:     "hardest-model",
+		AutoModelName:   "auto",
 		SimpleMaxTokens: 150,
 		MediumMaxTokens: 500,
 	}

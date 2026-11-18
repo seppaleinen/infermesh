@@ -19,6 +19,7 @@ type AutoRoutingSettings struct {
 	TierComplex     string `json:"tier_complex"`
 	TierHard        string `json:"tier_hard"`
 	TierHardest     string `json:"tier_hardest"`
+	AutoModelName   string `json:"auto_model_name,omitempty"`
 	SimpleMaxTokens int    `json:"simple_max_tokens"`
 	MediumMaxTokens int    `json:"medium_max_tokens"`
 }
