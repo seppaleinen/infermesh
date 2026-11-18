@@ -195,11 +195,11 @@ func TestPerModelEstimator_StopDuringTimerFire(t *testing.T) {
 
 func TestPerModelEstimator_LoadMalformedPersistedJSON(t *testing.T) {
 	tests := []struct {
-		name      string
-		payload   string
-		wantCap   int // expected fallback cap for unknown model
-		modelCap  int // expected cap for model "test-model" if loaded
-		modelOK   bool
+		name     string
+		payload  string
+		wantCap  int // expected fallback cap for unknown model
+		modelCap int // expected cap for model "test-model" if loaded
+		modelOK  bool
 	}{
 		{
 			name:     "valid JSON with int values",
@@ -209,16 +209,16 @@ func TestPerModelEstimator_LoadMalformedPersistedJSON(t *testing.T) {
 			modelOK:  true,
 		},
 		{
-			name:     "JSON with float value (should unmarshal to int 0)",
-			payload:  `{"test-model": 3.7}`,
-			wantCap:  4,
-			modelOK:  false, // will be clamped to minCap=1
+			name:    "JSON with float value (should unmarshal to int 0)",
+			payload: `{"test-model": 3.7}`,
+			wantCap: 4,
+			modelOK: false, // will be clamped to minCap=1
 		},
 		{
-			name:     "JSON with string value (unmarshal error)",
-			payload:  `{"test-model": "three"}`,
-			wantCap:  4,
-			modelOK:  false,
+			name:    "JSON with string value (unmarshal error)",
+			payload: `{"test-model": "three"}`,
+			wantCap: 4,
+			modelOK: false,
 		},
 		{
 			name:     "JSON with null value (unmarshal to 0 -> clamped to minCap)",
@@ -228,22 +228,22 @@ func TestPerModelEstimator_LoadMalformedPersistedJSON(t *testing.T) {
 			modelOK:  true,
 		},
 		{
-			name:     "truncated JSON",
-			payload:  `{"test-model": 3, "other-`,
-			wantCap:  4,
-			modelOK:  false, // unmarshal fails, no models loaded
+			name:    "truncated JSON",
+			payload: `{"test-model": 3, "other-`,
+			wantCap: 4,
+			modelOK: false, // unmarshal fails, no models loaded
 		},
 		{
-			name:     "empty object",
-			payload:  `{}`,
-			wantCap:  4,
-			modelOK:  false,
+			name:    "empty object",
+			payload: `{}`,
+			wantCap: 4,
+			modelOK: false,
 		},
 		{
-			name:     "not JSON at all",
-			payload:  `hello world`,
-			wantCap:  4,
-			modelOK:  false,
+			name:    "not JSON at all",
+			payload: `hello world`,
+			wantCap: 4,
+			modelOK: false,
 		},
 	}
 
