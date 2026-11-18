@@ -620,7 +620,9 @@ func TestPerModelEstimator_ZeroStatusCodeNot429(t *testing.T) {
 
 	p := NewPerModelConcurrencyEstimator(path, 4)
 
-	for i := 0; i < 10; i++ {
+	// Use exactly 4 requests so the latency-spike path (which needs >= 5
+	// samples) does not trigger. This isolates the 429-specific check.
+	for i := 0; i < 4; i++ {
 		p.RecordRequest(time.Now(), 0, "zero-model")
 	}
 	p.recomputeAll()
