@@ -34,6 +34,7 @@ On success, returns HTTP 200 with JSON body:
     {
       "model": "string",
       "worker_count": int,
+      "loaded_worker_count": int,
       "call_count": int
     }
   ]
@@ -42,9 +43,15 @@ On success, returns HTTP 200 with JSON body:
 
 - `model`: model identifier (e.g. `"gpt-oss-20b"`)
 - `worker_count`: number of workers advertising this model (regardless of whether the model is currently loaded on that worker)
+- `loaded_worker_count`: number of those workers on which the model is currently loaded (in VRAM). May be less than `worker_count` when a model is advertised but not yet loaded.
 - `call_count`: number of inference requests for this model in the last 10 minutes (rolling window)
 
-The array is sorted in descending order by `worker_count`. Ties are broken by model name lexicographically (ascending) for deterministic output.
+The array is sorted in descending order by `loaded_worker_count`, then by
+`call_count` descending, then by model name lexicographically (ascending) for
+deterministic output. Loaded models therefore lead the list; within the loaded
+tier, the most-used models rank first. The `call_count` key is a stable
+tiebreak — it only reorders models that share the same `loaded_worker_count`,
+so a refresh updates contents without reordering the already-ranked rows.
 
 ## 5. Semantics
 
