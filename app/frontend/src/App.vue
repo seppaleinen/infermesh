@@ -625,6 +625,7 @@ function prevModelPage() {
                     :status="w.status"
                     :version="w.version"
                     :loaded-models="w.loaded_models"
+                    :advertised-models="w.advertised_models"
                     :last-seen-rel="relativeLastSeen(w.last_seen)"
                     :last-seen-absolute="formatAbsolute(w.last_seen)"
                     :is-local="isLocalWorker(w)"

@@ -22,17 +22,37 @@ import (
 // delegates to pkg/routeraddr.Normalize (issue #103 R2).
 const defaultRouterURL = "http://127.0.0.1:8080"
 
+// ModelView is the UI projection of protocol.ModelInfo. It mirrors the
+// protocol field tags exactly so the generated Wails binding is a straight
+// pass-through, and adds a Loaded flag the Vue side uses to distinguish
+// models that are actually in VRAM from models that are merely advertised
+// (e.g. LM Studio, which reports Loaded=false for every model — issue #205).
+type ModelView struct {
+	Name         string `json:"name"`
+	Size         int64  `json:"size_bytes"`
+	Quantization string `json:"quantization"`
+	MaxTokens    int    `json:"max_tokens"`
+	Backend      string `json:"backend"`
+	Loaded       bool   `json:"loaded"`
+}
+
 // WorkerView is the slim projection the desktop UI renders. It mirrors
 // router.WorkerInfo (the /v1/workers projection) but adds a friendly
 // relative "last seen" string computed client-side.
 type WorkerView struct {
-	ID           string    `json:"id"`
-	Hostname     string    `json:"hostname"`
-	IP           string    `json:"ip"`
-	Port         int       `json:"port"`
-	Status       string    `json:"status"`
-	Version      string    `json:"version"`
-	LoadedModels []string  `json:"loaded_models"`
+	ID           string      `json:"id"`
+	Hostname     string      `json:"hostname"`
+	IP           string      `json:"ip"`
+	Port         int         `json:"port"`
+	Status       string      `json:"status"`
+	Version      string      `json:"version"`
+	LoadedModels []string    `json:"loaded_models"`
+	// AdvertisedModels is the worker's full per-model capability list,
+	// surfaced separately from LoadedModels so the UI can render models
+	// that are advertised but not yet loaded in VRAM (issue #205). Each
+	// entry carries its own Loaded flag. Nil/empty when the worker
+	// advertises no models; the field serializes as omitted.
+	AdvertisedModels []ModelView `json:"advertised_models,omitempty"`
 	LastSeen     time.Time `json:"last_seen"`
 	// LastSeenRel is "3s ago" / "just now" — derived from LastSeen at render time.
 	LastSeenRel string `json:"last_seen_rel"`
@@ -264,6 +284,26 @@ func toWorkerView(w router.WorkerInfo) WorkerView {
 		loaded = []string{}
 	}
 
+	advertised := w.AdvertisedModels
+	if len(advertised) == 0 {
+		advertised = nil
+	}
+	var views []ModelView
+	if advertised != nil {
+		views = make([]ModelView, 0, len(advertised))
+		for _, m := range advertised {
+			views = append(views, ModelView{
+				Name:         m.Name,
+				Size:         m.Size,
+				Quantization: m.Quantization,
+				MaxTokens:    m.MaxTokens,
+				Backend:      m.Backend,
+				Loaded:       m.Loaded,
+			})
+		}
+	}
+	// views is nil when no advertised models → omitted by omitempty
+
 	return WorkerView{
 		ID:              w.ID,
 		Hostname:        w.Hostname,
@@ -272,6 +312,7 @@ func toWorkerView(w router.WorkerInfo) WorkerView {
 		Status:          status,
 		Version:         w.Version,
 		LoadedModels:    loaded,
+		AdvertisedModels: views,
 		LastSeen:        w.LastSeen,
 		Address:         address,
 		InFlight:        w.InFlight,

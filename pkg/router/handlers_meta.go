@@ -53,8 +53,16 @@ type WorkerInfo struct {
 	Port         int                   `json:"port"`
 	Status       protocol.WorkerStatus `json:"status"`
 	Version      string                `json:"version"`
-	LoadedModels []string              `json:"loaded_models"`
-	LastSeen     time.Time             `json:"last_seen"`
+	LoadedModels     []string              `json:"loaded_models"`
+	LastSeen         time.Time             `json:"last_seen"`
+	// AdvertisedModels is the worker's full per-model capability list,
+	// surfaced separately from LoadedModels so the UI can render models
+	// that are advertised but not yet loaded in VRAM (e.g. LM Studio,
+	// which exposes no load-status endpoint and therefore reports
+	// Loaded=false for every model — issue #205). Each entry carries its
+	// own Loaded flag. It is the same slice as Capabilities.Models;
+	// omitted from JSON when empty so legacy clients are unaffected.
+	AdvertisedModels []protocol.ModelInfo `json:"advertised_models,omitempty"`
 	// InFlight and MaxInFlight are populated from the hub's live load snapshot
 	// so the UI can render a per-worker concurrency ratio (e.g. "3/5 calls")
 	// without a second call to /v1/queue/stats. Both are 0 when the hub has
@@ -134,6 +142,7 @@ func (s *Server) handleWorkersList(w http.ResponseWriter, r *http.Request) {
 			Status:          busyStatus(w.Status, l),
 			Version:         w.Version,
 			LoadedModels:    getLoadedModelNames(w.Capabilities.Models),
+			AdvertisedModels: advertisedModels(w.Capabilities.Models),
 			LastSeen:        w.LastSeen,
 			InFlight:        l.InFlight,
 			MaxInFlight:     l.MaxInFlight,
@@ -156,6 +165,23 @@ func getLoadedModelNames(models []protocol.ModelInfo) []string {
 		}
 	}
 	return names
+}
+
+// advertisedModels returns the worker's full per-model capability list as
+// the projection surface for the UI (issue #205). Unlike getLoadedModelNames
+// it does not filter on Loaded: backends such as LM Studio that expose no
+// load-status endpoint report Loaded=false for every model, and those models
+// are still advertised and routable. The slice is copied so the caller
+// cannot mutate the cache's backing slice through the projection; nil is
+// returned when the worker advertises no models so the field serializes as
+// omitted (json omitempty) and legacy clients are unaffected.
+func advertisedModels(models []protocol.ModelInfo) []protocol.ModelInfo {
+	if len(models) == 0 {
+		return nil
+	}
+	out := make([]protocol.ModelInfo, len(models))
+	copy(out, models)
+	return out
 }
 
 // handleModelsList handles the /v1/models HTTP endpoint.

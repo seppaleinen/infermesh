@@ -67,6 +67,22 @@ export interface InflightRequestView {
 }
 
 /**
+ * ModelView is the UI projection of protocol.ModelInfo. It mirrors the
+ * protocol field tags exactly so the generated Wails binding is a straight
+ * pass-through, and adds a Loaded flag the Vue side uses to distinguish
+ * models that are actually in VRAM from models that are merely advertised
+ * (e.g. LM Studio, which reports Loaded=false for every model — issue #205).
+ */
+export interface ModelView {
+    "name": string;
+    "size_bytes": number;
+    "quantization": string;
+    "max_tokens": number;
+    "backend": string;
+    "loaded": boolean;
+}
+
+/**
  * PopularModelView is the UI projection of router.PopularModelInfo. Field
  * names mirror the router JSON tags exactly so the generated Wails binding
  * is a straight pass-through.
@@ -167,6 +183,15 @@ export interface WorkerView {
     "status": string;
     "version": string;
     "loaded_models": string[] | null;
+
+    /**
+     * AdvertisedModels is the worker's full per-model capability list,
+     * surfaced separately from LoadedModels so the UI can render models
+     * that are advertised but not yet loaded in VRAM (issue #205). Each
+     * entry carries its own Loaded flag. Nil/empty when the worker
+     * advertises no models; the field serializes as omitted.
+     */
+    "advertised_models"?: ModelView[] | null;
     "last_seen": string;
 
     /**

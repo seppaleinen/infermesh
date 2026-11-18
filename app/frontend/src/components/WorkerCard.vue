@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import type { ModelView } from '../../bindings/github.com/seppaleinen/infermesh/app/models'
 
 export interface WorkerCardProps {
   id: string
@@ -8,6 +9,7 @@ export interface WorkerCardProps {
   status: string
   version: string
   loadedModels: string[] | null
+  advertisedModels?: ModelView[] | null
   lastSeenRel: string
   lastSeenAbsolute: string
   isLocal?: boolean
@@ -32,8 +34,24 @@ const dotClass = computed(() => {
 
 const statusLabel = computed(() => props.status || 'unknown')
 
-const models = computed(() => props.loadedModels ?? [])
-const hasModels = computed(() => models.value.length > 0)
+// The "available models" row renders the worker's advertised capability
+// list when the router surfaces it (issue #205). Loaded models render as
+// filled accent chips; advertised-but-not-loaded models render as
+// outlined chips so LM Studio workers (which report Loaded=false for
+// every model) still show their models instead of a "—". When the router
+// provides no advertised list we fall back to the legacy LoadedModels
+// string list, and when both are empty we show "—".
+const advertised = computed(() => props.advertisedModels ?? [])
+const hasAdvertised = computed(() => advertised.value.length > 0)
+
+const chips = computed(() => {
+  if (hasAdvertised.value) {
+    return advertised.value.map(m => ({ name: m.name, loaded: m.loaded }))
+  }
+  return (props.loadedModels ?? []).map(name => ({ name, loaded: true }))
+})
+
+const hasModels = computed(() => chips.value.length > 0)
 
 // Concurrency ratio ("3/5 calls"). Hidden when the router reports no cap
 // (maxInFlight <= 0) so idle workers don't show a meaningless "0/0".
@@ -81,7 +99,13 @@ const throughput = computed(() => {
         <span class="worker-k">available models</span>
         <span class="worker-v">
           <template v-if="hasModels">
-            <span v-for="m in models" :key="m" class="model-chip">{{ m }}</span>
+            <span
+              v-for="m in chips"
+              :key="m.name"
+              class="model-chip"
+              :class="{ 'model-chip-advertised': !m.loaded }"
+              :title="m.loaded ? 'loaded in VRAM' : 'advertised, not yet loaded'"
+            >{{ m.name }}</span>
           </template>
           <template v-else>—</template>
         </span>
@@ -269,5 +293,11 @@ const throughput = computed(() => {
   border: 1px solid rgba(93, 252, 190, 0.28);
   border-radius: 999px;
   background: var(--accent-dim);
+}
+
+.model-chip-advertised {
+  color: var(--text-muted);
+  border-color: var(--border);
+  background: transparent;
 }
 </style>
