@@ -238,10 +238,16 @@ func (s *Server) handleModelsList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// When auto routing is enabled, advertise the synthetic "auto" alias so
+	// When auto routing is enabled, advertise the synthetic alias model so
 	// OpenAI-compatible clients discover it alongside concrete models.
+	// The model name is configurable via the AutoModelName field in the
+	// auto-routing configuration; defaults to "auto" if not set.
 	// autoRouting is protected by its own mutex.
 	s.autoRoutingMu.RLock()
+	autoModelAlias := "auto"
+	if s.autoRouting != nil && s.autoRouting.AutoModelName != "" {
+		autoModelAlias = s.autoRouting.AutoModelName
+	}
 	if s.autoRoutingActiveLocked() {
 		models = append(models, protocol.ModelInfo{
 			Name:      autoModelAlias,

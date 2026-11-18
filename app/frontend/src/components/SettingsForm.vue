@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   AutoStartService,
   ConfigService,
@@ -7,6 +7,7 @@ import {
   type Settings,
 } from '../../bindings/github.com/seppaleinen/infermesh/app'
 import { useSettings } from '../composables/useSettings'
+import { usePopularModels } from '../composables/usePopularModels'
 import { isMTLSVisible } from '../composables/settingsGroups'
 
 const {
@@ -20,6 +21,26 @@ const {
   getSecret,
   deleteSecret,
 } = useSettings()
+
+// Popular models dropdown data — powers the tier model pickers.
+// The composable is started lazily; the dropdowns filter client-side
+// so they work even when the router is unreachable (showing only
+// what has been fetched so far).
+const {
+  state: popularModelsState,
+  start: startPopularModels,
+  stop: stopPopularModels,
+} = usePopularModels()
+
+// Flat array of popular models for the datalist options. Empty when the
+// router is unreachable or has no models — the picker still works as a
+// plain text input in that case.
+const popularModels = computed(() => {
+  if (popularModelsState.value.kind === 'ready') {
+    return popularModelsState.value.data
+  }
+  return []
+})
 
 const emit = defineEmits({
   saved: null,
@@ -90,6 +111,7 @@ const autoRouting = computed(() => {
       tier_complex: '',
       tier_hard: '',
       tier_hardest: '',
+      auto_model_name: '',
       simple_max_tokens: 0,
       medium_max_tokens: 0,
     }
@@ -141,6 +163,7 @@ async function loadSettings(): Promise<void> {
           tier_complex: '',
           tier_hard: '',
           tier_hardest: '',
+          auto_model_name: '',
           simple_max_tokens: 0,
           medium_max_tokens: 0,
         }
@@ -403,6 +426,7 @@ async function handleSave(): Promise<void> {
           enabled: ar.enabled,
           use_four_tier: ar.use_four_tier,
           models,
+          auto_model_name: ar.auto_model_name,
           simple_max_tokens: ar.simple_max_tokens,
           medium_max_tokens: ar.medium_max_tokens,
         })
@@ -445,6 +469,13 @@ function handleCancel(): void {
 
 onMounted(() => {
   void loadSettings()
+  // Start polling for popular models so the tier pickers are populated.
+  // The composable is stopped on unmount to avoid a dangling poll.
+  startPopularModels()
+})
+
+onBeforeUnmount(() => {
+  stopPopularModels()
 })
 </script>
 
@@ -956,10 +987,19 @@ qwen-coder-7b=qwen2.5-coder-7b-instruct-mlx@4bit"
             <input
               id="auto_routing_tier_simple"
               type="text"
+              list="auto_routing_tier_simple_list"
               v-model="autoRouting.tier_simple"
               :disabled="saving"
               placeholder="Model name for simple prompts"
             />
+            <datalist id="auto_routing_tier_simple_list">
+              <option
+                v-for="m in popularModels"
+                :key="m.model"
+                :value="m.model"
+                :label="m.loaded_worker_count > 0 ? `${m.model} (${m.loaded_worker_count} loaded)` : m.model"
+              />
+            </datalist>
           </div>
 
           <div v-if="autoRouting?.enabled" class="field">
@@ -967,10 +1007,19 @@ qwen-coder-7b=qwen2.5-coder-7b-instruct-mlx@4bit"
             <input
               id="auto_routing_tier_medium"
               type="text"
+              list="auto_routing_tier_medium_list"
               v-model="autoRouting.tier_medium"
               :disabled="saving"
               placeholder="Model name for medium-complexity prompts"
             />
+            <datalist id="auto_routing_tier_medium_list">
+              <option
+                v-for="m in popularModels"
+                :key="m.model"
+                :value="m.model"
+                :label="m.loaded_worker_count > 0 ? `${m.model} (${m.loaded_worker_count} loaded)` : m.model"
+              />
+            </datalist>
           </div>
 
           <div v-if="autoRouting?.enabled" class="field">
@@ -978,10 +1027,19 @@ qwen-coder-7b=qwen2.5-coder-7b-instruct-mlx@4bit"
             <input
               id="auto_routing_tier_complex"
               type="text"
+              list="auto_routing_tier_complex_list"
               v-model="autoRouting.tier_complex"
               :disabled="saving"
               placeholder="Model name for complex prompts (3-tier top tier)"
             />
+            <datalist id="auto_routing_tier_complex_list">
+              <option
+                v-for="m in popularModels"
+                :key="m.model"
+                :value="m.model"
+                :label="m.loaded_worker_count > 0 ? `${m.model} (${m.loaded_worker_count} loaded)` : m.model"
+              />
+            </datalist>
           </div>
 
           <div v-if="autoRouting?.enabled && autoRouting.use_four_tier" class="field">
@@ -989,10 +1047,19 @@ qwen-coder-7b=qwen2.5-coder-7b-instruct-mlx@4bit"
             <input
               id="auto_routing_tier_hard"
               type="text"
+              list="auto_routing_tier_hard_list"
               v-model="autoRouting.tier_hard"
               :disabled="saving"
               placeholder="Model name for hard reasoning prompts (4-tier only)"
             />
+            <datalist id="auto_routing_tier_hard_list">
+              <option
+                v-for="m in popularModels"
+                :key="m.model"
+                :value="m.model"
+                :label="m.loaded_worker_count > 0 ? `${m.model} (${m.loaded_worker_count} loaded)` : m.model"
+              />
+            </datalist>
           </div>
 
           <div v-if="autoRouting?.enabled && autoRouting.use_four_tier" class="field">
@@ -1000,10 +1067,37 @@ qwen-coder-7b=qwen2.5-coder-7b-instruct-mlx@4bit"
             <input
               id="auto_routing_tier_hardest"
               type="text"
+              list="auto_routing_tier_hardest_list"
               v-model="autoRouting.tier_hardest"
               :disabled="saving"
               placeholder="Model name for hardest prompts (4-tier top tier)"
             />
+            <datalist id="auto_routing_tier_hardest_list">
+              <option
+                v-for="m in popularModels"
+                :key="m.model"
+                :value="m.model"
+                :label="m.loaded_worker_count > 0 ? `${m.model} (${m.loaded_worker_count} loaded)` : m.model"
+              />
+            </datalist>
+          </div>
+
+          <div v-if="autoRouting?.enabled" class="field">
+            <label for="auto_routing_auto_model_name">Auto model name</label>
+            <input
+              id="auto_routing_auto_model_name"
+              type="text"
+              v-model="autoRouting.auto_model_name"
+              :disabled="saving"
+              placeholder="auto"
+            />
+            <span class="field-help"
+              >The synthetic model name advertised to clients when auto routing is
+              enabled. A client requesting this model has the router pick a
+              tier-appropriate model automatically. Defaults to "auto" when left
+              blank. This is distinct from user-facing model aliases — it is
+              only advertised while auto routing is on.</span
+            >
           </div>
 
           <div v-if="autoRouting?.enabled" class="field">

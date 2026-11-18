@@ -9,6 +9,7 @@ export interface AutoRoutingConfigRequest {
     "enabled": boolean;
     "use_four_tier": boolean;
     "models": { [_ in string]?: string } | null;
+    "auto_model_name"?: string;
     "simple_max_tokens": number;
     "medium_max_tokens": number;
 }
@@ -25,6 +26,7 @@ export interface AutoRoutingSettings {
     "tier_complex": string;
     "tier_hard": string;
     "tier_hardest": string;
+    "auto_model_name"?: string;
     "simple_max_tokens": number;
     "medium_max_tokens": number;
 }

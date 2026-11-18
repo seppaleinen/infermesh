@@ -83,6 +83,11 @@ type AutoRoutingConfig struct {
 	// When false (default), uses 3-tier mode (Simple/Medium/Complex) for
 	// backward compatibility.
 	UseFourTierMode bool
+
+	// AutoModelName is the synthetic model name advertised when auto routing
+	// is enabled. Clients can request this name and the router will pick
+	// a tier-appropriate model. Defaults to "auto" if empty.
+	AutoModelName string
 }
 
 // classifierRegexes holds pre-compiled regexes for signal detection.

@@ -12,6 +12,7 @@ type AutoRoutingConfigRequest struct {
 	Enabled         bool              `json:"enabled"`
 	UseFourTier     bool              `json:"use_four_tier"`
 	Models          map[string]string `json:"models"` // tier name → model name
+	AutoModelName   string            `json:"auto_model_name,omitempty"`
 	SimpleMaxTokens int               `json:"simple_max_tokens"`
 	MediumMaxTokens int               `json:"medium_max_tokens"`
 }
@@ -92,6 +93,13 @@ func buildAutoRoutingConfig(req *AutoRoutingConfigRequest) *AutoRoutingConfig {
 		return nil
 	}
 
+	// Default auto model name to "auto" for backward compatibility;
+	// old clients that omit the field will get the default "auto".
+	autoModelName := req.AutoModelName
+	if autoModelName == "" {
+		autoModelName = "auto"
+	}
+
 	simpleMax := req.SimpleMaxTokens
 	if simpleMax <= 0 {
 		simpleMax = 200
@@ -115,6 +123,7 @@ func buildAutoRoutingConfig(req *AutoRoutingConfigRequest) *AutoRoutingConfig {
 		SimpleMaxTokens: simpleMax,
 		MediumMaxTokens: mediumMax,
 		UseFourTierMode: req.UseFourTier,
+		AutoModelName:   autoModelName,
 	}
 }
 
@@ -154,6 +163,7 @@ func toAutoRoutingConfigDTO(cfg *AutoRoutingConfig) AutoRoutingConfigRequest {
 		Enabled:         true,
 		UseFourTier:     cfg.UseFourTierMode,
 		Models:          models,
+		AutoModelName:   cfg.AutoModelName,
 		SimpleMaxTokens: simpleMax,
 		MediumMaxTokens: mediumMax,
 	}

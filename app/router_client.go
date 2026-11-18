@@ -701,11 +701,12 @@ func parseConnectionCountResponse(body []byte) (int, error) {
 // AutoRoutingConfigRequest is the JSON DTO for GET/POST /meta/auto-routing.
 // Mirrors the router's AutoRoutingConfigRequest type.
 type AutoRoutingConfigRequest struct {
-	Enabled         bool              `json:"enabled"`
-	UseFourTier     bool              `json:"use_four_tier"`
-	Models          map[string]string `json:"models"`
-	SimpleMaxTokens int               `json:"simple_max_tokens"`
-	MediumMaxTokens int               `json:"medium_max_tokens"`
+	Enabled           bool              `json:"enabled"`
+	UseFourTier       bool              `json:"use_four_tier"`
+	Models            map[string]string `json:"models"`
+	AutoModelName     string            `json:"auto_model_name,omitempty"`
+	SimpleMaxTokens   int               `json:"simple_max_tokens"`
+	MediumMaxTokens   int               `json:"medium_max_tokens"`
 }
 
 // autoRoutingPath builds the full /meta/auto-routing URL for the configured base.
