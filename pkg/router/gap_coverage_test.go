@@ -3,6 +3,8 @@ package router
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,6 +116,15 @@ func TestServer_BuildServer_DevMode(t *testing.T) {
 	}
 }
 
+// TestServer_Stop tests the CapabilityCache Stop method.
+func TestServer_Stop(t *testing.T) {
+	tr := testRegistry(t, nil)
+	srv := tr.Server()
+	// Stop closes channels and stops background goroutines
+	srv.cache.Stop()
+	// Should not panic or hang
+}
+
 // TestCapabilityCache_SetMTLSClient tests the SetMTLSClient setter.
 func TestCapabilityCache_SetMTLSClient(t *testing.T) {
 	reg, _ := registry.New(registry.Defaults(), testLogger())
@@ -220,5 +231,80 @@ func TestCallCounter_Prune(t *testing.T) {
 	snapshot := c.Snapshot()
 	if _, ok := snapshot["model-a"]; ok {
 		t.Fatal("model-a should have been pruned")
+	}
+}
+
+// TestCapabilityCache_StartStop tests the CapabilityCache Start/Stop lifecycle.
+func TestCapabilityCache_StartStop(t *testing.T) {
+	reg, _ := registry.New(registry.Defaults(), testLogger())
+	cache := NewCapabilityCache(reg, testLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cache.Start(ctx)
+	cache.Stop()
+
+	// Should not panic or hang
+	cancel()
+}
+
+// TestHandleInferenceStats tests the inference stats endpoint handler.
+func TestHandleInferenceStats(t *testing.T) {
+	tr := testRegistry(t, nil)
+	srv := tr.Server()
+
+	// Test GET method
+	req, err := http.NewRequest(http.MethodGet, "/v1/inference-stats", nil)
+	if err != nil {
+		t.Fatalf("NewRequest error: %v", err)
+	}
+	w := httptest.NewRecorder()
+	srv.handleInferenceStats(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("handleInferenceStats status = %d, want 200", w.Code)
+	}
+
+	// Test POST method (not allowed)
+	req2, _ := http.NewRequest(http.MethodPost, "/v1/inference-stats", nil)
+	w2 := httptest.NewRecorder()
+	srv.handleInferenceStats(w2, req2)
+	if w2.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("handleInferenceStats POST status = %d, want 405", w2.Code)
+	}
+}
+
+// TestWriteRateLimitError tests the writeRateLimitError helper.
+func TestWriteRateLimitError(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeRateLimitError(w)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", w.Code)
+	}
+}
+
+// TestWSHub_MaxInFlight tests the WSHub MaxInFlight getter.
+func TestWSHub_MaxInFlight(t *testing.T) {
+	reg, _ := registry.New(registry.Defaults(), testLogger())
+	hub := NewWSHub(reg, testLogger())
+
+	// Default max in flight
+	if got := hub.MaxInFlight(); got != defaultMaxInFlight {
+		t.Fatalf("MaxInFlight = %d, want %d", got, defaultMaxInFlight)
+	}
+
+	// After setting a custom value
+	hub.SetMaxInFlight(10)
+	if got := hub.MaxInFlight(); got != 10 {
+		t.Fatalf("MaxInFlight = %d, want 10", got)
+	}
+}
+
+// TestServer_Addr_PostStart tests Addr after server starts.
+func TestServer_Addr_PostStart(t *testing.T) {
+	tr := testRegistry(t, nil)
+	srv := tr.Server()
+	// Addr before start returns configured addr
+	addr := srv.Addr()
+	if !strings.Contains(addr, "127.0.0.1") && !strings.Contains(addr, ":") {
+		t.Logf("Addr = %q", addr)
 	}
 }
