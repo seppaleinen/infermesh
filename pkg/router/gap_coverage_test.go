@@ -2,8 +2,10 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -150,24 +152,39 @@ func TestCapabilityCache_ListInferenceStats(t *testing.T) {
 }
 
 // TestCapabilityCache_deleteWorkerInferenceStats tests the internal delete function.
+// Update() fetches capabilities over HTTP from the worker, so we serve a
+// mock /capabilities endpoint that advertises InferenceStats.
 func TestCapabilityCache_deleteWorkerInferenceStats(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(protocol.WorkerInfo{
+			ID:       "worker-1",
+			Hostname: "host-1",
+			IP:       "127.0.0.1",
+			Port:     8081,
+			Capabilities: protocol.Capabilities{
+				Models: []protocol.ModelInfo{{Name: "model-a", Loaded: true}},
+				InferenceStats: []protocol.InferenceStatsSnapshot{
+					{Model: "model-a", TokensPerSecond: 100, AvgTTFTMs: 50, Samples: 10},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	_, portStr, _ := strings.Cut(strings.TrimPrefix(server.URL, "http://"), ":")
+	port, _ := strconv.Atoi(portStr)
+
 	reg, _ := registry.New(registry.Defaults(), testLogger())
 	cache := NewCapabilityCache(reg, testLogger())
 
-	// First, add some stats via Update with a worker that has InferenceStats
 	wrk := protocol.WorkerInfo{
 		ID:       "worker-1",
 		Hostname: "host-1",
 		IP:       "127.0.0.1",
-		Port:     8081,
+		Port:     port,
 		Status:   protocol.StatusAvailable,
 		Version:  "v1",
-		Capabilities: protocol.Capabilities{
-			Models: []protocol.ModelInfo{{Name: "model-a", Loaded: true}},
-			InferenceStats: []protocol.InferenceStatsSnapshot{
-				{Model: "model-a", TokensPerSecond: 100, AvgTTFTMs: 50, Samples: 10},
-			},
-		},
 	}
 	if err := cache.Update(wrk); err != nil {
 		t.Fatalf("Update() err = %v", err)
