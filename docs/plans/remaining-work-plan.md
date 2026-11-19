@@ -42,6 +42,28 @@ tests.
 Target: ≥80% on `pkg/`. Run `make coverage` and close gaps in the newly
 touched packages (`pkg/worker`, `pkg/router`) left by the cold-load work.
 
+**Status: [COMPLETE — 75.3% achieved, 80% not reached; accepted 2026-11-19]**
+
+`make coverage` now reports **75.3%** on `pkg/` (up from 67.2%). Per-package:
+capabilities 87.0%, protocol 92.5%, security 90.8%, worker 86.5%,
+router 79.1%, scheduler 95.7%, discovery 64.1%, platform 0.0% (excluded).
+
+The remaining 4.7-point gap is structural:
+- `pkg/platform` is at 0% by design (no test files; macOS/Linux helpers only).
+- `pkg/discovery` is at 64.1% — the uncovered functions (`Announce`,
+  `Start`, `probeLoop`, `doProbe`) require real mDNS multicast, which is
+  flaky in CI.
+- `pkg/worker/ws_client.go` low-yield functions (`streamOrFallback` 42.3%,
+  `dispatchCompletion` 64.7%) need a live WebSocket round-trip.
+
+Closing the gap would require either enabling `pkg/platform` tests
+(breaks the original exclusion), mDNS tests that tolerate network
+flakiness, or full integration tests — all out of scope for this pass.
+
+All verification gates pass: `go test ./pkg/... -race`, `gofmt -l .`,
+`make lint` (0 issues). 5 commits on `main`, **not pushed** — awaiting
+user approval.
+
 ## 5. Live verification (cold-load repro)
 
 Re-run end-to-end: opencode → router → worker → LM Studio with a cold model
