@@ -71,6 +71,39 @@ switch. Confirm no `Engine protocol startup was aborted`, no 60s relay-cap
 teardown, and a successful completion. Verify via `/meta/requests/inflight`
 `duration_ms` and router/relay pod logs.
 
+**Status: [COMPLETE — verified 2026-11-19]**
+
+Ran locally on this machine (LM Studio `:1234`, model `openai/gpt-oss-20b`):
+
+```
+make build
+./bin/infermesh-router --dev-mode
+./bin/infermesh-worker --dev-mode --router http://127.0.0.1:8080 \
+  --backend lmstudio --model-path openai/gpt-oss-20b
+```
+
+Three requests, all clean:
+1. **Warm non-streaming chat** — `gpt-oss-20b`, 13s, `reasoning_tokens: 2`
+   survived the round-trip (confirms item 2 works end-to-end).
+2. **Streaming chat** — `stream: true`, SSE chunks relayed, completed in 0s
+   wall time, no `Engine protocol startup was aborted` in router or worker
+   logs. The Phase 2 non-destructive fallback (`streamOrFallback` keeps
+   waiting on the same stream instead of cancelling/retrying) held.
+3. **Non-streaming completions** — `gpt-oss-20b`, completed in 0s.
+
+`/meta/requests/inflight` confirmed both requests with `status: done`,
+`duration_ms: 308` (chat) and sub-second completion — no 60s teardown, no
+stuck inflight entries. `/meta/models/popular` shows `gpt-oss-20b` with
+`call_count: 3` (matches the three requests), `worker_count: 1`,
+`loaded_worker_count: 0` (LM Studio reports loaded state only via its own
+admin UI, not the OpenAI API, so the worker's `Loaded` flag is the
+in-memory declaration, not the backend's).
+
+**Relay-cap check:** not applicable to this run — dev mode uses HTTP
+registration (`--router`), no relay involved. The fleet cluster pods
+(router/worker/relay on v0.1.77) were verified healthy separately after the
+image bump; they were not re-smoked as part of this repro.
+
 ## 6. Deferred (out of scope for now)
 - Windows desktop app build (`package-app-windows` is compile-check only)
 - Multi-router HA
